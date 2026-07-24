@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,6 +11,15 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://moneymoney:moneymoney@localhost:5432/moneymoney"
     cors_origins: str = "http://localhost:3000"
     mock_data_enabled: bool = True
+
+    @field_validator("database_url", mode="after")
+    @classmethod
+    def normalize_postgres_driver(cls, value: str) -> str:
+        if value.startswith("postgres://"):
+            return value.replace("postgres://", "postgresql+psycopg://", 1)
+        if value.startswith("postgresql://"):
+            return value.replace("postgresql://", "postgresql+psycopg://", 1)
+        return value
 
     model_config = SettingsConfigDict(
         env_file=".env",

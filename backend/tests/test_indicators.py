@@ -1,5 +1,6 @@
 from app.services.indicators import calculate_indicators, generate_macd_signals
 from app.services.mock_market import industry_hotspots, stock_payload
+from app.config import Settings
 
 
 def test_macd_signal_only_on_zero_crossing_day() -> None:
@@ -33,3 +34,8 @@ def test_mock_stock_and_industry_payloads_are_complete() -> None:
     hotspots = industry_hotspots()
     assert hotspots
     assert {"industry", "changePercent", "momentum", "leaders"} <= hotspots[0].keys()
+
+
+def test_railway_postgres_url_uses_psycopg3_driver() -> None:
+    settings = Settings(database_url="postgresql://user:password@postgres:5432/moneymoney")
+    assert settings.database_url == "postgresql+psycopg://user:password@postgres:5432/moneymoney"
