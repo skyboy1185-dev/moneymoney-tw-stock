@@ -16,6 +16,10 @@ const signal = (overrides: Partial<DayTradingSignal> = {}): DayTradingSignal => 
   industryStrength: "強勢", reasons: ["站上 VWAP"], warnings: [],
   generatedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(),
   quoteTimestamp: new Date().toISOString(), status: "confirmed", dataSource: "mock_stream",
+  spreadPercentage: 0.1, tradingEligible: true, shortEligible: false,
+  shortAvailabilityKnown: true, chaseBlocked: false, stopDistancePercent: 1,
+  marketAlignment: 90, confirmationScore: 85, isOfficialRecommendation: true,
+  recommendationLabel: "AI 正式推薦", qualificationFailures: [],
   ...overrides,
 });
 

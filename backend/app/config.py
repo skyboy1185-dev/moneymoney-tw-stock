@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     mock_data_enabled: bool = True
     redis_url: str | None = None
     day_trading_stream_seconds: float = 2.0
+    twse_timezone: str = "Asia/Taipei"
+    twse_holidays: str = ""
 
     @field_validator("database_url", mode="after")
     @classmethod

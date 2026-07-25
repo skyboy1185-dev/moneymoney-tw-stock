@@ -8,12 +8,14 @@ import type {
   DayTradingTrade,
   EmergencyEvent,
   MarketRegime,
+  SignalSelectionPayload,
   StreamConnection,
 } from "@/lib/day-trading-types";
 
 interface DayTradingState {
   regime: MarketRegime | null;
   signals: DayTradingSignal[];
+  candidates: DayTradingSignal[];
   positions: DayTradingPosition[];
   alerts: DayTradingAlert[];
   trades: DayTradingTrade[];
@@ -31,6 +33,7 @@ interface DayTradingState {
 export const useDayTradingStore = create<DayTradingState>((set, get) => ({
   regime: null,
   signals: [],
+  candidates: [],
   positions: [],
   alerts: [],
   trades: [],
@@ -55,7 +58,17 @@ export const useDayTradingStore = create<DayTradingState>((set, get) => ({
       return;
     }
     if (type === "new_signal" || type === "signal_update" || type === "quote_update") {
-      set({ signals: payload as DayTradingSignal[], eventIds, connection: "connected" });
+      if (Array.isArray(payload)) {
+        set({ signals: payload as DayTradingSignal[], candidates: payload as DayTradingSignal[], eventIds, connection: "connected" });
+      } else {
+        const selection = payload as SignalSelectionPayload;
+        set({
+          signals: selection.recommended ?? [],
+          candidates: selection.candidates ?? [],
+          eventIds,
+          connection: "connected",
+        });
+      }
       return;
     }
     if (type === "position_update") {

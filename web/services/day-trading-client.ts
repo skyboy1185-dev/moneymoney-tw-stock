@@ -18,7 +18,7 @@ async function request<T>(path: string, userId: string, init?: RequestInit): Pro
 
 export const dayTradingClient = {
   regime: (userId: string) => request<unknown>("market-regime", userId),
-  signals: (userId: string) => request<{ items: unknown[] }>("signals", userId),
+  signals: (userId: string) => request<{ items: unknown[]; candidates: unknown[]; summary: string; maximum: number }>("signals", userId),
   rankings: (userId: string) => request<{ items: unknown[] }>("rankings", userId),
   positions: (userId: string) => request<{ items: unknown[] }>("positions", userId),
   alerts: (userId: string) => request<{ items: unknown[]; unread: number }>("alerts", userId),
@@ -51,6 +51,18 @@ export const dayTradingClient = {
       minimum_confidence: settings.minimumConfidence,
       notification_cooldown: settings.notificationCooldown,
       repeat_count: settings.repeatCount,
+      timezone: settings.timezone,
+      preheat_time: settings.preheatTime,
+      stock_pool_time: settings.stockPoolTime,
+      health_check_time: settings.healthCheckTime,
+      market_open_time: settings.marketOpenTime,
+      market_close_time: settings.marketCloseTime,
+      warmup_minutes: settings.warmupMinutes,
+      recommendation_refresh_seconds: settings.recommendationRefreshSeconds,
+      replacement_score_gap: settings.replacementScoreGap,
+      minimum_retention_minutes: settings.minimumRetentionMinutes,
+      minimum_live_samples: settings.minimumLiveSamples,
+      maximum_stop_distance: settings.maximumStopDistance,
     }),
   }),
   createPosition: (userId: string, signalId: string, direction: "long" | "short", entryPrice: number, quantity = 1) =>

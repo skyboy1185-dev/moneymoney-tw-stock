@@ -188,3 +188,23 @@ class DayTradingSettings(Base):
     minimum_confidence: Mapped[int] = mapped_column(Integer, default=75)
     notification_cooldown: Mapped[int] = mapped_column(Integer, default=60)
     repeat_count: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class DayTradingScheduleSettings(Base):
+    __tablename__ = "day_trading_schedule_settings"
+    __table_args__ = (UniqueConstraint("user_id", name="uq_day_schedule_settings_user"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    timezone: Mapped[str] = mapped_column(String(40), default="Asia/Taipei")
+    preheat_time: Mapped[str] = mapped_column(String(5), default="08:30")
+    stock_pool_time: Mapped[str] = mapped_column(String(5), default="08:45")
+    health_check_time: Mapped[str] = mapped_column(String(5), default="08:55")
+    market_open_time: Mapped[str] = mapped_column(String(5), default="09:00")
+    market_close_time: Mapped[str] = mapped_column(String(5), default="13:30")
+    warmup_minutes: Mapped[int] = mapped_column(Integer, default=3)
+    recommendation_refresh_seconds: Mapped[int] = mapped_column(Integer, default=10)
+    replacement_score_gap: Mapped[int] = mapped_column(Integer, default=5)
+    minimum_retention_minutes: Mapped[int] = mapped_column(Integer, default=3)
+    minimum_live_samples: Mapped[int] = mapped_column(Integer, default=3)
+    maximum_stop_distance: Mapped[float] = mapped_column(Float, default=3.0)

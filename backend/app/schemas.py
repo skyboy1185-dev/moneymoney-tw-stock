@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -75,3 +76,15 @@ class DayTradingSettingsUpdate(BaseModel):
     minimum_confidence: int = Field(ge=0, le=100)
     notification_cooldown: int = Field(ge=0, le=3600)
     repeat_count: int = Field(ge=1, le=10)
+    timezone: str = Field(default="Asia/Taipei", pattern=r"^Asia/Taipei$")
+    preheat_time: str = Field(default="08:30", pattern=r"^\d{2}:\d{2}$")
+    stock_pool_time: str = Field(default="08:45", pattern=r"^\d{2}:\d{2}$")
+    health_check_time: str = Field(default="08:55", pattern=r"^\d{2}:\d{2}$")
+    market_open_time: str = Field(default="09:00", pattern=r"^\d{2}:\d{2}$")
+    market_close_time: str = Field(default="13:30", pattern=r"^\d{2}:\d{2}$")
+    warmup_minutes: Literal[0, 1, 3, 5, 10] = 3
+    recommendation_refresh_seconds: Literal[5, 10, 15, 30] = 10
+    replacement_score_gap: int = Field(default=5, ge=0, le=30)
+    minimum_retention_minutes: int = Field(default=3, ge=0, le=30)
+    minimum_live_samples: int = Field(default=3, ge=2, le=100)
+    maximum_stop_distance: float = Field(default=3.0, ge=0.1, le=20)

@@ -31,7 +31,7 @@ function getUserId() {
 
 export function DayTradingDashboard() {
   const {
-    regime, signals, positions, alerts, trades, performance, settings, connection, emergency,
+    regime, signals, candidates, positions, alerts, trades, performance, settings, connection, emergency,
     setInitial, setConnection, handleEvent, dismissEmergency,
   } = useDayTradingStore();
   const [userId, setUserId] = useState("");
@@ -50,6 +50,7 @@ export function DayTradingDashboard() {
     setInitial({
       regime: regimeData as MarketRegime,
       signals: signalData.items as DayTradingSignal[],
+      candidates: signalData.candidates as DayTradingSignal[],
       positions: positionData.items as DayTradingPosition[],
       alerts: alertData.items as DayTradingAlert[],
       trades: tradeData.items as DayTradingTrade[],
@@ -175,6 +176,18 @@ export function DayTradingDashboard() {
     </section>
 
     {regime.dataStatus !== "normal" && <div className="data-anomaly-banner"><ShieldAlert /><div><strong>行情已延遲 {regime.dataDelaySeconds} 秒</strong><span>目前停止產生新進場訊號，請勿依賴舊報價進行交易；既有持倉仍持續檢查出場風險。</span></div></div>}
+    <section className={`automation-banner phase-${regime.automation.phase}`}>
+      <Clock3 />
+      <div>
+        <strong>{regime.automation.robotStatus}</strong>
+        <span>{regime.recommendationSummary || regime.automation.statusMessage}</span>
+      </div>
+      <dl>
+        <div><dt>台北時間</dt><dd>{new Date(regime.automation.localTime).toLocaleTimeString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" })}</dd></div>
+        <div><dt>行情樣本</dt><dd>{regime.automation.quoteSamples}／{regime.automation.minimumLiveSamples}</dd></div>
+        <div><dt>正式訊號</dt><dd>{regime.automation.formalSignalsAllowed ? "允許" : "暫停"}</dd></div>
+      </dl>
+    </section>
 
     <section className="dt-system-strip">
       <div><span>市場狀態</span><strong>{regime.directionLabel}</strong></div>
@@ -182,8 +195,8 @@ export function DayTradingDashboard() {
       <div><span>當沖環境</span><strong>{regime.environmentScore} · {regime.environmentLabel}</strong></div>
       <div><span>推薦方向</span><strong>{regime.preferredDirection}</strong></div>
       <div><span>行情來源</span><strong>{regime.dataSource}</strong></div>
-      <div><span>機器人</span><strong className="scanning"><Bot size={14} />掃描中</strong></div>
-      <div><span>今日訊號</span><strong>{signals.length} 筆</strong></div>
+      <div><span>機器人</span><strong className="scanning"><Bot size={14} />{regime.automation.robotStatus}</strong></div>
+      <div><span>今日精選</span><strong>{signals.length} / {regime.maximumRecommendations} 檔</strong></div>
       <div><span>交易時段</span><strong>{regime.session}</strong></div>
       <div><span>最後更新</span><strong>{new Date(regime.updatedAt).toLocaleTimeString("zh-TW", { hour12: false })}</strong></div>
     </section>
@@ -194,11 +207,13 @@ export function DayTradingDashboard() {
     </div>
 
     <section className="live-signal-section">
-      <div className="dt-section-heading"><div><span className="eyebrow">PRIORITY COMMANDS</span><h2>最新即時交易指令</h2><p>出場與停損通知永遠優先於新進場訊號</p></div><span className="signals-only"><Gauge size={15} />只提供訊號，不自動下單</span></div>
-      <div className="live-signal-grid">{signals.slice(0, 2).map((signal) => <LiveSignalCard key={signal.id} signal={signal} onMonitor={monitor} onSimulate={(item) => void simulate(item)} onAnalyze={(symbol) => { window.location.href = `/?symbol=${symbol}&view=analysis`; }} />)}</div>
+      <div className="dt-section-heading"><div><span className="eyebrow">AI OFFICIAL PICKS</span><h2>今日 AI 當沖精選：{signals.length}／{regime.maximumRecommendations} 檔</h2><p>出場與停損通知永遠優先；只有通過全部硬性風控的候選才列為正式推薦</p></div><span className="signals-only"><Gauge size={15} />只提供訊號，不自動下單</span></div>
+      {signals.length
+        ? <div className="live-signal-grid">{signals.map((signal) => <LiveSignalCard key={signal.id} signal={signal} onMonitor={monitor} onSimulate={(item) => void simulate(item)} onAnalyze={(symbol) => { window.location.href = `/?symbol=${symbol}&view=analysis`; }} />)}</div>
+        : <div className="dt-empty official-empty"><Bot /><h3>今日 AI 當沖精選：0／{regime.maximumRecommendations} 檔</h3><p>{regime.automation.phase === "scanning" ? "目前沒有符合風控標準的交易機會，建議觀望。" : regime.automation.statusMessage}</p></div>}
     </section>
 
-    <DayTradingRankingTable signals={signals} monitored={monitored} onMonitor={monitor} onSimulate={(item) => void simulate(item)} onAnalyze={(symbol) => { window.location.href = `/?symbol=${symbol}&view=analysis`; }} />
+    <DayTradingRankingTable signals={candidates} monitored={monitored} onMonitor={monitor} onSimulate={(item) => void simulate(item)} onAnalyze={(symbol) => { window.location.href = `/?symbol=${symbol}&view=analysis`; }} />
 
     <section className="positions-section">
       <div className="dt-section-heading"><div><span className="eyebrow">POSITION FIRST</span><h2>我的當沖監控</h2><p>每次行情更新都先檢查停損與出場，再掃描新進場機會</p></div><strong>{positions.length} 筆未平倉模擬部位</strong></div>

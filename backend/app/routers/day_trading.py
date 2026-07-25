@@ -13,6 +13,7 @@ from ..database import SessionLocal, get_db
 from ..models import (
     DayTradingAlert,
     DayTradingPosition,
+    DayTradingScheduleSettings,
     DayTradingSettings,
     DayTradingSignal,
     DayTradingTrade,
@@ -27,6 +28,12 @@ from ..services.day_trading import (
     prioritize_events,
 )
 from ..services.day_trading_cache import day_trading_cache
+from ..services.day_trading_automation import day_trading_automation
+from ..services.day_trading_schedule import (
+    TradingScheduleConfig,
+    stable_recommendation_selector,
+    trading_session_state,
+)
 
 router = APIRouter(prefix="/day-trading", tags=["day-trading"])
 settings = get_settings()
@@ -36,8 +43,8 @@ def _user_id(x_user_id: str | None = Header(default=None, min_length=8, max_leng
     return x_user_id or "demo-user"
 
 
-def _sync_signals(db: Session) -> list[dict[str, Any]]:
-    signals = day_trading_engine.signals()
+def _sync_signals(db: Session, signals: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    signals = signals or day_trading_engine.signals()
     for payload in signals:
         item = db.get(DayTradingSignal, payload["id"])
         if item is None:
@@ -78,7 +85,51 @@ def _settings(db: Session, user_id: str) -> DayTradingSettings:
     return item
 
 
-def _settings_payload(item: DayTradingSettings) -> dict[str, Any]:
+def _schedule_settings(db: Session, user_id: str) -> DayTradingScheduleSettings:
+    item = db.scalar(select(DayTradingScheduleSettings).where(DayTradingScheduleSettings.user_id == user_id))
+    if item is None:
+        item = DayTradingScheduleSettings(user_id=user_id)
+        db.add(item)
+        db.commit()
+        db.refresh(item)
+    return item
+
+
+def _holiday_dates() -> frozenset[date]:
+    values: set[date] = set()
+    for value in settings.twse_holidays.split(","):
+        try:
+            values.add(date.fromisoformat(value.strip()))
+        except ValueError:
+            continue
+    return frozenset(values)
+
+
+def _schedule_config(risk: DayTradingSettings, schedule: DayTradingScheduleSettings) -> TradingScheduleConfig:
+    return TradingScheduleConfig(
+        timezone=schedule.timezone,
+        preheat_time=schedule.preheat_time,
+        stock_pool_time=schedule.stock_pool_time,
+        health_check_time=schedule.health_check_time,
+        market_open_time=schedule.market_open_time,
+        latest_entry_time=risk.latest_entry_time,
+        close_reminder_time=risk.close_reminder_time,
+        market_close_time=schedule.market_close_time,
+        warmup_minutes=schedule.warmup_minutes,
+        recommendation_refresh_seconds=schedule.recommendation_refresh_seconds,
+        replacement_score_gap=schedule.replacement_score_gap,
+        minimum_retention_minutes=schedule.minimum_retention_minutes,
+        minimum_live_samples=schedule.minimum_live_samples,
+        minimum_risk_reward=risk.minimum_risk_reward,
+        maximum_spread=risk.maximum_spread,
+        minimum_volume=risk.minimum_volume,
+        minimum_turnover=risk.minimum_turnover,
+        maximum_stop_distance=schedule.maximum_stop_distance,
+        holidays=_holiday_dates(),
+    )
+
+
+def _settings_payload(item: DayTradingSettings, schedule: DayTradingScheduleSettings) -> dict[str, Any]:
     return {
         "capital": item.capital, "maxRiskPerTrade": item.max_risk_per_trade,
         "maxDailyLoss": item.max_daily_loss, "maxDailyTrades": item.max_daily_trades,
@@ -94,6 +145,73 @@ def _settings_payload(item: DayTradingSettings) -> dict[str, Any]:
         "highConfidenceOnly": item.high_confidence_only,
         "minimumConfidence": item.minimum_confidence,
         "notificationCooldown": item.notification_cooldown, "repeatCount": item.repeat_count,
+        "timezone": schedule.timezone, "preheatTime": schedule.preheat_time,
+        "stockPoolTime": schedule.stock_pool_time, "healthCheckTime": schedule.health_check_time,
+        "marketOpenTime": schedule.market_open_time, "marketCloseTime": schedule.market_close_time,
+        "warmupMinutes": schedule.warmup_minutes,
+        "recommendationRefreshSeconds": schedule.recommendation_refresh_seconds,
+        "replacementScoreGap": schedule.replacement_score_gap,
+        "minimumRetentionMinutes": schedule.minimum_retention_minutes,
+        "minimumLiveSamples": schedule.minimum_live_samples,
+        "maximumStopDistance": schedule.maximum_stop_distance,
+    }
+
+
+def _selection(
+    db: Session,
+    user_id: str,
+    *,
+    raw_signals: list[dict[str, Any]] | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    risk = _settings(db, user_id)
+    schedule_settings = _schedule_settings(db, user_id)
+    config = _schedule_config(risk, schedule_settings)
+    regime = day_trading_engine.market_regime()
+    candidates = _sync_signals(db, raw_signals)
+    infrastructure = {
+        "quoteSource": "healthy" if regime["dataStatus"] == "normal" else "error",
+        "redis": "healthy" if day_trading_cache.healthy else "unavailable",
+        "database": "healthy",
+        "stream": "healthy",
+    }
+    infrastructure_ok = all(value == "healthy" for value in infrastructure.values())
+    session = trading_session_state(
+        config,
+        now,
+        data_status=regime["dataStatus"],
+        quote_samples=day_trading_engine.sample_count,
+        infrastructure_ok=infrastructure_ok,
+    )
+    open_ids = set(db.scalars(select(DayTradingPosition.signal_id).where(
+        DayTradingPosition.user_id == user_id,
+        DayTradingPosition.status == "open",
+        DayTradingPosition.signal_id.is_not(None),
+    )).all())
+    official, ranked_candidates = stable_recommendation_selector.select(
+        user_id,
+        candidates,
+        config,
+        session,
+        open_signal_ids={str(value) for value in open_ids if value},
+        now=now,
+    )
+    summary = (
+        f"已選出 {len(official)} 檔當沖機會"
+        if official
+        else "目前沒有符合風控條件的股票，持續掃描中"
+        if session["phase"] == "scanning"
+        else session["statusMessage"]
+    )
+    return {
+        "recommended": official,
+        "candidates": ranked_candidates,
+        "totalRecommended": len(official),
+        "maximumRecommendations": config.maximum_recommendations,
+        "session": session,
+        "infrastructure": infrastructure,
+        "summary": summary,
+        "regime": regime,
     }
 
 
@@ -145,9 +263,20 @@ def _trade_payload(item: DayTradingTrade) -> dict[str, Any]:
 
 
 @router.get("/market-regime")
-def get_market_regime() -> dict[str, Any]:
+def get_market_regime(
+    user_id: str = Depends(_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    selection = _selection(db, user_id)
     payload = {
-        **day_trading_engine.market_regime(),
+        **selection["regime"],
+        "marketOpen": selection["session"]["phase"] in {"warmup", "scanning", "entry_closed", "closing"},
+        "automation": selection["session"],
+        "infrastructure": selection["infrastructure"],
+        "recommendationSummary": selection["summary"],
+        "recommendedCount": selection["totalRecommended"],
+        "maximumRecommendations": selection["maximumRecommendations"],
+        "supervisor": day_trading_automation.state,
         "mode": "demo", "dataNotice": DATA_NOTICE, "disclaimer": DISCLAIMER,
         "cacheMode": day_trading_cache.mode,
     }
@@ -156,11 +285,17 @@ def get_market_regime() -> dict[str, Any]:
 
 
 @router.get("/signals")
-def get_signals(db: Session = Depends(get_db)) -> dict[str, Any]:
-    signals = _sync_signals(db)
-    day_trading_cache.put("signals", signals)
+def get_signals(
+    user_id: str = Depends(_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    selection = _selection(db, user_id)
+    signals = selection["recommended"]
+    day_trading_cache.put(f"signals:{user_id}", selection)
     return {
-        "items": signals, "total": len(signals), "mode": "demo",
+        "items": signals, "candidates": selection["candidates"], "total": len(signals),
+        "maximum": selection["maximumRecommendations"], "summary": selection["summary"],
+        "automation": selection["session"], "mode": "demo",
         "dataNotice": DATA_NOTICE, "disclaimer": DISCLAIMER,
         "updatedAt": datetime.now(UTC).isoformat(),
     }
@@ -178,13 +313,18 @@ def get_signal(signal_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
 @router.get("/rankings")
 def get_rankings(
     direction: str = Query(default="all", pattern=r"^(all|long|short)$"),
+    user_id: str = Depends(_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    rows = _sync_signals(db)
+    selection = _selection(db, user_id)
+    rows = selection["candidates"]
     if direction != "all":
         rows = [item for item in rows if item["direction"] == direction]
-    rows.sort(key=lambda item: (item["confidenceScore"], item["healthScore"]), reverse=True)
-    return {"items": [{**item, "rank": index + 1} for index, item in enumerate(rows)], "total": len(rows)}
+    return {
+        "items": [{**item, "rank": index + 1} for index, item in enumerate(rows)],
+        "total": len(rows), "recommendedTotal": selection["totalRecommended"],
+        "maximumRecommendations": selection["maximumRecommendations"],
+    }
 
 
 @router.get("/positions")
@@ -375,7 +515,7 @@ def get_performance(user_id: str = Depends(_user_id), db: Session = Depends(get_
 
 @router.get("/settings")
 def get_day_trading_settings(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -> dict[str, Any]:
-    return _settings_payload(_settings(db, user_id))
+    return _settings_payload(_settings(db, user_id), _schedule_settings(db, user_id))
 
 
 @router.put("/settings")
@@ -384,7 +524,16 @@ def update_settings(
     user_id: str = Depends(_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    ordered_times = [
+        body.preheat_time, body.stock_pool_time, body.health_check_time,
+        body.market_open_time, body.latest_entry_time, body.close_reminder_time,
+        body.market_close_time,
+    ]
+    parsed_times = [datetime.strptime(value, "%H:%M").time() for value in ordered_times]
+    if parsed_times != sorted(parsed_times) or len(set(parsed_times)) != len(parsed_times):
+        raise HTTPException(status_code=422, detail="交易排程時間必須依序遞增且不可重複")
     item = _settings(db, user_id)
+    schedule = _schedule_settings(db, user_id)
     for api_key, model_key in {
         "capital": "capital", "max_risk_per_trade": "max_risk_per_trade",
         "max_daily_loss": "max_daily_loss", "max_daily_trades": "max_daily_trades",
@@ -402,9 +551,22 @@ def update_settings(
         "notification_cooldown": "notification_cooldown", "repeat_count": "repeat_count",
     }.items():
         setattr(item, model_key, getattr(body, api_key))
+    for api_key, model_key in {
+        "timezone": "timezone", "preheat_time": "preheat_time",
+        "stock_pool_time": "stock_pool_time", "health_check_time": "health_check_time",
+        "market_open_time": "market_open_time", "market_close_time": "market_close_time",
+        "warmup_minutes": "warmup_minutes",
+        "recommendation_refresh_seconds": "recommendation_refresh_seconds",
+        "replacement_score_gap": "replacement_score_gap",
+        "minimum_retention_minutes": "minimum_retention_minutes",
+        "minimum_live_samples": "minimum_live_samples",
+        "maximum_stop_distance": "maximum_stop_distance",
+    }.items():
+        setattr(schedule, model_key, getattr(body, api_key))
     db.commit()
     db.refresh(item)
-    return _settings_payload(item)
+    db.refresh(schedule)
+    return _settings_payload(item, schedule)
 
 
 @router.post("/scenarios/{scenario}")
@@ -445,7 +607,6 @@ async def _stream_events(request: Request, user_id: str):
     while not await request.is_disconnected():
         with SessionLocal() as db:
             regime = day_trading_engine.market_regime()
-            signals = _sync_signals(db)
             scenario = day_trading_engine.consume_scenario()
             events: list[dict[str, Any]] = []
             positions = db.scalars(select(DayTradingPosition).where(
@@ -490,6 +651,27 @@ async def _stream_events(request: Request, user_id: str):
                         alert = _create_alert(db, user_id, position, event)
                         event["alert"] = _alert_payload(alert)
                         events.append(event)
+            raw_signals = day_trading_engine.signals()
+            selection = _selection(db, user_id, raw_signals=raw_signals)
+            signal_payload = {
+                "recommended": selection["recommended"],
+                "candidates": selection["candidates"],
+                "totalRecommended": selection["totalRecommended"],
+                "maximumRecommendations": selection["maximumRecommendations"],
+                "supervisor": day_trading_automation.state,
+                "summary": selection["summary"],
+            }
+            regime = {
+                **selection["regime"],
+                "marketOpen": selection["session"]["phase"] in {"warmup", "scanning", "entry_closed", "closing"},
+                "automation": selection["session"],
+                "infrastructure": selection["infrastructure"],
+                "recommendationSummary": selection["summary"],
+                "recommendedCount": selection["totalRecommended"],
+                "maximumRecommendations": selection["maximumRecommendations"],
+                "mode": "demo", "dataNotice": DATA_NOTICE, "disclaimer": DISCLAIMER,
+                "cacheMode": day_trading_cache.mode,
+            }
             if scenario == "emergency_exit" and not positions:
                 events.append({
                     "type": "emergency_exit", "level": "emergency", "id": f"demo-emergency-{int(datetime.now(UTC).timestamp())}",
@@ -505,10 +687,9 @@ async def _stream_events(request: Request, user_id: str):
                 })
             events.extend([
                 {"type": "market_update", "id": f"market-{int(datetime.now(UTC).timestamp())}", "data": regime},
-                {"type": "quote_update", "id": f"quote-{int(datetime.now(UTC).timestamp())}", "data": signals},
                 {
                     "type": "new_signal" if scenario in {"long_signal", "short_signal"} else "signal_update",
-                    "id": f"signal-{int(datetime.now(UTC).timestamp())}", "data": signals,
+                    "id": f"signal-{int(datetime.now(UTC).timestamp())}", "data": signal_payload,
                 },
             ])
             db.commit()

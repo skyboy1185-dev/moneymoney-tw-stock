@@ -2,8 +2,8 @@ import json
 from typing import Any
 
 try:
-    from redis import Redis
-    from redis.exceptions import RedisError
+    from redis import Redis  # pyright: ignore[reportMissingImports]
+    from redis.exceptions import RedisError  # pyright: ignore[reportMissingImports]
 except ImportError:  # Redis is optional in local Mock-only development.
     Redis = None  # type: ignore[assignment,misc]
 
@@ -24,6 +24,15 @@ class DayTradingCache:
     @property
     def mode(self) -> str:
         return "redis" if self._redis else "memory"
+
+    @property
+    def healthy(self) -> bool:
+        if not self._redis:
+            return False
+        try:
+            return bool(self._redis.ping())
+        except RedisError:
+            return False
 
     def put(self, key: str, payload: Any, ttl: int = 120) -> None:
         encoded = json.dumps(payload, ensure_ascii=False)

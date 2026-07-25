@@ -1,6 +1,31 @@
 export type DayDirection = "long" | "short";
 export type StreamConnection = "connecting" | "connected" | "reconnecting" | "disconnected";
 
+export interface TradingAutomationState {
+  timezone: string;
+  localTime: string;
+  tradingDate: string;
+  isTradingDay: boolean;
+  phase: string;
+  robotStatus: string;
+  statusMessage: string;
+  formalSignalsAllowed: boolean;
+  warmupMinutes: number;
+  warmupUntil: string;
+  quoteSamples: number;
+  minimumLiveSamples: number;
+  nextTransitionAt: string | null;
+  schedule: {
+    preheatTime: string;
+    stockPoolTime: string;
+    healthCheckTime: string;
+    marketOpenTime: string;
+    latestEntryTime: string;
+    closeReminderTime: string;
+    marketCloseTime: string;
+  };
+}
+
 export interface MarketRegime {
   direction: string;
   directionLabel: string;
@@ -22,6 +47,11 @@ export interface MarketRegime {
   session: string;
   updatedAt: string;
   metrics: Record<string, string | number | string[]>;
+  automation: TradingAutomationState;
+  infrastructure: Record<string, string>;
+  recommendationSummary: string;
+  recommendedCount: number;
+  maximumRecommendations: number;
   dataNotice?: string;
   disclaimer?: string;
 }
@@ -58,6 +88,18 @@ export interface DayTradingSignal {
   quoteTimestamp: string;
   status: string;
   dataSource: string;
+  spreadPercentage: number;
+  tradingEligible: boolean;
+  shortEligible: boolean;
+  shortAvailabilityKnown: boolean;
+  chaseBlocked: boolean;
+  stopDistancePercent: number;
+  marketAlignment: number;
+  confirmationScore: number;
+  isOfficialRecommendation: boolean;
+  recommendationLabel: string;
+  qualificationFailures: string[];
+  recommendedAt?: string;
 }
 
 export interface DayTradingPosition {
@@ -159,6 +201,26 @@ export interface DayTradingSettings {
   minimumConfidence: number;
   notificationCooldown: number;
   repeatCount: number;
+  timezone: "Asia/Taipei";
+  preheatTime: string;
+  stockPoolTime: string;
+  healthCheckTime: string;
+  marketOpenTime: string;
+  marketCloseTime: string;
+  warmupMinutes: 0 | 1 | 3 | 5 | 10;
+  recommendationRefreshSeconds: 5 | 10 | 15 | 30;
+  replacementScoreGap: number;
+  minimumRetentionMinutes: number;
+  minimumLiveSamples: number;
+  maximumStopDistance: number;
+}
+
+export interface SignalSelectionPayload {
+  recommended: DayTradingSignal[];
+  candidates: DayTradingSignal[];
+  totalRecommended: number;
+  maximumRecommendations: number;
+  summary: string;
 }
 
 export interface EmergencyEvent {

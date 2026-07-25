@@ -8,6 +8,7 @@ from sqlalchemy import text
 from .config import get_settings
 from .database import SessionLocal, create_tables
 from .routers import content, day_trading, portfolio, screener, stocks
+from .services.day_trading_automation import day_trading_automation
 
 settings = get_settings()
 
@@ -15,7 +16,11 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     create_tables()
-    yield
+    await day_trading_automation.start()
+    try:
+        yield
+    finally:
+        await day_trading_automation.stop()
 
 
 app = FastAPI(

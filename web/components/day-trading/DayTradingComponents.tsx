@@ -114,7 +114,7 @@ export function LiveSignalCard({
     <div className="signal-card-top">
       <div className="signal-identity">
         <span className={`direction-icon ${long ? "long" : "short"}`}>{long ? <TrendingUp /> : <TrendingDown />}</span>
-        <div><span>{long ? "做多訊號" : "放空訊號"} · {signal.market}</span><h3>{signal.symbol} {signal.stockName}</h3></div>
+        <div><span>{signal.recommendationLabel} · {long ? "做多訊號" : "放空訊號"} · {signal.market}</span><h3>{signal.symbol} {signal.stockName}</h3></div>
       </div>
       <div className="signal-price"><strong>{number(signal.price)}</strong><span className={signal.changePercent >= 0 ? "text-up" : "text-down"}>{signal.changePercent >= 0 ? "+" : ""}{number(signal.changePercent)}%</span></div>
     </div>
@@ -174,7 +174,7 @@ export function DayTradingRankingTable({
       return right.confidenceScore - left.confidenceScore;
     }), [signals, monitored, filter, sort, ignored]);
   return <section className="dt-card ranking-card">
-    <div className="dt-section-heading"><div><span className="eyebrow">LIVE SCANNER</span><h2>即時掃描排行榜</h2></div><strong>{rows.length} 檔</strong></div>
+    <div className="dt-section-heading"><div><span className="eyebrow">MARKET SCAN CANDIDATES</span><h2>市場掃描候選清單</h2><p>未列入前三名者僅為市場候選，不代表建議買進或建議放空</p></div><strong>{rows.length} 檔</strong></div>
     <div className="ranking-toolbar">
       <div>{[
         ["all", "全部"], ["long", "只看做多"], ["short", "只看放空"], ["waiting", "等待進場"],
@@ -187,7 +187,7 @@ export function DayTradingRankingTable({
       </select>
     </div>
     <div className="table-scroll"><table className="dt-ranking-table"><thead><tr>
-      <th>排名</th><th>股票</th><th>現價／漲跌</th><th>量／金額</th><th>方向</th><th>指令</th>
+      <th>排名</th><th>股票</th><th>現價／漲跌</th><th>量／金額</th><th>方向</th><th>候選狀態</th>
       <th>信心／健康</th><th>VWAP／量價</th><th>大單／產業</th><th>有效倒數</th><th>操作</th>
     </tr></thead><tbody>{rows.map((item, index) => <tr key={item.id}>
       <td><b className="rank-number">{index + 1}</b></td>
@@ -195,7 +195,7 @@ export function DayTradingRankingTable({
       <td><strong>{number(item.price)}</strong><small className={item.changePercent >= 0 ? "text-up" : "text-down"}>{number(item.changePercent)}%</small></td>
       <td>{compact(item.volume)}<small>{compact(item.turnover)}</small></td>
       <td><span className={`direction-tag ${item.direction}`}>{item.directionLabel}</span></td>
-      <td><strong>{item.action}</strong><small>{time(item.generatedAt)}</small></td>
+      <td><span className={`recommendation-tag ${item.isOfficialRecommendation ? "official" : "candidate"}`}>{item.recommendationLabel}</span><strong>{item.isOfficialRecommendation ? item.action : item.action === "放空資格待確認" ? item.action : `候選觀察：${item.action}`}</strong><small>{item.qualificationFailures?.slice(0, 2).join(" · ") || time(item.generatedAt)}</small></td>
       <td><span>{item.confidenceScore}／{item.healthScore}</span><small>R:R 1:{number(item.riskRewardRatio, 1)}</small></td>
       <td>{item.vwapStatus}<small>{item.volumeStatus}</small></td>
       <td className={item.largeOrderForce >= 0 ? "text-up" : "text-down"}>{item.largeOrderForce}<small>{item.industryStrength}</small></td>
@@ -299,6 +299,22 @@ export function RiskControlPanel({
       ].map(([key, label, unit]) => <label key={key}><span>{label}</span><div><input type="number" value={String(draft[key as keyof DayTradingSettings])} onChange={(event) => setNumber(key as keyof DayTradingSettings, event.target.value)} /><em>{unit}</em></div></label>)}
       <label><span>最晚進場時間</span><input type="time" value={draft.latestEntryTime} onChange={(event) => setDraft({ ...draft, latestEntryTime: event.target.value })} /></label>
       <label><span>收盤前提醒</span><input type="time" value={draft.closeReminderTime} onChange={(event) => setDraft({ ...draft, closeReminderTime: event.target.value })} /></label>
+    </div>
+    <div className="schedule-settings">
+      <div className="schedule-settings-title"><Clock3 /><div><strong>開盤自動啟動排程</strong><span>Asia/Taipei；後端會依設定自動切換階段，不需每天手動啟動</span></div></div>
+      <div className="risk-form-grid">
+        {[
+          ["preheatTime", "系統預熱"], ["stockPoolTime", "載入股票池"],
+          ["healthCheckTime", "健康檢查"], ["marketOpenTime", "台股開盤"],
+          ["marketCloseTime", "停止與摘要"],
+        ].map(([key, label]) => <label key={key}><span>{label}</span><input type="time" value={String(draft[key as keyof DayTradingSettings])} onChange={(event) => setDraft({ ...draft, [key]: event.target.value })} /></label>)}
+        <label><span>開盤暖機</span><select value={draft.warmupMinutes} onChange={(event) => setDraft({ ...draft, warmupMinutes: Number(event.target.value) as DayTradingSettings["warmupMinutes"] })}><option value={0}>0 分鐘</option><option value={1}>1 分鐘</option><option value={3}>3 分鐘</option><option value={5}>5 分鐘</option><option value={10}>10 分鐘</option></select></label>
+        <label><span>推薦重算頻率</span><select value={draft.recommendationRefreshSeconds} onChange={(event) => setDraft({ ...draft, recommendationRefreshSeconds: Number(event.target.value) as DayTradingSettings["recommendationRefreshSeconds"] })}><option value={5}>5 秒</option><option value={10}>10 秒</option><option value={15}>15 秒</option><option value={30}>30 秒</option></select></label>
+        <label><span>替換分數門檻</span><div><input type="number" min={0} max={30} value={draft.replacementScoreGap} onChange={(event) => setNumber("replacementScoreGap", event.target.value)} /><em>分</em></div></label>
+        <label><span>最短保留時間</span><div><input type="number" min={0} max={30} value={draft.minimumRetentionMinutes} onChange={(event) => setNumber("minimumRetentionMinutes", event.target.value)} /><em>分</em></div></label>
+        <label><span>最低即時樣本</span><div><input type="number" min={2} value={draft.minimumLiveSamples} onChange={(event) => setNumber("minimumLiveSamples", event.target.value)} /><em>筆</em></div></label>
+        <label><span>最大停損距離</span><div><input type="number" min={0.1} step={0.1} value={draft.maximumStopDistance} onChange={(event) => setNumber("maximumStopDistance", event.target.value)} /><em>%</em></div></label>
+      </div>
     </div>
     <div className="notification-settings">
       {[

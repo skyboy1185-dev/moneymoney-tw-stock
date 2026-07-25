@@ -27,6 +27,9 @@
 - SSE 每 2 秒推送、斷線重連、事件去重與緊急出場優先
 - 模擬持倉、交易風控、瀏覽器通知、聲音、訊號與績效紀錄
 - Redis 最新行情快取與 Pub/Sub；未設定 Redis 時安全退回記憶體
+- Asia/Taipei 開盤排程、0～10 分鐘暖機、盤中重啟恢復與非交易時段保護
+- AI 正式推薦合計最多 3 檔；硬性風控、3 分鐘保留與 5 分替換門檻
+- 正式推薦與市場掃描候選分流，候選股票不會誤標為正式買進／放空建議
 
 ## 一鍵啟動
 
@@ -149,7 +152,9 @@ curl http://127.0.0.1:8000/api/v1/health
 
 測試情境可從頁面上的 Mock 控制台觸發：做多、放空、多空停損、第一停利、緊急出場、資料延遲與行情中斷。
 
-新增資料表的可重複執行 SQL 位於 `backend/migrations/001_day_trading.sql`；FastAPI 啟動時也會由 SQLAlchemy `create_all()` 建立缺少的資料表。
+新增資料表的可重複執行 SQL 位於 `backend/migrations/001_day_trading.sql` 與 `backend/migrations/002_day_trading_schedule.sql`；FastAPI 啟動時也會由 SQLAlchemy `create_all()` 建立缺少的資料表。
+
+開盤自動流程預設為 08:30 預熱、08:45 載入股票池、08:55 健康檢查、09:00 開盤與暖機、13:20 停止新倉、13:25 部位提醒、13:30 摘要。時間、暖機分鐘、推薦重算頻率、名單替換門檻與最低行情樣本都可在當沖頁的「交易風控與通知設定」保存到 PostgreSQL。非交易日、盤外、暖機、Redis／資料庫／行情異常時不會產生正式進場推薦，但既有持倉仍持續接受出場與停損檢查。
 
 當沖相關環境變數：
 
@@ -157,6 +162,8 @@ curl http://127.0.0.1:8000/api/v1/health
 REDIS_URL=redis://localhost:6379/0
 DAY_TRADING_STREAM_SECONDS=2
 MOCK_DATA_ENABLED=true
+TWSE_TIMEZONE=Asia/Taipei
+TWSE_HOLIDAYS=
 ```
 
 正式行情尚未串接前，請保持 `MOCK_DATA_ENABLED=true`。

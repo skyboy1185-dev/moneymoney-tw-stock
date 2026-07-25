@@ -98,6 +98,11 @@ class MockDayTradingEngine:
     def _now(self) -> datetime:
         return datetime.now(UTC)
 
+    @property
+    def sample_count(self) -> int:
+        with self._lock:
+            return self._tick
+
     def market_regime(self) -> dict[str, Any]:
         now = self._now()
         scenario = self._scenario
@@ -155,6 +160,11 @@ class MockDayTradingEngine:
                 "riskRewardRatio": 2.1, "changePercent": 2.35, "volume": 1_842_000,
                 "turnover": 10_548_000_000, "vwapStatus": "站上且向上", "volumeStatus": "量能增加",
                 "largeOrderForce": 76, "industryStrength": "強勢",
+                "spreadPercentage": 0.12, "tradingEligible": True, "shortEligible": False,
+                "shortAvailabilityKnown": True, "tradeRestricted": False, "nearLimitDown": False,
+                "excessiveNegativeDeviation": False, "chaseBlocked": False,
+                "stopDistancePercent": 1.57, "marketAlignment": 92, "confirmationScore": 88,
+                "volumeScore": 82, "activeForce": 78, "industryScore": 85, "liquidityScore": 90,
                 "reasons": ["站上 VWAP", "突破早盤高點", "5 分 K 均線向上", "成交量高於同期平均", "大盤偏多"],
                 "warnings": ["距離 VWAP 稍遠", "短線漲幅較大", "不建議直接追價"],
             },
@@ -166,6 +176,11 @@ class MockDayTradingEngine:
                 "riskRewardRatio": 2.3, "changePercent": -1.48, "volume": 38_620_000,
                 "turnover": 6_874_000_000, "vwapStatus": "跌破且向下", "volumeStatus": "賣量增加",
                 "largeOrderForce": -72, "industryStrength": "轉弱",
+                "spreadPercentage": 0.18, "tradingEligible": True, "shortEligible": True,
+                "shortAvailabilityKnown": True, "tradeRestricted": False, "nearLimitDown": False,
+                "excessiveNegativeDeviation": False, "chaseBlocked": False,
+                "stopDistancePercent": 0.84, "marketAlignment": 55, "confirmationScore": 86,
+                "volumeScore": 91, "activeForce": 82, "industryScore": 74, "liquidityScore": 95,
                 "reasons": ["跌破 VWAP", "跌破早盤低點", "主動賣盤增加", "反彈無法站回壓力", "產業同步轉弱"],
                 "warnings": ["須確認可放空資格", "接近短線支撐"],
             },
@@ -177,6 +192,11 @@ class MockDayTradingEngine:
                 "riskRewardRatio": 1.8, "changePercent": 0.71, "volume": 4_870_000,
                 "turnover": 6_954_000_000, "vwapStatus": "VWAP 上方", "volumeStatus": "量能普通",
                 "largeOrderForce": 42, "industryStrength": "偏強",
+                "spreadPercentage": 0.21, "tradingEligible": True, "shortEligible": False,
+                "shortAvailabilityKnown": True, "tradeRestricted": False, "nearLimitDown": False,
+                "excessiveNegativeDeviation": False, "chaseBlocked": False,
+                "stopDistancePercent": 1.26, "marketAlignment": 80, "confirmationScore": 62,
+                "volumeScore": 58, "activeForce": 52, "industryScore": 70, "liquidityScore": 88,
                 "reasons": ["VWAP 向上", "產業偏強", "大盤偏多"],
                 "warnings": ["突破量尚未確認"],
             },
@@ -200,6 +220,12 @@ class MockDayTradingEngine:
                 "expiresAt": expires_at.isoformat(), "quoteTimestamp": now.isoformat(),
                 "status": item.get("status", "confirmed"), "dataSource": "mock_stream",
                 "dataMode": "demo", "dataNotice": DATA_NOTICE, "disclaimer": DISCLAIMER,
+                "dataStatus": (
+                    "disconnected" if scenario == "disconnect"
+                    else "severe_delay" if scenario == "data_delay"
+                    else "normal"
+                ),
+                "liveSampleCount": tick,
             })
             item["price"] = round(float(item["price"]), 2)
         return templates
