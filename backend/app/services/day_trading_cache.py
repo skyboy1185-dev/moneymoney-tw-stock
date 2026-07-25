@@ -1,0 +1,58 @@
+import json
+from typing import Any
+
+try:
+    from redis import Redis
+    from redis.exceptions import RedisError
+except ImportError:  # Redis is optional in local Mock-only development.
+    Redis = None  # type: ignore[assignment,misc]
+
+    class RedisError(Exception):
+        pass
+
+from ..config import get_settings
+
+
+class DayTradingCache:
+    """Redis-backed latest-state cache with a safe in-memory fallback for Mock mode."""
+
+    def __init__(self) -> None:
+        redis_url = get_settings().redis_url
+        self._redis = Redis.from_url(redis_url, decode_responses=True) if redis_url and Redis else None
+        self._memory: dict[str, str] = {}
+
+    @property
+    def mode(self) -> str:
+        return "redis" if self._redis else "memory"
+
+    def put(self, key: str, payload: Any, ttl: int = 120) -> None:
+        encoded = json.dumps(payload, ensure_ascii=False)
+        self._memory[key] = encoded
+        if self._redis:
+            try:
+                self._redis.setex(f"moneymoney:{key}", ttl, encoded)
+            except RedisError:
+                pass
+
+    def get(self, key: str) -> Any | None:
+        encoded = self._memory.get(key)
+        if self._redis:
+            try:
+                encoded = self._redis.get(f"moneymoney:{key}") or encoded
+            except RedisError:
+                pass
+        return json.loads(encoded) if encoded else None
+
+    def publish(self, event_type: str, payload: Any) -> None:
+        if not self._redis:
+            return
+        try:
+            self._redis.publish(
+                "moneymoney:day-trading",
+                json.dumps({"type": event_type, "data": payload}, ensure_ascii=False),
+            )
+        except RedisError:
+            pass
+
+
+day_trading_cache = DayTradingCache()

@@ -1,0 +1,121 @@
+CREATE TABLE IF NOT EXISTS day_trading_signals (
+  id VARCHAR(80) PRIMARY KEY,
+  symbol VARCHAR(12) NOT NULL,
+  stock_name VARCHAR(80) NOT NULL,
+  market VARCHAR(20) NOT NULL,
+  direction VARCHAR(12) NOT NULL,
+  action VARCHAR(80) NOT NULL,
+  current_price DOUBLE PRECISION NOT NULL,
+  entry_min DOUBLE PRECISION NOT NULL,
+  entry_max DOUBLE PRECISION NOT NULL,
+  stop_loss DOUBLE PRECISION NOT NULL,
+  target_1 DOUBLE PRECISION NOT NULL,
+  target_2 DOUBLE PRECISION NOT NULL,
+  confidence_score DOUBLE PRECISION NOT NULL,
+  health_score DOUBLE PRECISION NOT NULL,
+  risk_reward_ratio DOUBLE PRECISION NOT NULL,
+  reasons_json TEXT NOT NULL DEFAULT '[]',
+  warnings_json TEXT NOT NULL DEFAULT '[]',
+  generated_at TIMESTAMPTZ NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  status VARCHAR(30) NOT NULL DEFAULT 'confirmed',
+  data_source VARCHAR(80) NOT NULL DEFAULT 'mock_stream',
+  quote_timestamp TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS day_trading_positions (
+  id BIGSERIAL PRIMARY KEY,
+  user_id VARCHAR(80) NOT NULL,
+  signal_id VARCHAR(80),
+  symbol VARCHAR(12) NOT NULL,
+  stock_name VARCHAR(80) NOT NULL,
+  direction VARCHAR(12) NOT NULL,
+  entry_price DOUBLE PRECISION NOT NULL,
+  quantity DOUBLE PRECISION NOT NULL,
+  opened_at TIMESTAMPTZ NOT NULL,
+  stop_loss DOUBLE PRECISION NOT NULL,
+  target_1 DOUBLE PRECISION NOT NULL,
+  target_2 DOUBLE PRECISION NOT NULL,
+  trailing_stop DOUBLE PRECISION,
+  current_price DOUBLE PRECISION NOT NULL,
+  unrealized_profit DOUBLE PRECISION NOT NULL DEFAULT 0,
+  health_score DOUBLE PRECISION NOT NULL DEFAULT 80,
+  latest_action VARCHAR(80) NOT NULL DEFAULT '續抱',
+  status VARCHAR(20) NOT NULL DEFAULT 'open',
+  closed_at TIMESTAMPTZ,
+  exit_price DOUBLE PRECISION,
+  realized_profit DOUBLE PRECISION,
+  sound_enabled BOOLEAN NOT NULL DEFAULT TRUE
+);
+
+CREATE TABLE IF NOT EXISTS day_trading_alerts (
+  id BIGSERIAL PRIMARY KEY,
+  user_id VARCHAR(80) NOT NULL,
+  position_id BIGINT,
+  signal_id VARCHAR(80),
+  alert_level VARCHAR(20) NOT NULL,
+  alert_type VARCHAR(40) NOT NULL,
+  title VARCHAR(120) NOT NULL,
+  message TEXT NOT NULL,
+  action VARCHAR(80) NOT NULL,
+  reason TEXT NOT NULL,
+  price DOUBLE PRECISION NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  read_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS day_trading_trades (
+  id BIGSERIAL PRIMARY KEY,
+  user_id VARCHAR(80) NOT NULL,
+  symbol VARCHAR(12) NOT NULL,
+  stock_name VARCHAR(80) NOT NULL,
+  direction VARCHAR(12) NOT NULL,
+  entry_time TIMESTAMPTZ NOT NULL,
+  entry_price DOUBLE PRECISION NOT NULL,
+  exit_time TIMESTAMPTZ NOT NULL,
+  exit_price DOUBLE PRECISION NOT NULL,
+  quantity DOUBLE PRECISION NOT NULL,
+  fee DOUBLE PRECISION NOT NULL DEFAULT 0,
+  tax DOUBLE PRECISION NOT NULL DEFAULT 0,
+  slippage DOUBLE PRECISION NOT NULL DEFAULT 0,
+  profit DOUBLE PRECISION NOT NULL,
+  return_percentage DOUBLE PRECISION NOT NULL,
+  max_profit DOUBLE PRECISION NOT NULL DEFAULT 0,
+  max_loss DOUBLE PRECISION NOT NULL DEFAULT 0,
+  entry_reason TEXT NOT NULL,
+  exit_reason TEXT NOT NULL,
+  strategy_name VARCHAR(120) NOT NULL,
+  followed_signal BOOLEAN NOT NULL DEFAULT TRUE
+);
+
+CREATE TABLE IF NOT EXISTS day_trading_settings (
+  id BIGSERIAL PRIMARY KEY,
+  user_id VARCHAR(80) NOT NULL UNIQUE,
+  capital DOUBLE PRECISION NOT NULL DEFAULT 1000000,
+  max_risk_per_trade DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+  max_daily_loss DOUBLE PRECISION NOT NULL DEFAULT 2,
+  max_daily_trades INTEGER NOT NULL DEFAULT 5,
+  max_position_percentage DOUBLE PRECISION NOT NULL DEFAULT 20,
+  max_consecutive_losses INTEGER NOT NULL DEFAULT 3,
+  minimum_risk_reward DOUBLE PRECISION NOT NULL DEFAULT 1.5,
+  maximum_spread DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+  minimum_volume DOUBLE PRECISION NOT NULL DEFAULT 500000,
+  minimum_turnover DOUBLE PRECISION NOT NULL DEFAULT 50000000,
+  latest_entry_time VARCHAR(5) NOT NULL DEFAULT '13:20',
+  close_reminder_time VARCHAR(5) NOT NULL DEFAULT '13:25',
+  notification_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  sound_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  entry_notification BOOLEAN NOT NULL DEFAULT TRUE,
+  exit_notification BOOLEAN NOT NULL DEFAULT TRUE,
+  stop_notification BOOLEAN NOT NULL DEFAULT TRUE,
+  target_notification BOOLEAN NOT NULL DEFAULT TRUE,
+  data_alert_notification BOOLEAN NOT NULL DEFAULT TRUE,
+  high_confidence_only BOOLEAN NOT NULL DEFAULT FALSE,
+  minimum_confidence INTEGER NOT NULL DEFAULT 75,
+  notification_cooldown INTEGER NOT NULL DEFAULT 60,
+  repeat_count INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE INDEX IF NOT EXISTS ix_day_positions_user_status ON day_trading_positions(user_id, status);
+CREATE INDEX IF NOT EXISTS ix_day_alerts_user_created ON day_trading_alerts(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS ix_day_trades_user_exit ON day_trading_trades(user_id, exit_time DESC);

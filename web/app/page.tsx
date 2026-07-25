@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Activity, BarChart3, BrainCircuit, Flame, Newspaper, Search, SlidersHorizontal, Star, Wifi, WifiOff } from "lucide-react";
+import Link from "next/link";
+import { Activity, BarChart3, Bot, BrainCircuit, Flame, Newspaper, Search, SlidersHorizontal, Star, Wifi, WifiOff } from "lucide-react";
 import { StockAnalysis } from "@/components/StockAnalysis";
 import { Screener } from "@/components/Screener";
 import { AiCenter } from "@/components/AiCenter";
@@ -52,8 +53,13 @@ export default function Home() {
 
   useEffect(() => {
     const initial = new URLSearchParams(window.location.search).get("symbol") ?? "2330";
+    const requestedView = new URLSearchParams(window.location.search).get("view") as Tab | null;
     setQuery(initial);
-    void loadStock(initial);
+    void loadStock(initial).then(() => {
+      if (requestedView && ["analysis", "screener", "ai", "portfolio", "industries", "news"].includes(requestedView)) {
+        setTab(requestedView);
+      }
+    });
   }, [loadStock]);
 
   useEffect(() => {
@@ -118,11 +124,12 @@ export default function Home() {
 
       <nav className="main-nav" aria-label="主要功能">
         <button className={tab === "analysis" ? "active" : ""} onClick={() => setTab("analysis")}><Activity size={17} />個股分析</button>
-        <button className={tab === "screener" ? "active" : ""} onClick={() => setTab("screener")}><SlidersHorizontal size={17} />選股器</button>
-        <button className={tab === "ai" ? "active ai-nav" : "ai-nav"} onClick={() => setTab("ai")}><BrainCircuit size={17} />AI 決策中心<span>LIVE</span></button>
-        <button className={tab === "portfolio" ? "active" : ""} onClick={() => setTab("portfolio")}><Star size={17} />我的自選</button>
+        <button className={tab === "screener" ? "active" : ""} onClick={() => setTab("screener")}><SlidersHorizontal size={17} />AI 選股</button>
+        <Link className="ai-nav" href="/day-trading-bot"><Bot size={17} />當沖機器人<span>LIVE</span></Link>
+        <button className={tab === "ai" ? "active" : ""} onClick={() => setTab("ai")}><BrainCircuit size={17} />大盤多空方向</button>
+        <button className={tab === "portfolio" ? "active" : ""} onClick={() => setTab("portfolio")}><Star size={17} />觀察清單</button>
         <button className={tab === "industries" ? "active" : ""} onClick={() => setTab("industries")}><Flame size={17} />產業熱點</button>
-        <button className={tab === "news" ? "active" : ""} onClick={() => setTab("news")}><Newspaper size={17} />市場新聞</button>
+        <button className={tab === "news" ? "active" : ""} onClick={() => setTab("news")}><Newspaper size={17} />新聞</button>
       </nav>
 
       <main className="main-content">

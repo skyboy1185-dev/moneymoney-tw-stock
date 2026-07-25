@@ -7,7 +7,7 @@ from sqlalchemy import text
 
 from .config import get_settings
 from .database import SessionLocal, create_tables
-from .routers import content, portfolio, screener, stocks
+from .routers import content, day_trading, portfolio, screener, stocks
 
 settings = get_settings()
 
@@ -35,6 +35,7 @@ app.include_router(stocks.router, prefix=settings.api_prefix)
 app.include_router(screener.router, prefix=settings.api_prefix)
 app.include_router(content.router, prefix=settings.api_prefix)
 app.include_router(portfolio.router, prefix=settings.api_prefix)
+app.include_router(day_trading.router, prefix=settings.api_prefix)
 
 
 @app.get("/")

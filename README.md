@@ -22,6 +22,11 @@
 - PostgreSQL 自選、持股與 AI 分數歷史 Schema
 - SSE 市場快照推送
 - 手機、平板與桌面響應式版面
+- `/day-trading-bot` AI 當沖多空機器人（Mock Streaming Data）
+- 做多／放空／續抱／減碼／賣出／回補／停損訊號
+- SSE 每 2 秒推送、斷線重連、事件去重與緊急出場優先
+- 模擬持倉、交易風控、瀏覽器通知、聲音、訊號與績效紀錄
+- Redis 最新行情快取與 Pub/Sub；未設定 Redis 時安全退回記憶體
 
 ## 一鍵啟動
 
@@ -116,8 +121,45 @@ curl http://127.0.0.1:8000/api/v1/health
 | GET | `/api/v1/news` | 新聞分類與搜尋 |
 | GET/POST | `/api/v1/watchlist` | 自選清單 |
 | DELETE | `/api/v1/watchlist/{symbol}` | 移除自選 |
+| GET | `/api/v1/day-trading/market-regime` | 當沖盤勢與交易環境 |
+| GET | `/api/v1/day-trading/signals` | 即時多空訊號 |
+| GET | `/api/v1/day-trading/rankings` | 當沖掃描排行榜 |
+| GET/POST | `/api/v1/day-trading/positions` | 模擬持倉 |
+| PATCH | `/api/v1/day-trading/positions/{id}` | 停損、移動停利與提醒設定 |
+| POST | `/api/v1/day-trading/positions/{id}/close` | 模擬減碼、賣出或回補 |
+| GET | `/api/v1/day-trading/alerts` | 出場與風險通知 |
+| GET | `/api/v1/day-trading/trades` | 模擬交易紀錄 |
+| GET/PUT | `/api/v1/day-trading/settings` | 風控與通知設定 |
+| GET | `/api/v1/day-trading/stream` | SSE 即時事件 |
 
 自選 API 需帶 `X-User-Id` header。
+
+## 當沖機器人
+
+瀏覽 `http://localhost:3000/day-trading-bot`。第一版只提供訊號與模擬交易，不含券商串接，也不會自動下單。Mock 模式固定顯示「展示模式，非即時行情」。
+
+資料處理順序：
+
+1. 驗證行情時間與完整性
+2. 更新 Redis 最新狀態
+3. 優先檢查現有模擬持倉的停損與出場
+4. 發送緊急出場或回補事件
+5. 更新大盤狀態與新進場訊號
+6. 透過 SSE 推送並保存重要紀錄到 PostgreSQL
+
+測試情境可從頁面上的 Mock 控制台觸發：做多、放空、多空停損、第一停利、緊急出場、資料延遲與行情中斷。
+
+新增資料表的可重複執行 SQL 位於 `backend/migrations/001_day_trading.sql`；FastAPI 啟動時也會由 SQLAlchemy `create_all()` 建立缺少的資料表。
+
+當沖相關環境變數：
+
+```env
+REDIS_URL=redis://localhost:6379/0
+DAY_TRADING_STREAM_SECONDS=2
+MOCK_DATA_ENABLED=true
+```
+
+正式行情尚未串接前，請保持 `MOCK_DATA_ENABLED=true`。
 
 ## 資料來源替換
 

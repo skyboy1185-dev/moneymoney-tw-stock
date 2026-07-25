@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://moneymoney:moneymoney@localhost:5432/moneymoney"
     cors_origins: str = "http://localhost:3000"
     mock_data_enabled: bool = True
+    redis_url: str | None = None
+    day_trading_stream_seconds: float = 2.0
 
     @field_validator("database_url", mode="after")
     @classmethod
