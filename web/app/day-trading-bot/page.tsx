@@ -26,7 +26,7 @@ export default function DayTradingBotPage() {
       <Link href="/?view=analysis"><Activity size={17} />個股分析</Link>
       <Link href="/?view=screener"><SlidersHorizontal size={17} />AI 選股</Link>
       <Link className="active ai-nav" href="/day-trading-bot"><Bot size={17} />當沖機器人<span>LIVE</span></Link>
-      <Link href="/?view=ai"><BrainCircuit size={17} />大盤多空方向</Link>
+      <Link href="/?view=ai"><BrainCircuit size={17} />AI選股機器人</Link>
       <Link href="/?view=portfolio"><Star size={17} />觀察清單</Link>
       <Link href="/?view=industries"><Flame size={17} />產業熱點</Link>
       <Link href="/?view=news"><Newspaper size={17} />新聞</Link>

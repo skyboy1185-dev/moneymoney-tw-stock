@@ -126,7 +126,7 @@ export default function Home() {
         <button className={tab === "analysis" ? "active" : ""} onClick={() => setTab("analysis")}><Activity size={17} />個股分析</button>
         <button className={tab === "screener" ? "active" : ""} onClick={() => setTab("screener")}><SlidersHorizontal size={17} />AI 選股</button>
         <Link className="ai-nav" href="/day-trading-bot"><Bot size={17} />當沖機器人<span>LIVE</span></Link>
-        <button className={tab === "ai" ? "active" : ""} onClick={() => setTab("ai")}><BrainCircuit size={17} />大盤多空方向</button>
+        <button className={tab === "ai" ? "active" : ""} onClick={() => setTab("ai")}><BrainCircuit size={17} />AI選股機器人</button>
         <button className={tab === "portfolio" ? "active" : ""} onClick={() => setTab("portfolio")}><Star size={17} />觀察清單</button>
         <button className={tab === "industries" ? "active" : ""} onClick={() => setTab("industries")}><Flame size={17} />產業熱點</button>
         <button className={tab === "news" ? "active" : ""} onClick={() => setTab("news")}><Newspaper size={17} />新聞</button>

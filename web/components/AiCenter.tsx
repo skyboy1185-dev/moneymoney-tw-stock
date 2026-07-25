@@ -98,7 +98,7 @@ export function AiCenter({ snapshot, loading, autoMode, onAutoModeChange, onSele
     <div className="ai-center">
       {actionMessage && <button className="portfolio-toast" onClick={() => setActionMessage("")}>{actionMessage}<X size={13} /></button>}
       <div className="ai-page-heading">
-        <div><p className="section-kicker">AI DECISION CENTER</p><h1><BrainCircuit size={25} />AI 決策中心</h1><p>多指標市場判斷、策略適配與條件完整度評分</p></div>
+        <div><p className="section-kicker">AI STOCK SELECTION BOT</p><h1><BrainCircuit size={25} />AI選股機器人</h1><p>多指標市場判斷、策略適配與條件完整度評分</p></div>
         <div className="ai-heading-actions"><span className="demo-badge"><Database size={14} />展示模式／模擬資料</span><label className="auto-toggle"><span><Bot size={16} />AI 自動模式</span><input type="checkbox" checked={autoMode} onChange={(event) => onAutoModeChange(event.target.checked)} /><i /></label></div>
       </div>
 
