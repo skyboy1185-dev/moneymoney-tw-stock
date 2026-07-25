@@ -38,7 +38,7 @@ def test_mock_stock_and_industry_payloads_are_complete() -> None:
     payload = stock_payload("2330")
     assert payload is not None
     assert payload["meta"]["name"] == "台積電"
-    assert len(payload["prices"]) == len(payload["indicators"]) == 420
+    assert len(payload["prices"]) == len(payload["indicators"]) == 5280
     assert payload["dataMode"] == "demo"
     hotspots = industry_hotspots()
     assert hotspots

@@ -127,7 +127,7 @@ export function mergeOfficialQuote(payload: StockPayload, quote: StockQuote): St
     symbol: payload.meta.symbol, name: payload.meta.name, date: quote.date,
     open: quote.open, high: quote.high, low: quote.low, close: quote.price, volume: quote.volume,
   };
-  const prices = [...scaledHistory, officialCandle].slice(-1320);
+  const prices = [...scaledHistory, officialCandle].slice(-5280);
   return {
     ...payload,
     prices,

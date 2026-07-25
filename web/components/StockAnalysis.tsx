@@ -15,7 +15,7 @@ export function StockAnalysis({ data, loading, marketOpen = false }: { data: Sto
   const changePercent = (change / previous.close) * 100;
 
   const visibleData = useMemo(() => {
-    const count: Record<string, number> = { "3m": 66, "6m": 132, "1y": 264, "3y": 792, "5y": 1320 };
+    const count: Record<string, number> = { "1m": 22, "6m": 132, "1y": 264, "10y": 2640, "20y": 5280 };
     const start = Math.max(0, data.prices.length - count[range]);
     return {
       prices: data.prices.slice(start),
@@ -72,7 +72,7 @@ export function StockAnalysis({ data, loading, marketOpen = false }: { data: Sto
               <h2>日 K 線・成交量・MACD</h2>
             </div>
             <div className="range-tabs" aria-label="時間區間">
-              {[["3m", "3 個月"], ["6m", "6 個月"], ["1y", "1 年"], ["3y", "3 年"], ["5y", "5 年"]].map(([value, label]) => (
+              {[["1m", "1 個月"], ["6m", "6 個月"], ["1y", "1 年"], ["10y", "10 年"], ["20y", "20 年"]].map(([value, label]) => (
                 <button key={value} className={range === value ? "active" : ""} onClick={() => setRange(value)}>{label}</button>
               ))}
             </div>

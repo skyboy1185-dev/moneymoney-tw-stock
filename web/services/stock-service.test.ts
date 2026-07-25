@@ -17,8 +17,8 @@ describe("MockStockDataProvider", () => {
     expect(bySymbol?.name).toBe("台積電");
 
     const stock = await provider.getStock("2330");
-    expect(stock?.prices).toHaveLength(1320);
-    expect(stock?.indicators).toHaveLength(1320);
+    expect(stock?.prices).toHaveLength(5280);
+    expect(stock?.indicators).toHaveLength(5280);
     expect(stock?.prices.at(-1)?.date).toBe("2026-07-24");
   });
 

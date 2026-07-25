@@ -61,7 +61,7 @@ function businessDates(count: number): string[] {
   return dates.reverse();
 }
 
-function generatePrices(meta: StockMeta, count = 1320): DailyPrice[] {
+function generatePrices(meta: StockMeta, count = 5280): DailyPrice[] {
   const random = seededRandom(hashCode(meta.symbol));
   const dates = businessDates(count);
   const target = BASE_PRICES[meta.symbol] ?? 100;

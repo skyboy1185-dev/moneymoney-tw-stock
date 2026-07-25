@@ -56,7 +56,7 @@ def stock_payload(symbol: str) -> dict | None:
     if not stock:
         return None
     rng = random.Random(int(stock["symbol"]) * 97)
-    dates = _business_dates(420)
+    dates = _business_dates(5280)
     price = float(stock["base"]) * 0.72
     candles = []
     for index, trade_date in enumerate(dates):
