@@ -34,6 +34,7 @@ from ..services.day_trading_schedule import (
     stable_recommendation_selector,
     trading_session_state,
 )
+from ..services.line_messaging import line_notification_dispatcher
 
 router = APIRouter(prefix="/day-trading", tags=["day-trading"])
 settings = get_settings()
@@ -696,6 +697,21 @@ async def _stream_events(request: Request, user_id: str):
             for event in prioritize_events(events):
                 event_type = event["type"]
                 payload = event.get("data", event)
+                if event_type in {"emergency_exit", "exit_warning"}:
+                    await line_notification_dispatcher.send_position_event({
+                        **payload,
+                        "createdAt": datetime.now(UTC).isoformat(),
+                    })
+                elif event_type == "position_update" and str(payload.get("latestAction", "")).startswith("續抱"):
+                    await line_notification_dispatcher.send_position_event({
+                        "type": "position_status",
+                        "level": "normal",
+                        "action": payload["latestAction"],
+                        "reason": "原始條件仍有效",
+                        "price": payload["currentPrice"],
+                        "position": payload,
+                        "createdAt": datetime.now(UTC).isoformat(),
+                    })
                 day_trading_cache.put(f"latest-event:{event_type}", payload)
                 day_trading_cache.publish(event_type, payload)
                 yield f"id: {event['id']}\nevent: {event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"

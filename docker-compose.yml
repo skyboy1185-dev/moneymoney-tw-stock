@@ -34,6 +34,11 @@ services:
       CORS_ORIGINS: http://localhost:${WEB_PORT:-3000}
       MOCK_DATA_ENABLED: "true"
       REDIS_URL: redis://redis:6379/0
+      LINE_CHANNEL_ACCESS_TOKEN: ${LINE_CHANNEL_ACCESS_TOKEN:-}
+      LINE_CHANNEL_SECRET: ${LINE_CHANNEL_SECRET:-}
+      LINE_TARGET_GROUP_ID: ${LINE_TARGET_GROUP_ID:-}
+      LINE_NOTIFICATIONS_ENABLED: ${LINE_NOTIFICATIONS_ENABLED:-true}
+      PUBLIC_WEB_URL: ${PUBLIC_WEB_URL:-http://localhost:8000}
     ports:
       - "${API_PORT:-8000}:8000"
     depends_on:

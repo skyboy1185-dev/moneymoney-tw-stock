@@ -134,6 +134,11 @@ curl http://127.0.0.1:8000/api/v1/health
 | GET | `/api/v1/day-trading/trades` | 模擬交易紀錄 |
 | GET/PUT | `/api/v1/day-trading/settings` | 風控與通知設定 |
 | GET | `/api/v1/day-trading/stream` | SSE 即時事件 |
+| POST | `/api/integrations/line/webhook` | LINE Messaging API Webhook |
+| GET | `/api/v1/integrations/line/status` | LINE 連線、群組與推送摘要 |
+| GET/PUT | `/api/v1/integrations/line/settings` | LINE 事件通知開關 |
+| POST | `/api/v1/integrations/line/test` | 推送 LINE 測試訊息 |
+| DELETE | `/api/v1/integrations/line/groups/{id}` | 解除群組綁定 |
 
 自選 API 需帶 `X-User-Id` header。
 
@@ -152,7 +157,7 @@ curl http://127.0.0.1:8000/api/v1/health
 
 測試情境可從頁面上的 Mock 控制台觸發：做多、放空、多空停損、第一停利、緊急出場、資料延遲與行情中斷。
 
-新增資料表的可重複執行 SQL 位於 `backend/migrations/001_day_trading.sql` 與 `backend/migrations/002_day_trading_schedule.sql`；FastAPI 啟動時也會由 SQLAlchemy `create_all()` 建立缺少的資料表。
+新增資料表的可重複執行 SQL 位於 `backend/migrations/001_day_trading.sql`、`backend/migrations/002_day_trading_schedule.sql` 與 `backend/migrations/003_line_group_notifications.sql`；FastAPI 啟動時也會由 SQLAlchemy `create_all()` 建立缺少的資料表。
 
 開盤自動流程預設為 08:30 預熱、08:45 載入股票池、08:55 健康檢查、09:00 開盤與暖機、13:20 停止新倉、13:25 部位提醒、13:30 摘要。時間、暖機分鐘、推薦重算頻率、名單替換門檻與最低行情樣本都可在當沖頁的「交易風控與通知設定」保存到 PostgreSQL。非交易日、盤外、暖機、Redis／資料庫／行情異常時不會產生正式進場推薦，但既有持倉仍持續接受出場與停損檢查。
 
@@ -167,6 +172,58 @@ TWSE_HOLIDAYS=
 ```
 
 正式行情尚未串接前，請保持 `MOCK_DATA_ENABLED=true`。
+
+## LINE 群組通知
+
+LINE 整合使用 Messaging API，不使用已停止服務的 LINE Notify。Channel Access Token 與 Channel Secret 只由 FastAPI 後端讀取，不會傳到 Next.js 或瀏覽器。
+
+Railway 的 `moneymoney-tw-stock` 後端服務需設定：
+
+```env
+LINE_CHANNEL_ACCESS_TOKEN=
+LINE_CHANNEL_SECRET=
+LINE_TARGET_GROUP_ID=
+LINE_NOTIFICATIONS_ENABLED=true
+PUBLIC_WEB_URL=https://moneymoney-tw-stock-production.up.railway.app
+```
+
+請將真實 Token 與 Secret 直接貼到 Railway Variables，不要寫入 `.env.example`、程式碼、GitHub Commit、Build Log 或對話訊息。`LINE_TARGET_GROUP_ID` 是選用的單一預設群組；一般建議將官方帳號加入群組後輸入「綁定當沖機器人」，由已驗證的 Webhook 自動保存 `groupId`。
+
+LINE Developers Console 設定：
+
+1. 在 LINE Official Account Manager 為「AI當沖機器人」啟用 Messaging API。
+2. 進入對應 Provider 與 Messaging API Channel。
+3. 從 Basic settings 複製 Channel Secret 到 Railway 的 `LINE_CHANNEL_SECRET`。
+4. 從 Messaging API 分頁發行 Channel Access Token，保存到 `LINE_CHANNEL_ACCESS_TOKEN`。
+5. Webhook URL 輸入 `https://moneymoney-tw-stock-production.up.railway.app/api/integrations/line/webhook`。
+6. 開啟 `Use webhook`，按 `Verify` 確認回傳成功；建議同時開啟 Webhook redelivery。
+7. 開啟 `Allow bot to join group chats`，才能邀請官方帳號進入群組。
+8. 若不希望 Messaging API 回覆與官方帳號自動回覆重疊，可在 LINE Official Account Manager 調整 Greeting／Auto-reply。
+
+群組文字指令：
+
+- `綁定當沖機器人`
+- `測試當沖通知`
+- `解除當沖通知`
+
+正式推薦只推送通過風控的前三檔，做多與放空合計最多三檔；市場候選不推送。同一 `signalId + action` 每群只通知一次，一般進場同股票三分鐘冷卻。Push API 最多嘗試三次，三次使用相同 `X-Line-Retry-Key` 防止 LINE 接受第一次請求後因網路錯誤造成重複訊息。緊急出場、停損與回補的佇列優先級高於新進場。
+
+本機測試：
+
+```bash
+cd backend
+pytest tests/test_line_messaging.py
+uvicorn app.main:app --reload --port 8000
+curl http://127.0.0.1:8000/api/v1/integrations/line/status
+```
+
+LINE Platform 無法直接呼叫 `localhost`。需要測試真實 Webhook 時，請使用有合法 HTTPS 憑證的測試網址或安全 Tunnel，將該網址暫時填入 LINE Developers Console；正式測試則在 Railway 部署完成並設定憑證後使用 Console 的 `Verify`，再從群組執行三個文字指令。
+
+官方參考：
+
+- https://developers.line.biz/en/docs/messaging-api/verify-webhook-signature/
+- https://developers.line.biz/en/docs/messaging-api/group-chats/
+- https://developers.line.biz/en/docs/messaging-api/retrying-api-request/
 
 ## 資料來源替換
 

@@ -88,3 +88,14 @@ class DayTradingSettingsUpdate(BaseModel):
     minimum_retention_minutes: int = Field(default=3, ge=0, le=30)
     minimum_live_samples: int = Field(default=3, ge=2, le=100)
     maximum_stop_distance: float = Field(default=3.0, ge=0.1, le=20)
+
+
+class LineNotificationSettingsUpdate(BaseModel):
+    opening_enabled: bool
+    long_entry_enabled: bool
+    short_entry_enabled: bool
+    long_exit_enabled: bool
+    short_cover_enabled: bool
+    stop_loss_enabled: bool
+    data_alert_enabled: bool
+    closing_summary_enabled: bool

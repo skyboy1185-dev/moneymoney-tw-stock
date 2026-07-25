@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     day_trading_stream_seconds: float = 2.0
     twse_timezone: str = "Asia/Taipei"
     twse_holidays: str = ""
+    line_channel_access_token: str = ""
+    line_channel_secret: str = ""
+    line_target_group_id: str = ""
+    line_notifications_enabled: bool = True
+    public_web_url: str = ""
 
     @field_validator("database_url", mode="after")
     @classmethod

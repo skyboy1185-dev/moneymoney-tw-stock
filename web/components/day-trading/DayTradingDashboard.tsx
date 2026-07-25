@@ -14,6 +14,7 @@ import {
   LiveSignalCard, MarketDataDelayBadge, MarketRegimeCard, PositionMonitorCard,
   RiskControlPanel, SimulationControls, StreamConnectionStatus, TradeTimeline,
 } from "./DayTradingComponents";
+import { LineNotificationPanel } from "./LineNotificationPanel";
 
 const EVENT_TYPES = [
   "market_update", "quote_update", "new_signal", "signal_update", "signal_expired",
@@ -225,6 +226,7 @@ export function DayTradingDashboard() {
       {settings && <RiskControlPanel settings={settings} onSave={(value) => void dayTradingClient.saveSettings(userId, value).then((saved) => { setInitial({ settings: saved }); setToast("風控與通知設定已儲存"); })} />}
     </div>
 
+    <LineNotificationPanel />
     <TradeTimeline signals={signals} trades={trades} performance={performance} />
     <DayTradingDisclaimer />
   </div>;

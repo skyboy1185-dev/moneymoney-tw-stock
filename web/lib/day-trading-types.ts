@@ -223,6 +223,39 @@ export interface SignalSelectionPayload {
   summary: string;
 }
 
+export interface LineNotificationSettings {
+  openingEnabled: boolean;
+  longEntryEnabled: boolean;
+  shortEntryEnabled: boolean;
+  longExitEnabled: boolean;
+  shortCoverEnabled: boolean;
+  stopLossEnabled: boolean;
+  dataAlertEnabled: boolean;
+  closingSummaryEnabled: boolean;
+  updatedAt: string;
+}
+
+export interface LineNotificationGroup {
+  id: number;
+  displayName: string;
+  maskedGroupId: string;
+  active: boolean;
+  boundAt: string | null;
+  lastPushAt: string | null;
+}
+
+export interface LineIntegrationStatus {
+  officialAccountName: string;
+  enabled: boolean;
+  credentialsConfigured: boolean;
+  connectionStatus: "disabled" | "missing_credentials" | "awaiting_group" | "connected";
+  groups: LineNotificationGroup[];
+  lastPushAt: string | null;
+  todayPushCount: number;
+  publicWebhookUrl: string;
+  settings: LineNotificationSettings;
+}
+
 export interface EmergencyEvent {
   type: string;
   level: "emergency";
