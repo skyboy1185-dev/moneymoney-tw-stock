@@ -72,9 +72,12 @@ def test_exit_events_always_precede_entry_events() -> None:
 
 def test_mock_streaming_data_changes_and_supports_scenarios() -> None:
     engine = MockDayTradingEngine()
-    first = engine.signals()[0]["price"]
-    second = engine.signals()[0]["price"]
+    first_batch = engine.signals()
+    second_batch = engine.signals()
+    first = first_batch[0]["price"]
+    second = second_batch[0]["price"]
     assert first != second
+    assert len(second_batch) >= 6
     engine.trigger("data_delay")
     assert engine.market_regime()["dataStatus"] == "severe_delay"
     engine.trigger("long_signal")

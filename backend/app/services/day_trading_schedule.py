@@ -168,6 +168,8 @@ def recommendation_qualification(
         failures.append("行情資料異常")
     if candidate.get("status") != "confirmed" or _expired(candidate, current):
         failures.append("訊號已失效或尚未確認")
+    if str(candidate.get("action", "")).startswith(("等待", "觀望", "禁止", "行情異常")):
+        failures.append("尚未形成正式進場指令")
     if float(candidate.get("confidenceScore", 0)) < 75:
         failures.append("信心分數未達 75")
     if float(candidate.get("healthScore", 0)) < 70:
