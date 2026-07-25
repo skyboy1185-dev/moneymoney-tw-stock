@@ -1,7 +1,9 @@
 import asyncio
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -38,6 +40,7 @@ from ..services.line_messaging import line_notification_dispatcher
 
 router = APIRouter(prefix="/day-trading", tags=["day-trading"])
 settings = get_settings()
+TAIPEI = ZoneInfo("Asia/Taipei")
 
 
 def _user_id(x_user_id: str | None = Header(default=None, min_length=8, max_length=80)) -> str:
@@ -571,15 +574,89 @@ def update_settings(
 
 
 @router.post("/scenarios/{scenario}")
-def trigger_scenario(
+async def trigger_scenario(
     scenario: str,
+    user_id: str = Depends(_user_id),
+    db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     allowed = {
         "long_signal", "short_signal", "long_stop", "short_stop",
-        "target_1", "emergency_exit", "data_delay", "disconnect",
+        "target_1", "emergency_exit", "data_delay", "disconnect", "market_open",
     }
     if scenario not in allowed:
         raise HTTPException(status_code=400, detail="未知測試情境")
+    if scenario == "market_open":
+        local_now = datetime.now(UTC).astimezone(TAIPEI)
+        friday = (local_now + timedelta(days=4 - local_now.weekday())).date()
+        risk = _settings(db, user_id)
+        schedule = _schedule_settings(db, user_id)
+        config = _schedule_config(risk, schedule)
+        open_hour, open_minute = (int(value) for value in config.market_open_time.split(":", 1))
+        market_open_at = datetime(
+            friday.year,
+            friday.month,
+            friday.day,
+            open_hour,
+            open_minute,
+            tzinfo=TAIPEI,
+        )
+        simulated_at = market_open_at + timedelta(minutes=config.warmup_minutes)
+        session = trading_session_state(
+            config,
+            simulated_at,
+            data_status="normal",
+            quote_samples=max(config.minimum_live_samples, 10),
+            infrastructure_ok=True,
+        )
+        nonce = uuid4().hex[:10]
+        candidates = day_trading_engine.signals()
+        for index, item in enumerate(candidates):
+            item["id"] = f"simulation-friday-{nonce}-{item['symbol']}"
+            item["generatedAt"] = (simulated_at - timedelta(seconds=20 + index * 8)).isoformat()
+            item["expiresAt"] = (simulated_at + timedelta(minutes=5 + index)).isoformat()
+            item["quoteTimestamp"] = simulated_at.isoformat()
+            item["dataMode"] = "demo"
+            item["dataSource"] = "mock_opening_simulation"
+            item["warnings"] = ["展示模式，非即時行情", *item.get("warnings", [])]
+        candidates[0]["action"] = "突破買進"
+        candidates[0]["confidenceScore"] = 92
+        candidates[1]["action"] = "反彈放空"
+        candidates[1]["confidenceScore"] = 88
+        official, ranked = stable_recommendation_selector.select(
+            f"{user_id}:friday-open:{nonce}",
+            candidates,
+            config,
+            session,
+            now=simulated_at,
+        )
+        opening_sent = await line_notification_dispatcher.send_system_event(
+            "opening",
+            "週五開盤模擬｜機器人啟動",
+            (
+                "【展示模式，非即時行情】\n"
+                f"模擬日期：{friday.isoformat()}\n"
+                f"{config.health_check_time} 系統與行情來源檢查完成\n"
+                f"{config.market_open_time} 開盤，暖機 {config.warmup_minutes} 分鐘\n"
+                f"{simulated_at.strftime('%H:%M')} 暖機完成，即時掃描中\n"
+                f"今日 AI 當沖精選：{len(official)}／3 檔"
+            ),
+            f"simulation:friday-open:{nonce}",
+            priority=2,
+        )
+        recommendation_sent = await line_notification_dispatcher.send_recommendations(official[:3])
+        return {
+            "accepted": True,
+            "scenario": scenario,
+            "mode": "demo",
+            "simulatedDate": friday.isoformat(),
+            "phase": session["phase"],
+            "robotStatus": session["robotStatus"],
+            "formalSignalsAllowed": session["formalSignalsAllowed"],
+            "recommended": official,
+            "candidates": ranked,
+            "maximumRecommendations": 3,
+            "lineMessagesSent": opening_sent + recommendation_sent,
+        }
     day_trading_engine.trigger(scenario)
     return {"accepted": True, "scenario": scenario, "mode": "demo"}
 

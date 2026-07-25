@@ -51,6 +51,13 @@ def test_signal_and_emergency_messages_follow_required_format() -> None:
     assert "推薦原因：\n- 站上 VWAP" in message
     assert "僅供研究參考，不構成投資建議。" in message
 
+    demo_message = format_signal_message({
+        **signal,
+        "dataMode": "demo",
+        "dataSource": "mock_opening_simulation",
+    })
+    assert demo_message.startswith("【展示模式，非即時行情】")
+
     emergency = format_position_message({
         "level": "emergency", "action": "立即全部回補", "price": 101,
         "reason": "突破停損價",

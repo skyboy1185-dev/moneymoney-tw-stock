@@ -66,6 +66,11 @@ def _time(value: Any) -> str:
 def format_signal_message(signal: dict[str, Any]) -> str:
     reasons = "\n".join(f"- {item}" for item in signal.get("reasons", [])[:5]) or "- 暫無"
     warnings = "\n".join(f"- {item}" for item in signal.get("warnings", [])[:5]) or "- 暫無"
+    mode_notice = (
+        "【展示模式，非即時行情】\n\n"
+        if signal.get("dataMode") == "demo" or str(signal.get("dataSource", "")).startswith("mock")
+        else ""
+    )
     common = (
         f"股票：{signal['symbol']} {signal['stockName']}\n"
         f"目前價格：{_number(signal.get('price'))}\n"
@@ -80,6 +85,7 @@ def format_signal_message(signal: dict[str, Any]) -> str:
     )
     if signal.get("direction") == "short":
         return (
+            f"{mode_notice}"
             "【AI當沖機器人｜放空訊號】\n\n"
             f"{common}"
             f"建議放空區：{_number(signal.get('entryMin'))}～{_number(signal.get('entryMax'))}\n"
@@ -91,6 +97,7 @@ def format_signal_message(signal: dict[str, Any]) -> str:
             "僅供研究參考，不構成投資建議。"
         )
     return (
+        f"{mode_notice}"
         "【AI當沖機器人｜做多訊號】\n\n"
         f"{common}"
         f"建議進場區：{_number(signal.get('entryMin'))}～{_number(signal.get('entryMax'))}\n"

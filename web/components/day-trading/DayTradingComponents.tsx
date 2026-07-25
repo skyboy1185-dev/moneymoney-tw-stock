@@ -373,6 +373,7 @@ export function TradeTimeline({
 
 export function SimulationControls({ onTrigger }: { onTrigger: (scenario: string) => void }) {
   const buttons = [
+    ["market_open", "模擬週五開盤"],
     ["long_signal", "產生做多訊號"], ["short_signal", "產生放空訊號"],
     ["long_stop", "觸發多單停損"], ["short_stop", "觸發空單停損"],
     ["target_1", "觸發第一停利"], ["emergency_exit", "觸發緊急出場"],
