@@ -27,6 +27,7 @@ class DayTradingAutomationSupervisor:
         self._started_at: datetime | None = None
         self._last_scan_at: datetime | None = None
         self._recommendations: list[dict[str, Any]] = []
+        self._restored_signal_count = 0
         self._state: dict[str, Any] = {"status": "stopped"}
 
     def _config(self) -> TradingScheduleConfig:
@@ -43,6 +44,10 @@ class DayTradingAutomationSupervisor:
         if self._task and not self._task.done():
             return
         self._started_at = datetime.now(UTC)
+        restored = day_trading_cache.get("automation-recommendations")
+        if isinstance(restored, list):
+            self._recommendations = restored
+            self._restored_signal_count = len(restored)
         self._task = asyncio.create_task(self._run(), name="day-trading-automation")
 
     async def stop(self) -> None:
@@ -101,6 +106,7 @@ class DayTradingAutomationSupervisor:
                     now=now,
                 )
                 self._last_scan_at = now
+                day_trading_cache.put("automation-recommendations", self._recommendations, ttl=86_400)
             elif session["phase"] not in {"warmup", "scanning"} or not session["formalSignalsAllowed"]:
                 self._recommendations = []
             self._state = {
@@ -111,6 +117,7 @@ class DayTradingAutomationSupervisor:
                 "database": "healthy" if database_ok else "unavailable",
                 "redis": "healthy" if day_trading_cache.healthy else "unavailable",
                 "restoredOpenPositions": open_positions,
+                "restoredSignalCount": self._restored_signal_count,
                 "recommendedCount": len(self._recommendations),
             }
             day_trading_cache.put("automation-supervisor", self._state, ttl=180)
