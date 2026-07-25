@@ -17,6 +17,7 @@ export async function backendJson<T>(path: string, init?: RequestInit): Promise<
       const payload = await response.json().catch(() => null) as { detail?: string } | null;
       throw new Error(payload?.detail ?? `FastAPI 回應 ${response.status}`);
     }
+    if (response.status === 204) return {} as T;
     return await response.json() as T;
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("FastAPI 回應")) throw error;

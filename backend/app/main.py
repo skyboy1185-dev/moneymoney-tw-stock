@@ -7,7 +7,8 @@ from sqlalchemy import text
 
 from .config import get_settings
 from .database import SessionLocal, create_tables
-from .routers import content, day_trading, line_integration, portfolio, screener, stocks
+from .routers import ai_stock, content, day_trading, line_integration, portfolio, screener, stocks
+from .services.ai_stock_automation import ai_stock_automation
 from .services.day_trading_automation import day_trading_automation
 from .services.line_messaging import line_notification_dispatcher
 
@@ -19,9 +20,11 @@ async def lifespan(_: FastAPI):
     create_tables()
     await line_notification_dispatcher.start()
     await day_trading_automation.start()
+    await ai_stock_automation.start()
     try:
         yield
     finally:
+        await ai_stock_automation.stop()
         await day_trading_automation.stop()
         await line_notification_dispatcher.stop()
 
@@ -45,6 +48,7 @@ app.include_router(content.router, prefix=settings.api_prefix)
 app.include_router(portfolio.router, prefix=settings.api_prefix)
 app.include_router(day_trading.router, prefix=settings.api_prefix)
 app.include_router(line_integration.router, prefix=settings.api_prefix)
+app.include_router(ai_stock.router, prefix=settings.api_prefix)
 app.include_router(line_integration.webhook_router)
 
 

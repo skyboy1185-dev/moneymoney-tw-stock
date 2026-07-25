@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Activity, AlertTriangle, ArrowDownRight, ArrowUpRight, Bot, BrainCircuit, BriefcaseBusiness, Clock3, Database, Eye, Radio, ShieldCheck, Sparkles, Star, TrendingUp, X, Zap } from "lucide-react";
 import type { MarketDirection, MarketSnapshot, RankingRow, TimelinePoint } from "@/lib/market-types";
 import { formatPercent, formatVolume, safeNumber, valueClass } from "@/lib/format";
+import { AIStockWorkflow } from "@/components/AIStockWorkflow";
 
 const LABELS: Record<MarketDirection, string> = {
   strong_bull: "強多", bull: "偏多", sideways: "盤整", bear: "偏空", strong_bear: "強空", transition: "多空轉折",
@@ -161,12 +162,13 @@ export function AiCenter({ snapshot, loading, autoMode, onAutoModeChange, onSele
         </section>
       </div>
 
-      <section className="ai-section ranking-panel">
-        <div className="ai-section-title ranking-title"><div><Sparkles size={17} /><div><h2>AI 自動選股排行榜</h2><p>分數代表目前條件符合策略的完整程度，不是上漲機率</p></div></div><select value={sort} onChange={(event) => setSort(event.target.value as typeof sort)}><option value="rank">依排名</option><option value="score">依總分</option><option value="changePercent">依漲跌幅</option></select></div>
-        {!rankings.length ? <div className="table-empty"><Bot size={26} /><h3>目前沒有達到 55 分的股票</h3><p>AI 會在下一次掃描重新評估。</p></div> : <div className="table-scroll"><table className="ai-ranking-table"><thead><tr><th>排名</th><th>股票</th><th>價格／漲跌</th><th>成交量</th><th>策略</th><th>總分</th><th>適配度</th><th>盤勢／MACD</th><th>訊號狀態</th><th>推薦原因</th><th>風險</th><th>操作</th><th>更新時間</th></tr></thead>
-          <tbody>{rankings.map((row) => <tr key={row.symbol}><td><strong className="rank-number">{row.rank}</strong></td><td><button className="symbol-link" onClick={() => onSelectStock(row.symbol)}>{row.symbol}</button><small>{row.name}</small></td><td>{safeNumber(row.price)}<small className={valueClass(row.changePercent)}>{formatPercent(row.changePercent)}</small><span className={row.isOfficialPrice ? "ranking-price-source official" : "ranking-price-source demo"}>{row.isOfficialPrice ? row.priceSource : "展示價格"}</span><small>{row.priceDate} {row.priceTime}</small></td><td>{formatVolume(row.volume)}</td><td><span className="strategy-tag">{row.strategyName}</span></td><td><div className={`score-pill score-${Math.floor(row.score / 10)}`}>{row.score}</div></td><td>{row.strategyFit}%</td><td><span className={directionClass(row.marketDirection)}>{LABELS[row.marketDirection]}</span><small>{row.macdState}</small></td><td><span className={`status-tag ${row.signalStatus}`}>{row.signalStatus === "temporary" ? "盤中暫時訊號" : row.signalStatus === "confirmed" ? "確認訊號" : "已取消訊號"}</span><small>新進榜</small></td><td><ul>{row.reasons.slice(0,3).map((reason) => <li key={reason}>{reason}</li>)}</ul></td><td>{row.riskTags.length ? row.riskTags.map((risk) => <span key={risk} className="risk-tag">{risk}</span>) : <span className="safe-tag">一般</span>}</td><td><div className="ranking-actions"><button onClick={() => onSelectStock(row.symbol)}><Eye size={11} />查看分析</button><button className={watchSymbols.has(row.symbol) ? "added" : ""} disabled={watchSymbols.has(row.symbol)} onClick={() => void addWatch(row.symbol)}><Star size={11} />{watchSymbols.has(row.symbol) ? "已加入自選" : "加入自選"}</button><button className={holdingSymbols.has(row.symbol) ? "added" : ""} disabled={holdingSymbols.has(row.symbol)} onClick={() => { setHoldingTarget(row); setHoldingForm({ cost: String(row.price), lots: "1", buyDate: new Date().toISOString().slice(0,10) }); }}><BriefcaseBusiness size={11} />{holdingSymbols.has(row.symbol) ? "已加入持股" : "加入持股"}</button></div></td><td>{new Date(row.updatedAt).toLocaleTimeString("zh-TW", { hour12: false })}</td></tr>)}</tbody>
-        </table></div>}
-      </section>
+      <AIStockWorkflow
+        snapshot={snapshot}
+        userId={userId}
+        watchSymbols={watchSymbols}
+        onAddWatch={addWatch}
+        onAnalyze={onSelectStock}
+      />
 
       <div className="intraday-warning"><AlertTriangle size={16} /><span>盤中技術指標與策略訊號為暫時計算結果，可能在 K 棒完成前發生變化。</span></div>
       {holdingTarget && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) setHoldingTarget(null); }}>

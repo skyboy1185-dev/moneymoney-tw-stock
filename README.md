@@ -237,3 +237,33 @@ Mock 資料集中於：
 ## 免責聲明
 
 本網站資訊與選股結果僅供研究參考，不構成任何投資建議。
+
+## AI選股機器人監控流程
+
+AI選股機器人仍採固定 TypeScript 規則，不呼叫 OpenAI。流程為：
+
+1. 計算大盤多空力道並執行七種策略 Robot。
+2. 候選清單保留條件符合分數至少 55 分的前 12 檔。
+3. 通過 75 分、策略適配度、官方盤中報價、流動性、價差與硬性風控後，最多選出 5 檔正式精選。
+4. 正式精選同步至 FastAPI `ai_stock_monitor`，先進入等待進場，不假設已成交。
+5. 形成買進確認後才透過既有 LINE Messaging API 發送通知。
+6. 使用者在網站輸入實際價格、股數與時間後，才建立 PostgreSQL 持倉。
+7. 後端每 60 秒恢復並監控未結束持倉，停損、全部賣出、減碼優先於加碼與新買進。
+8. 使用者確認全部賣出後才將持倉移到已結束區。
+
+金融金額、部位與風險計算使用 Python `Decimal` 及 PostgreSQL `NUMERIC`。
+
+### AI 選股專用 API
+
+- `GET/PUT /api/v1/portfolio/settings`
+- `GET /api/v1/portfolio/allocation`
+- `GET /api/v1/ai-stock-dashboard`
+- `GET/POST /api/v1/ai-stock-monitor`
+- `POST /api/v1/ai-stock-monitor/{id}/confirm-entry`
+- `GET/PATCH /api/v1/ai-stock-positions/{id}`
+- `POST /api/v1/ai-stock-positions/{id}/confirm-add-on`
+- `POST /api/v1/ai-stock-positions/{id}/partial-exit`
+- `POST /api/v1/ai-stock-positions/{id}/close`
+- `GET/PATCH /api/v1/ai-stock-alerts`
+
+資料庫 migration：`backend/migrations/004_ai_stock_monitor.sql`。Railway 仍沿用既有 PostgreSQL、Redis、LINE Token 與 Channel Secret；另可設定 `AI_STOCK_MONITOR_SECONDS=60`。

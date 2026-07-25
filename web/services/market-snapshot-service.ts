@@ -1,4 +1,5 @@
 import { autoScreeningEngine } from "@/engines/AutoScreeningEngine";
+import { formalRecommendationEngine } from "@/engines/FormalRecommendationEngine";
 import { recentEvents, saveEvent } from "@/database/event-store";
 import type { MarketContext, MarketForceInput, MarketSnapshot, MetricCard, SystemEvent, TimelinePoint } from "@/lib/market-types";
 import { calculateMarketForce } from "@/market/MarketForceCalculator";
@@ -119,6 +120,7 @@ export async function buildMarketSnapshot(autoMode = true, forceRefresh = false)
         : row.score < 60 ? "leaving" as const : "steady" as const,
     };
   });
+  const featured = formalRecommendationEngine.select(rankings, context);
   const updatedAt = new Date().toISOString();
   const futuresChanges = [futures.change1m, futures.change3m, futures.change10m].every((value) => value != null)
     ? { change1m: futures.change1m!, change3m: futures.change3m!, change10m: futures.change10m! }
@@ -188,7 +190,7 @@ export async function buildMarketSnapshot(autoMode = true, forceRefresh = false)
     updatedAt,
     delaySeconds: status.open ? 2 : futuresMarketOpen ? 30 : 0,
     nextUpdateSeconds: status.open ? 10 : futuresMarketOpen ? Math.max(30, Number(process.env.FUTURES_REFRESH_SECONDS ?? 30)) : 60,
-    force, context, recommendations, activeStrategyIds, rankings, metrics,
+    force, context, recommendations, activeStrategyIds, rankings, featured, metrics,
     timeline: buildTimeline(context, 36), events: recentEvents(12),
   };
   if (autoMode) { cachedSnapshot = snapshot; cachedAt = now; }

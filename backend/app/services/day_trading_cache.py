@@ -63,5 +63,20 @@ class DayTradingCache:
         except RedisError:
             pass
 
+    def claim_once(self, key: str, ttl: int = 86_400) -> bool:
+        """Atomically claims a notification key; memory remains the safe fallback."""
+        memory_key = f"claim:{key}"
+        if memory_key in self._memory:
+            return False
+        if self._redis:
+            try:
+                claimed = self._redis.set(f"moneymoney:{memory_key}", "1", ex=ttl, nx=True)
+                if not claimed:
+                    return False
+            except RedisError:
+                pass
+        self._memory[memory_key] = "1"
+        return True
+
 
 day_trading_cache = DayTradingCache()

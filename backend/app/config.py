@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     mock_data_enabled: bool = True
     redis_url: str | None = None
     day_trading_stream_seconds: float = 2.0
+    ai_stock_monitor_seconds: int = 60
     twse_timezone: str = "Asia/Taipei"
     twse_holidays: str = ""
     line_channel_access_token: str = ""

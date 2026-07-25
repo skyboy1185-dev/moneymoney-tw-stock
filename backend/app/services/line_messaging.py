@@ -341,7 +341,7 @@ class LineNotificationDispatcher:
                     recent = db.scalar(select(LineDeliveryLog.id).where(
                         LineDeliveryLog.group_id == group_id,
                         LineDeliveryLog.symbol == event.symbol,
-                        LineDeliveryLog.event_type.in_(["long_entry", "short_entry"]),
+                        LineDeliveryLog.event_type.in_(["long_entry", "short_entry", "ai_initial_entry"]),
                         LineDeliveryLog.status.in_(["pending", "sent"]),
                         LineDeliveryLog.created_at >= cutoff,
                     ).limit(1))

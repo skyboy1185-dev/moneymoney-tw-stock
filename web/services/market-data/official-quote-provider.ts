@@ -52,11 +52,15 @@ async function fetchMisQuote(meta: StockMeta): Promise<StockQuote | null> {
   const low = number(row.l) ?? price;
   if (price == null || previousClose == null || open == null || high == null || low == null) return null;
   const change = price - previousClose;
+  const bestAsk = number(String(row.a ?? "").split("_")[0]);
+  const bestBid = number(String(row.b ?? "").split("_")[0]);
   return {
     symbol: meta.symbol, name: String(row.n || meta.name), date: isoDate(String(row.d)), time: String(row.t || row.ot || "13:30:00"),
     open, high, low, price, previousClose, change,
     changePercent: previousClose ? (change / previousClose) * 100 : 0,
     volume: Math.round((number(row.v) ?? 0) * 1000),
+    bestBid: bestBid && bestBid > 0 ? bestBid : undefined,
+    bestAsk: bestAsk && bestAsk > 0 ? bestAsk : undefined,
     source: "TWSE MIS", isRealtime: isTaiwanTradingTime(),
   };
 }

@@ -62,6 +62,8 @@ export interface StockQuote {
   change: number;
   changePercent: number;
   volume: number;
+  bestBid?: number;
+  bestAsk?: number;
   source: "TWSE MIS" | "TWSE OpenAPI" | "TPEx OpenAPI";
   isRealtime: boolean;
 }
