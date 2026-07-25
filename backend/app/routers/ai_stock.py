@@ -111,6 +111,7 @@ def list_monitors(user_id: str = Depends(_user_id), db: Session = Depends(get_db
     return {"items": [monitor_payload(item) for item in items]}
 
 
+@router.post("/ai-stock-monitor")
 @router.post("/ai-stock-monitor/sync")
 def sync_monitors(
     body: AIRecommendationSync,
