@@ -66,10 +66,17 @@ def _time(value: Any) -> str:
 def format_signal_message(signal: dict[str, Any]) -> str:
     reasons = "\n".join(f"- {item}" for item in signal.get("reasons", [])[:5]) or "- 暫無"
     warnings = "\n".join(f"- {item}" for item in signal.get("warnings", [])[:5]) or "- 暫無"
-    mode_notice = (
-        "【展示模式，非即時行情】\n\n"
-        if signal.get("dataMode") == "demo" or str(signal.get("dataSource", "")).startswith("mock")
-        else ""
+    source = str(signal.get("dataSource", "未提供"))
+    if signal.get("dataMode") == "official_quote_demo_strategy":
+        mode_notice = "【官方市場報價｜策略展示模式】\n\n"
+    elif signal.get("dataMode") == "demo" or source.startswith("mock"):
+        mode_notice = "【展示模式，非即時行情】\n\n"
+    else:
+        mode_notice = ""
+    quote_details = (
+        f"行情來源：{source}\n"
+        f"報價狀態：{signal.get('quoteStatus', '未提供')}\n"
+        f"行情時間：{_time(signal.get('quoteTimestamp'))}\n"
     )
     common = (
         f"股票：{signal['symbol']} {signal['stockName']}\n"
@@ -82,6 +89,7 @@ def format_signal_message(signal: dict[str, Any]) -> str:
         f"風險報酬比：1：{_number(signal.get('riskRewardRatio'), 1)}\n"
         f"訊號有效期限：{_time(signal.get('expiresAt'))}\n"
         f"訊號時間：{_time(signal.get('generatedAt'))}\n"
+        f"{quote_details}"
     )
     if signal.get("direction") == "short":
         return (

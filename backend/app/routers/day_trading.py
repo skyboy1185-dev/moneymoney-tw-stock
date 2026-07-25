@@ -614,10 +614,17 @@ async def trigger_scenario(
             item["id"] = f"simulation-friday-{nonce}-{item['symbol']}"
             item["generatedAt"] = (simulated_at - timedelta(seconds=20 + index * 8)).isoformat()
             item["expiresAt"] = (simulated_at + timedelta(minutes=5 + index)).isoformat()
-            item["quoteTimestamp"] = simulated_at.isoformat()
-            item["dataMode"] = "demo"
-            item["dataSource"] = "mock_opening_simulation"
-            item["warnings"] = ["展示模式，非即時行情", *item.get("warnings", [])]
+            if item.get("dataSource") == "TWSE MIS":
+                item["dataMode"] = "official_quote_demo_strategy"
+                item["warnings"] = [
+                    "行情為最近有效官方報價；開盤情境與策略條件為模擬",
+                    *item.get("warnings", []),
+                ]
+            else:
+                item["quoteTimestamp"] = simulated_at.isoformat()
+                item["dataMode"] = "demo"
+                item["dataSource"] = "mock_opening_simulation"
+                item["warnings"] = ["展示模式，非即時行情", *item.get("warnings", [])]
         candidates[0]["action"] = "突破買進"
         candidates[0]["confidenceScore"] = 92
         candidates[1]["action"] = "反彈放空"

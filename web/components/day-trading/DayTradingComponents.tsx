@@ -138,7 +138,9 @@ export function LiveSignalCard({
       <div><h4>風險警示</h4><SignalWarningList warnings={signal.warnings} /></div>
     </div>
     <div className="signal-meta">
-      <span>訊號 {time(signal.generatedAt)}</span><span>行情 {time(signal.quoteTimestamp)}</span>
+      <span>訊號 {time(signal.generatedAt)}</span>
+      <span>行情 {time(signal.quoteTimestamp)}</span>
+      <span>{signal.dataSource} · {signal.quoteStatus ?? "展示行情"}</span>
       <span>{compact(signal.volume)} 股</span>
     </div>
     <div className="signal-actions">

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from datetime import UTC, date, datetime, timedelta
+import logging
 from typing import Any
 
 from sqlalchemy import func, select, text
@@ -18,6 +19,10 @@ from .day_trading_schedule import (
     trading_session_state,
 )
 from .line_messaging import line_notification_dispatcher
+from .official_market_data import StockQuoteRequest, official_market_data_provider
+
+
+logger = logging.getLogger(__name__)
 
 
 class DayTradingAutomationSupervisor:
@@ -27,6 +32,7 @@ class DayTradingAutomationSupervisor:
         self._task: asyncio.Task[None] | None = None
         self._started_at: datetime | None = None
         self._last_scan_at: datetime | None = None
+        self._last_quote_refresh_at: datetime | None = None
         self._recommendations: list[dict[str, Any]] = []
         self._restored_signal_count = 0
         self._last_phase: str | None = None
@@ -78,6 +84,27 @@ class DayTradingAutomationSupervisor:
                     database_ok = True
             except Exception:
                 database_ok = False
+
+            quote_refresh_due = (
+                self._last_quote_refresh_at is None
+                or now - self._last_quote_refresh_at >= timedelta(seconds=10)
+            )
+            if quote_refresh_due:
+                try:
+                    seed_candidates = day_trading_engine.signals()
+                    quote_requests = [
+                        StockQuoteRequest(
+                            symbol=str(item["symbol"]),
+                            name=str(item["stockName"]),
+                            market=str(item["market"]),
+                        )
+                        for item in seed_candidates
+                    ]
+                    quotes = await official_market_data_provider.get_quotes(quote_requests)
+                    day_trading_engine.update_official_quotes(quotes)
+                except Exception:
+                    logger.exception("TWSE MIS quote refresh failed")
+                self._last_quote_refresh_at = now
 
             regime = day_trading_engine.market_regime()
             recovering = day_trading_engine.sample_count < config.minimum_live_samples

@@ -3,6 +3,8 @@ import threading
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from .official_market_data import OfficialStockQuote
+
 
 DISCLAIMER = "僅供研究參考，不構成投資建議。所有交易均須由使用者自行確認。"
 DATA_NOTICE = "展示模式，非即時行情"
@@ -90,10 +92,56 @@ class MockDayTradingEngine:
         self._tick = 0
         self._scenario: str | None = None
         self._emitted_keys: set[str] = set()
+        self._official_quotes: dict[str, OfficialStockQuote] = {}
 
     def trigger(self, scenario: str) -> None:
         with self._lock:
             self._scenario = scenario
+
+    def update_official_quotes(self, quotes: dict[str, OfficialStockQuote]) -> None:
+        if not quotes:
+            return
+        with self._lock:
+            self._official_quotes.update(quotes)
+
+    def apply_official_quotes(self, signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        with self._lock:
+            quotes = dict(self._official_quotes)
+        for item in signals:
+            quote = quotes.get(str(item["symbol"]))
+            if quote is None:
+                continue
+            mock_price = float(item.get("price") or 0)
+            ratio = quote.price / mock_price if mock_price > 0 else 1
+            for key in ("entryMin", "entryMax", "stopLoss", "target1", "target2"):
+                value = item.get(key)
+                if isinstance(value, (int, float)):
+                    item[key] = round(float(value) * ratio, 2)
+            item.update({
+                "stockName": quote.name,
+                "price": round(quote.price, 2),
+                "previousClose": round(quote.previous_close, 2),
+                "open": round(quote.open, 2),
+                "high": round(quote.high, 2),
+                "low": round(quote.low, 2),
+                "change": round(quote.change, 2),
+                "changePercent": round(quote.change_percent, 2),
+                "volume": quote.volume,
+                "turnover": round(quote.price * quote.volume),
+                "quoteTimestamp": quote.quote_timestamp,
+                "dataSource": quote.source,
+                "dataMode": "official_quote_demo_strategy",
+                "dataNotice": (
+                    "價格、漲跌與成交量取自 TWSE MIS；策略分數、進出場區間與技術條件仍為展示計算。"
+                ),
+                "quoteIsRealtime": quote.is_realtime,
+                "quoteStatus": "盤中行情" if quote.is_realtime else "最近有效行情／收盤",
+            })
+            warnings = list(item.get("warnings", []))
+            strategy_notice = "策略條件仍為展示計算，不可直接作為交易依據"
+            if strategy_notice not in warnings:
+                item["warnings"] = [strategy_notice, *warnings]
+        return signals
 
     def _now(self) -> datetime:
         return datetime.now(UTC)
@@ -105,7 +153,9 @@ class MockDayTradingEngine:
 
     def market_regime(self) -> dict[str, Any]:
         now = self._now()
-        scenario = self._scenario
+        with self._lock:
+            scenario = self._scenario
+            has_official_quotes = bool(self._official_quotes)
         data_status = "normal"
         delay = 1.2
         direction = "bull"
@@ -130,7 +180,11 @@ class MockDayTradingEngine:
             "reasons": ["指數站上 VWAP", "上漲家數高於下跌家數", "大單買盤增加", "5 分 K 均線偏多"],
             "dataStatus": data_status,
             "dataDelaySeconds": delay,
-            "dataSource": "Mock Streaming Data",
+            "dataSource": (
+                "TWSE MIS 個股報價＋Mock 大盤策略"
+                if has_official_quotes
+                else "Mock Streaming Data"
+            ),
             "marketOpen": True,
             "session": "09:00～13:30",
             "updatedAt": now.isoformat(),
@@ -276,7 +330,7 @@ class MockDayTradingEngine:
                 "liveSampleCount": tick,
             })
             item["price"] = round(float(item["price"]), 2)
-        return templates
+        return self.apply_official_quotes(templates)
 
     def quote_for(self, symbol: str) -> float | None:
         signal = next((item for item in self.signals() if item["symbol"] == symbol), None)

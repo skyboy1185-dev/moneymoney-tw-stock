@@ -88,6 +88,10 @@ export interface DayTradingSignal {
   quoteTimestamp: string;
   status: string;
   dataSource: string;
+  dataMode?: string;
+  dataNotice?: string;
+  quoteStatus?: string;
+  quoteIsRealtime?: boolean;
   spreadPercentage: number;
   tradingEligible: boolean;
   shortEligible: boolean;

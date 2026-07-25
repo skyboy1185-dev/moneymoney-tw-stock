@@ -58,6 +58,18 @@ def test_signal_and_emergency_messages_follow_required_format() -> None:
     })
     assert demo_message.startswith("【展示模式，非即時行情】")
 
+    official_message = format_signal_message({
+        **signal,
+        "dataMode": "official_quote_demo_strategy",
+        "dataSource": "TWSE MIS",
+        "quoteStatus": "最近有效行情／收盤",
+        "quoteTimestamp": "2026-07-24T13:30:00+08:00",
+    })
+    assert official_message.startswith("【官方市場報價｜策略展示模式】")
+    assert "行情來源：TWSE MIS" in official_message
+    assert "報價狀態：最近有效行情／收盤" in official_message
+    assert "行情時間：2026-07-24 13:30:00" in official_message
+
     emergency = format_position_message({
         "level": "emergency", "action": "立即全部回補", "price": 101,
         "reason": "突破停損價",
