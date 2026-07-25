@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from .day_trading_cache import day_trading_cache
 from .ai_stock_line_messaging import ai_stock_line_dispatcher
 from .line_messaging import LineNotificationEvent
+from .mock_market import stock_payload
 
 
 TAIPEI = ZoneInfo("Asia/Taipei")
@@ -167,6 +168,92 @@ def daily_position_summary_message(position: dict[str, Any]) -> str:
         "明日監控重點：優先檢查停損、移動停利與原始策略是否仍成立。\n\n"
         f"{DISCLAIMER}"
     )
+
+
+def friday_replay_messages(trade_date: date) -> list[tuple[str, str | None]]:
+    """Build an explicitly labelled demo replay without treating mock prices as live quotes."""
+    scenarios = [
+        {
+            "symbol": "2330",
+            "score": 87,
+            "strategy_fit": 85,
+            "health": 82,
+            "allocation": Decimal("18"),
+            "reasons": ["站上 MA20", "MACD 維持紅柱", "成交量配合趨勢"],
+            "warnings": ["展示模式價格，不是即時行情", "需等待價格進入正式進場區"],
+        },
+        {
+            "symbol": "2382",
+            "score": 82,
+            "strategy_fit": 80,
+            "health": 78,
+            "allocation": Decimal("15"),
+            "reasons": ["中期均線向上", "回檔量縮後轉強", "大盤適配度合格"],
+            "warnings": ["展示模式價格，不是即時行情", "正式通知仍須通過即時價差與流動性檢查"],
+        },
+    ]
+    messages: list[tuple[str, str | None]] = [(
+        "【AI選股機器人｜展示模擬回放】\n\n"
+        f"回放日期：{trade_date.isoformat()}（星期五）\n"
+        "大盤狀態：偏多（模擬）\n"
+        "今日 AI 精選：2／5 檔\n"
+        "流程：正式精選 → AI監控區 → 等待進場確認\n\n"
+        "本次使用 Mock 台股資料，只測試 LINE 訊息格式與傳送流程。\n"
+        "不是即時行情，也不是正式交易訊號。\n"
+        f"{DISCLAIMER}",
+        None,
+    )]
+    for scenario in scenarios:
+        payload = stock_payload(scenario["symbol"])
+        if payload is None:
+            continue
+        candle = next(
+            (item for item in payload["prices"] if item["date"] == trade_date.isoformat()),
+            payload["prices"][-1],
+        )
+        current_price = Decimal(str(candle["close"]))
+        entry_min = (current_price * Decimal(".995")).quantize(Decimal(".01"))
+        entry_max = (current_price * Decimal("1.005")).quantize(Decimal(".01"))
+        stop_loss = (current_price * Decimal(".96")).quantize(Decimal(".01"))
+        target_1 = (current_price * Decimal("1.06")).quantize(Decimal(".01"))
+        target_2 = (current_price * Decimal("1.10")).quantize(Decimal(".01"))
+        initial_percentage = scenario["allocation"] * Decimal(".4")
+        initial_amount = Decimal("1000000") * initial_percentage / 100
+        quantity = int((initial_amount / current_price).to_integral_value(rounding=ROUND_DOWN))
+        estimated_risk = (current_price - stop_loss) * quantity
+        monitor = {
+            "symbol": scenario["symbol"],
+            "stockName": payload["meta"]["name"],
+            "strategyName": "波段起漲 Bot",
+            "currentPrice": current_price,
+            "entryMin": entry_min,
+            "entryMax": entry_max,
+            "targetAllocationPercentage": scenario["allocation"],
+            "initialAllocationPercentage": initial_percentage,
+            "suggestedInitialAmount": initial_amount,
+            "suggestedInitialQuantity": quantity,
+            "estimatedRiskAmount": estimated_risk,
+            "stopLoss": stop_loss,
+            "target1": target_1,
+            "target2": target_2,
+            "totalScore": scenario["score"],
+            "strategyFit": scenario["strategy_fit"],
+            "healthScore": scenario["health"],
+            "riskRewardRatio": Decimal("2"),
+            "updatedAt": f"{trade_date.isoformat()}T10:15:00+08:00",
+            "expiredAt": f"{trade_date.isoformat()}T10:25:00+08:00",
+            "firstAddOnPercentage": scenario["allocation"] * Decimal(".3"),
+            "secondAddOnPercentage": scenario["allocation"] * Decimal(".3"),
+            "reasons": scenario["reasons"],
+            "warnings": scenario["warnings"],
+        }
+        messages.append((
+            f"【展示模擬｜{trade_date.isoformat()} 歷史回放】\n"
+            "以下不是正式訊號，不代表當日真實選股結果。\n\n"
+            f"{initial_entry_message(monitor)}",
+            scenario["symbol"],
+        ))
+    return messages
 
 
 async def push_ai_stock_message(

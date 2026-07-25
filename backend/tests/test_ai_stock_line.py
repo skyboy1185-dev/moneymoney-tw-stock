@@ -1,5 +1,8 @@
+from datetime import date
+
 from app.services.ai_stock_line import (
     daily_position_summary_message,
+    friday_replay_messages,
     initial_entry_message,
     position_action_message,
 )
@@ -50,3 +53,11 @@ def test_daily_position_summary_keeps_overnight_position_as_monitoring() -> None
     assert "隔夜持有" in message
     assert "剩餘可加碼：12%" in message
     assert "不構成投資建議" in message
+
+
+def test_friday_replay_is_clearly_labelled_as_mock_and_not_live() -> None:
+    messages = friday_replay_messages(date(2026, 7, 24))
+    assert len(messages) == 3
+    assert all("展示模擬" in message for message, _ in messages)
+    assert all("不是" in message for message, _ in messages)
+    assert [symbol for _, symbol in messages[1:]] == ["2330", "2382"]

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -18,6 +18,7 @@ from ..services.ai_stock_line_messaging import (
     AI_STOCK_OFFICIAL_ACCOUNT_NAME,
     ai_stock_line_dispatcher,
 )
+from ..services.ai_stock_line import friday_replay_messages
 from ..services.line_messaging import LineNotificationEvent, mask_group_id, verify_line_signature
 
 
@@ -229,6 +230,54 @@ async def test_ai_stock_line_notification(db: Session = Depends(get_db)) -> dict
     if sent == 0:
         raise HTTPException(status_code=502, detail="AI 選股 LINE 測試通知推送失敗")
     return {"ok": True, "sentGroups": sent}
+
+
+@router.post("/simulations/last-friday")
+async def simulate_last_friday_ai_stock_line(
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    groups = db.scalar(select(func.count()).select_from(AIStockLineGroup).where(
+        AIStockLineGroup.active.is_(True),
+    )) or 0
+    if not settings.ai_stock_line_target_group_id and groups == 0:
+        raise HTTPException(status_code=409, detail="尚未綁定任何 AI 選股 LINE 群組")
+    if not ai_stock_line_dispatcher.client.configured:
+        raise HTTPException(
+            status_code=409,
+            detail="AI 選股 LINE Channel Access Token 或 Secret 尚未設定",
+        )
+    cutoff = datetime.now(UTC) - timedelta(minutes=2)
+    recent = db.scalar(select(AIStockLineDeliveryLog.id).where(
+        AIStockLineDeliveryLog.event_type == "ai_stock_simulation",
+        AIStockLineDeliveryLog.created_at >= cutoff,
+    ).limit(1))
+    if recent is not None:
+        raise HTTPException(status_code=429, detail="模擬通知兩分鐘內只能執行一次")
+
+    replay_date = date(2026, 7, 24)
+    run_id = str(uuid4())
+    events = [
+        LineNotificationEvent(
+            event_type="ai_stock_simulation",
+            action="展示模擬回放",
+            message=message,
+            dedupe_key=f"ai-stock-simulation:{run_id}:{index}",
+            priority=index,
+            signal_id=f"simulation-{replay_date.isoformat()}-{index}",
+            symbol=symbol,
+        )
+        for index, (message, symbol) in enumerate(friday_replay_messages(replay_date))
+    ]
+    sent = await ai_stock_line_dispatcher.dispatch_many(events)
+    if sent == 0:
+        raise HTTPException(status_code=502, detail="AI 選股 LINE 模擬通知推送失敗")
+    return {
+        "ok": True,
+        "replayDate": replay_date.isoformat(),
+        "messages": len(events),
+        "sentDeliveries": sent,
+        "mode": "demo",
+    }
 
 
 @router.delete("/groups/{group_record_id}")
