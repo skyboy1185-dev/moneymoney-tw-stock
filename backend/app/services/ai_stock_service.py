@@ -428,7 +428,7 @@ def sync_recommendations(
         AIStockMonitor.monitor_status.in_(ACTIVE_MONITOR_STATUSES),
     )).all()
     for monitor in existing:
-        if monitor.signal_id not in active_ids and monitor.expired_at <= current:
+        if monitor.signal_id not in active_ids:
             monitor.monitor_status = "expired"
             monitor.updated_at = current
     try:

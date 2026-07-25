@@ -15,8 +15,10 @@ from app.services.ai_stock_service import (
     monitor_entry_failures,
     position_risk_failures,
     quote_is_fresh,
+    sync_recommendations,
     update_position_quote,
 )
+from app.schemas import AIRecommendationSyncItem
 from app.services.official_market_data import OfficialStockQuote
 
 
@@ -216,3 +218,53 @@ def test_position_schema_can_persist_across_sessions() -> None:
     with Session(engine) as restored:
         item = restored.query(PortfolioSettings).filter_by(user_id="persist-user").one()
         assert item.total_capital == Decimal("1000000.00")
+
+
+def _recommendation(signal_id: str, symbol: str) -> AIRecommendationSyncItem:
+    return AIRecommendationSyncItem(
+        signal_id=signal_id,
+        symbol=symbol,
+        stock_name=f"測試{symbol}",
+        market="上市",
+        industry="半導體",
+        strategy_name="波段起漲 Bot",
+        secondary_strategies=["多頭回檔 Bot"],
+        total_score=Decimal("88"),
+        strategy_fit=Decimal("84"),
+        market_fit=Decimal("76"),
+        health_score=Decimal("82"),
+        current_price=Decimal("100"),
+        entry_min=Decimal("99"),
+        entry_max=Decimal("101"),
+        stop_loss=Decimal("95"),
+        target_1=Decimal("110"),
+        target_2=Decimal("118"),
+        risk_reward_ratio=Decimal("2"),
+        reasons=["站上 MA20", "MACD 翻紅", "成交量增加"],
+        warnings=[],
+        quote_source="TWSE MIS",
+        quote_timestamp=datetime(2026, 7, 27, 10, 0, tzinfo=TAIPEI),
+        expired_at=datetime(2026, 7, 27, 10, 20, tzinfo=TAIPEI),
+    )
+
+
+def test_recommendation_replacement_expires_old_waiting_item_immediately() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 7, 27, 10, 0, 30, tzinfo=TAIPEI)
+    with Session(engine) as db:
+        sync_recommendations(
+            db,
+            "replace-user",
+            [_recommendation("signal-old-2301", "2301")],
+            now,
+        )
+        active = sync_recommendations(
+            db,
+            "replace-user",
+            [_recommendation("signal-new-2302", "2302")],
+            now,
+        )
+        assert [item.symbol for item in active] == ["2302"]
+        old = db.query(AIStockMonitor).filter_by(signal_id="signal-old-2301").one()
+        assert old.monitor_status == "expired"
