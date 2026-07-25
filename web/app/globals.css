@@ -141,6 +141,10 @@ footer span { color: #566177; }
 .range-tabs { display: flex; gap: 3px; padding: 3px; border: 1px solid var(--line); background: #0a111e; border-radius: 8px; }
 .range-tabs button { border: 0; border-radius: 5px; padding: 6px 11px; color: var(--muted); background: transparent; font-size: 11px; cursor: pointer; }
 .range-tabs button:hover, .range-tabs button.active { color: white; background: #28334c; }
+.custom-date-range { display: flex; align-items: center; justify-content: flex-end; gap: 9px; padding: 9px 18px; border-bottom: 1px solid var(--line); background: #0b121f; }
+.custom-date-range label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 10px; }
+.custom-date-range input { padding: 5px 7px; color: #dfe6f2; color-scheme: dark; background: #111b2c; border: 1px solid #2b3850; border-radius: 6px; font-size: 10px; }
+.custom-date-range > span, .custom-date-range small { color: #647086; font-size: 10px; }
 .chart-area { padding: 0 14px 12px; }
 .ma-toolbar { min-height: 55px; display: flex; align-items: center; flex-wrap: wrap; gap: 7px; padding: 9px 4px; border-bottom: 1px solid var(--line); }
 .ma-toolbar > span { color: var(--muted); margin-right: 5px; font-size: 11px; }
@@ -149,6 +153,55 @@ footer span { color: #566177; }
 .ma-toolbar button small { color: inherit; font-variant-numeric: tabular-nums; }
 .ma-toolbar button.active { color: #dce3ef; border-color: #3a4862; background: #172238; }
 .ma-toolbar button.active i { opacity: 1; box-shadow: 0 0 5px currentColor; }
+.close-confirmation { margin-left: auto; padding: 4px 8px; border-radius: 20px; font-size: 9px; font-weight: 700; }
+.close-confirmation.confirmed { color: #65d79e; background: rgba(35,200,117,.1); border: 1px solid rgba(35,200,117,.2); }
+.close-confirmation.pending { color: #f1bd5d; background: rgba(241,189,93,.1); border: 1px solid rgba(241,189,93,.22); }
+.technical-visual-grid { display: grid; grid-template-columns: minmax(0, 1fr) 278px; align-items: start; gap: 10px; margin-top: 8px; }
+.synchronized-chart-stack { min-width: 0; overflow: hidden; background: #111827; border: 1px solid #202c41; border-radius: 8px; }
+.shared-chart-values { min-height: 53px; display: flex; align-items: center; flex-wrap: wrap; gap: 5px 13px; padding: 8px 12px; color: #9ca8bb; background: #0b1320; border-bottom: 1px solid #26334a; font-size: 9px; font-variant-numeric: tabular-nums; }
+.shared-chart-values strong { color: white; font-size: 10px; }
+.chart-pane { position: relative; overflow: hidden; border-bottom: 1px solid #2a374d; }
+.chart-pane:last-child { border-bottom: 0; }
+.pane-title { position: absolute; z-index: 4; top: 7px; left: 9px; right: 72px; display: flex; align-items: center; flex-wrap: wrap; gap: 5px 9px; pointer-events: none; color: #7f8ca2; font-size: 9px; }
+.pane-title > strong { color: #e7ecf5; font-size: 10px; }
+.pane-title > span { display: flex; align-items: center; gap: 4px; }
+.pane-title > em { margin-left: auto; padding: 3px 5px; color: #aeb8c8; background: rgba(8,13,22,.78); border-radius: 4px; font-style: normal; font-variant-numeric: tabular-nums; }
+.pane-title i { width: 12px; height: 2px; display: inline-block; background: #ffd166; }
+.pane-title i.volume-ma20, .pane-title i.dea { background: #62a8ff; }
+.trend-label { display: inline-flex; padding: 3px 7px; border-radius: 20px; font-size: 9px; font-weight: 800; }
+.trend-label.positive { color: #ff8b8d; background: rgba(239,83,80,.13); }
+.trend-label.warning { color: #ffbd68; background: rgba(255,159,67,.13); }
+.trend-label.danger { color: #54d794; background: rgba(32,178,107,.13); }
+.trend-label.neutral { color: #bdc6d6; background: #222d40; }
+.technical-price-chart { width: 100%; height: 390px; }
+.technical-volume-chart { width: 100%; height: 165px; }
+.technical-macd-chart { width: 100%; height: 225px; }
+.technical-summary-card { padding: 13px; background: linear-gradient(160deg, #111a29, #0b1320); border: 1px solid #293650; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,.18); }
+.technical-summary-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.technical-summary-heading > div { display: flex; align-items: center; gap: 7px; color: #dfe6f1; font-size: 11px; font-weight: 800; }
+.technical-summary-heading > strong { font-size: 22px; line-height: 1; }
+.technical-summary-heading > strong.positive { color: #ff797c; }
+.technical-summary-heading > strong.warning { color: #ffb761; }
+.technical-summary-heading > strong.danger { color: #43d28d; }
+.technical-summary-heading > strong.neutral { color: #aeb9ca; }
+.technical-summary-heading small { color: #657187; font-size: 9px; }
+.health-meter { height: 4px; margin: 9px 0 11px; overflow: hidden; background: #202b3d; border-radius: 4px; }
+.health-meter i { height: 100%; display: block; background: linear-gradient(90deg, #35c67c, #f1bd5d, #ef5350); border-radius: inherit; }
+.technical-summary-card dl { margin: 0; display: grid; gap: 0; }
+.technical-summary-card dl > div { display: grid; grid-template-columns: 72px 1fr; align-items: start; gap: 7px; padding: 7px 0; border-bottom: 1px solid rgba(42,55,77,.6); }
+.technical-summary-card dt { color: #69768b; font-size: 9px; }
+.technical-summary-card dd { margin: 0; color: #c4ccda; font-size: 9px; line-height: 1.55; text-align: right; }
+.operation-box { margin-top: 10px; padding: 9px; border: 1px solid #2a374d; border-radius: 7px; background: #0a121e; }
+.operation-box.positive { border-color: rgba(239,83,80,.3); background: rgba(239,83,80,.06); }
+.operation-box.warning { border-color: rgba(255,159,67,.3); background: rgba(255,159,67,.06); }
+.operation-box.danger { border-color: rgba(32,178,107,.32); background: rgba(32,178,107,.06); }
+.operation-box strong { display: flex; align-items: center; gap: 5px; color: #dfe5ef; font-size: 10px; }
+.operation-box p { margin: 6px 0; color: #c2cbd9; font-size: 10px; line-height: 1.55; }
+.operation-box ul { margin: 0; padding-left: 15px; color: #77849a; font-size: 9px; line-height: 1.6; }
+.volume-explanation { margin-top: 9px; padding: 8px; color: #9ba7b9; background: rgba(98,168,255,.06); border-radius: 6px; font-size: 9px; line-height: 1.55; }
+.technical-risk, .divergence-alert { margin-top: 8px; display: flex; align-items: flex-start; gap: 6px; color: #d49f5f; font-size: 9px; line-height: 1.5; }
+.technical-risk svg, .divergence-alert svg { flex: 0 0 auto; }
+.divergence-alert { padding: 7px; color: #c6b3ff; background: rgba(159,140,255,.08); border: 1px solid rgba(159,140,255,.16); border-radius: 6px; }
 .chart-frame { position: relative; }
 .integrated-chart-stack { position: relative; overflow: hidden; margin-top: 8px; background: #111827; border: 1px solid #202c41; border-radius: 8px; }
 .integrated-chart-stack::after { content: ""; position: absolute; z-index: 2; left: 0; right: 0; top: 69.5%; height: 1px; pointer-events: none; background: #2a374d; box-shadow: 0 -5px 18px rgba(4,8,15,.28); }
@@ -287,6 +340,9 @@ footer span { color: #566177; }
   .analysis-sidebar { grid-template-columns: repeat(2, 1fr); }
   .basic-filter-grid { grid-template-columns: repeat(3, 1fr); }
   .technical-options { grid-template-columns: repeat(2, 1fr); }
+  .technical-visual-grid { grid-template-columns: 1fr; }
+  .technical-summary-card { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
+  .technical-summary-heading, .health-meter, .technical-summary-card dl { grid-column: 1 / -1; }
 }
 
 @media (max-width: 620px) {
@@ -302,7 +358,19 @@ footer span { color: #566177; }
   .chart-card-header { align-items: flex-start; flex-direction: column; }
   .range-tabs { width: 100%; }
   .range-tabs button { flex: 1; padding: 6px 3px; }
+  .custom-date-range { align-items: flex-start; flex-wrap: wrap; justify-content: flex-start; padding: 10px 14px; }
+  .custom-date-range label { width: calc(50% - 11px); align-items: flex-start; flex-direction: column; }
+  .custom-date-range input { width: 100%; }
+  .custom-date-range small { width: 100%; }
   .ma-toolbar { max-height: 105px; overflow-y: auto; }
+  .close-confirmation { margin-left: 0; }
+  .shared-chart-values { min-height: 72px; align-items: flex-start; flex-direction: column; gap: 3px; }
+  .technical-price-chart { height: 330px; }
+  .technical-volume-chart { height: 145px; }
+  .technical-macd-chart { height: 205px; }
+  .pane-title { right: 50px; }
+  .pane-title > em { width: 100%; margin-left: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .technical-summary-card { display: block; }
   .price-chart { height: 560px; }
   .macd-inline-header { right: 44px; align-items: flex-start; }
   .macd-inline-header .legend { display: grid; grid-template-columns: repeat(2, auto); gap: 4px 9px; padding: 4px 6px; background: rgba(8,13,22,.76); border-radius: 4px; }

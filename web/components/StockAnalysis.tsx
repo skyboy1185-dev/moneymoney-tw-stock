@@ -8,20 +8,32 @@ import { formatPercent, formatVolume, safeNumber, valueClass } from "@/lib/forma
 import type { StockPayload } from "@/lib/types";
 
 export function StockAnalysis({ data, loading, marketOpen = false }: { data: StockPayload; loading: boolean; marketOpen?: boolean }) {
-  const [range, setRange] = useState("1y");
+  const [range, setRange] = useState("120d");
+  const [customStart, setCustomStart] = useState("");
+  const [customEnd, setCustomEnd] = useState("");
   const latest = data.prices.at(-1)!;
   const previous = data.prices.at(-2)!;
   const change = latest.close - previous.close;
   const changePercent = (change / previous.close) * 100;
 
   const visibleData = useMemo(() => {
-    const count: Record<string, number> = { "1m": 22, "6m": 132, "1y": 264, "10y": 2640, "20y": 5280 };
-    const start = Math.max(0, data.prices.length - count[range]);
+    if (range === "custom") {
+      const indexes = data.prices
+        .map((price, index) => ({ date: price.date, index }))
+        .filter((item) => (!customStart || item.date >= customStart) && (!customEnd || item.date <= customEnd));
+      if (indexes.length) {
+        const start = indexes[0].index;
+        const end = indexes.at(-1)!.index + 1;
+        return { prices: data.prices.slice(start, end), indicators: data.indicators.slice(start, end) };
+      }
+    }
+    const count: Record<string, number> = { "20d": 20, "60d": 60, "120d": 120, "240d": 240 };
+    const start = Math.max(0, data.prices.length - (count[range] ?? 120));
     return {
       prices: data.prices.slice(start),
       indicators: data.indicators.slice(start),
     };
-  }, [data, range]);
+  }, [customEnd, customStart, data, range]);
 
   const quoteItems = [
     ["成交量", formatVolume(latest.volume)],
@@ -72,12 +84,26 @@ export function StockAnalysis({ data, loading, marketOpen = false }: { data: Sto
               <h2>日 K 線・成交量・MACD</h2>
             </div>
             <div className="range-tabs" aria-label="時間區間">
-              {[["1m", "1 個月"], ["6m", "6 個月"], ["1y", "1 年"], ["10y", "10 年"], ["20y", "20 年"]].map(([value, label]) => (
+              {[["20d", "20 日"], ["60d", "60 日"], ["120d", "120 日"], ["240d", "240 日"], ["custom", "自訂日期"]].map(([value, label]) => (
                 <button key={value} className={range === value ? "active" : ""} onClick={() => setRange(value)}>{label}</button>
               ))}
             </div>
           </div>
-          <StockChart prices={visibleData.prices} indicators={visibleData.indicators} marketOpen={marketOpen} />
+          {range === "custom" && (
+            <div className="custom-date-range">
+              <label>開始日期<input type="date" value={customStart} min={data.prices[0]?.date} max={customEnd || data.prices.at(-1)?.date} onChange={(event) => setCustomStart(event.target.value)} /></label>
+              <span>至</span>
+              <label>結束日期<input type="date" value={customEnd} min={customStart || data.prices[0]?.date} max={data.prices.at(-1)?.date} onChange={(event) => setCustomEnd(event.target.value)} /></label>
+              <small>目前顯示 {visibleData.prices.length} 個交易日</small>
+            </div>
+          )}
+          <StockChart
+            prices={visibleData.prices}
+            indicators={visibleData.indicators}
+            analysisPrices={data.prices}
+            analysisIndicators={data.indicators}
+            marketOpen={marketOpen}
+          />
         </section>
         <AnalysisSidebar data={data} marketOpen={marketOpen} />
       </div>
