@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     line_channel_secret: str = ""
     line_target_group_id: str = ""
     line_notifications_enabled: bool = True
+    ai_stock_line_channel_access_token: str = ""
+    ai_stock_line_channel_secret: str = ""
+    ai_stock_line_target_group_id: str = ""
+    ai_stock_line_notifications_enabled: bool = True
     public_web_url: str = ""
 
     @field_validator("database_url", mode="after")

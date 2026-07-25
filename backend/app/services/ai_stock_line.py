@@ -6,7 +6,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from .day_trading_cache import day_trading_cache
-from .line_messaging import LineNotificationEvent, line_notification_dispatcher
+from .ai_stock_line_messaging import ai_stock_line_dispatcher
+from .line_messaging import LineNotificationEvent
 
 
 TAIPEI = ZoneInfo("Asia/Taipei")
@@ -138,4 +139,4 @@ async def push_ai_stock_message(
         symbol=symbol,
         cooldown_entry=event_type == "ai_initial_entry",
     )
-    return await line_notification_dispatcher.dispatch_many([event])
+    return await ai_stock_line_dispatcher.dispatch_many([event])

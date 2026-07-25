@@ -279,6 +279,61 @@ class LineWebhookEvent(Base):
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class AIStockLineGroup(Base):
+    __tablename__ = "ai_stock_line_groups"
+    __table_args__ = (
+        UniqueConstraint("group_id", name="uq_ai_stock_line_group_id"),
+        Index("ix_ai_stock_line_groups_active", "active", "bound_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    group_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(120), default="AI 選股通知群組")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    bound_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    unbound_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_webhook_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_push_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AIStockLineDeliveryLog(Base):
+    __tablename__ = "ai_stock_line_delivery_logs"
+    __table_args__ = (
+        UniqueConstraint("group_id", "dedupe_key", name="uq_ai_stock_line_delivery_group_dedupe"),
+        Index("ix_ai_stock_line_delivery_status", "status", "priority", "created_at"),
+        Index("ix_ai_stock_line_delivery_symbol", "symbol", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    group_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    signal_id: Mapped[str | None] = mapped_column(String(120))
+    symbol: Mapped[str | None] = mapped_column(String(12))
+    action: Mapped[str] = mapped_column(String(80), nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False)
+    dedupe_key: Mapped[str] = mapped_column(String(220), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    response_status: Mapped[int | None] = mapped_column(Integer)
+    error_message: Mapped[str | None] = mapped_column(String(500))
+    message_preview: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AIStockLineWebhookEvent(Base):
+    __tablename__ = "ai_stock_line_webhook_events"
+    __table_args__ = (
+        UniqueConstraint("webhook_event_id", name="uq_ai_stock_line_webhook_event_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    webhook_event_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    group_id_masked: Mapped[str | None] = mapped_column(String(40))
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class PortfolioSettings(Base):
     __tablename__ = "portfolio_settings"
     __table_args__ = (UniqueConstraint("user_id", name="uq_portfolio_settings_user"),)

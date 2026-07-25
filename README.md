@@ -246,7 +246,7 @@ AI選股機器人仍採固定 TypeScript 規則，不呼叫 OpenAI。流程為�
 2. 候選清單保留條件符合分數至少 55 分的前 12 檔。
 3. 通過 75 分、策略適配度、官方盤中報價、流動性、價差與硬性風控後，最多選出 5 檔正式精選。
 4. 正式精選同步至 FastAPI `ai_stock_monitor`，先進入等待進場，不假設已成交。
-5. 形成買進確認後才透過既有 LINE Messaging API 發送通知。
+5. 形成買進確認後才透過「AI選股機器人」專用 LINE Messaging API 發送通知。
 6. 使用者在網站輸入實際價格、股數與時間後，才建立 PostgreSQL 持倉。
 7. 後端每 60 秒恢復並監控未結束持倉，停損、全部賣出、減碼優先於加碼與新買進。
 8. 使用者確認全部賣出後才將持倉移到已結束區。
@@ -266,4 +266,29 @@ AI選股機器人仍採固定 TypeScript 規則，不呼叫 OpenAI。流程為�
 - `POST /api/v1/ai-stock-positions/{id}/close`
 - `GET/PATCH /api/v1/ai-stock-alerts`
 
-資料庫 migration：`backend/migrations/004_ai_stock_monitor.sql`。Railway 仍沿用既有 PostgreSQL、Redis、LINE Token 與 Channel Secret；另可設定 `AI_STOCK_MONITOR_SECONDS=60`。
+資料庫 migration：`backend/migrations/004_ai_stock_monitor.sql` 與 `backend/migrations/005_ai_stock_line_channel.sql`。另可設定 `AI_STOCK_MONITOR_SECONDS=60`。
+
+### AI選股機器人獨立 LINE 官方帳號
+
+AI 選股與當沖使用不同的 LINE Channel。原本 `LINE_*` 環境變數繼續提供「AI當沖機器人」使用；新官方帳號「AI選股機器人」使用：
+
+```env
+AI_STOCK_LINE_CHANNEL_ACCESS_TOKEN=
+AI_STOCK_LINE_CHANNEL_SECRET=
+AI_STOCK_LINE_TARGET_GROUP_ID=
+AI_STOCK_LINE_NOTIFICATIONS_ENABLED=true
+PUBLIC_WEB_URL=https://moneymoney-tw-stock-production.up.railway.app
+```
+
+請將新官方帳號的 Token 與 Secret 直接填入 Railway 後端 Variables，不可填入前端、GitHub 或對話。`AI_STOCK_LINE_TARGET_GROUP_ID` 可以留空，改由群組 Webhook 安全綁定。
+
+新 Channel 的 LINE Developers Console 設定：
+
+1. Webhook URL：`https://moneymoney-tw-stock-production.up.railway.app/api/integrations/ai-stock-line/webhook`
+2. 開啟 `Use webhook` 與 `Allow bot to join group chats`。
+3. 將「AI選股機器人」官方帳號邀請進 AI 選股群組。
+4. 在群組輸入 `綁定AI選股機器人`。
+5. 輸入 `測試AI選股通知` 驗證推送。
+6. 需要解除時輸入 `解除AI選股通知`。
+
+AI 選股群組、推送紀錄及 Webhook 去重分別保存於 `ai_stock_line_groups`、`ai_stock_line_delivery_logs` 與 `ai_stock_line_webhook_events`，不會與當沖群組或通知紀錄混用。

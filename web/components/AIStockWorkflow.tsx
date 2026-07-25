@@ -9,7 +9,7 @@ import type {
   AIPortfolioSettings, AIStockDashboard, AIStockMonitor, AIStockPosition,
 } from "@/lib/ai-stock-types";
 import type { MarketSnapshot, RankingRow } from "@/lib/market-types";
-import { lineNotificationClient } from "@/services/line-notification-client";
+import { aiStockLineNotificationClient } from "@/services/line-notification-client";
 import { formatPercent, formatVolume, safeNumber, valueClass } from "@/lib/format";
 
 const STATUS: Record<string, string> = {
@@ -75,7 +75,7 @@ export function AIStockWorkflow({
     if (!userId) return;
     void load();
     const timer = window.setInterval(() => void load(true), 60_000);
-    void lineNotificationClient.status()
+    void aiStockLineNotificationClient.status()
       .then((status) => setLineState(status.connectionStatus === "connected" ? `已連線・${status.groups.length} 個群組` : "尚未綁定"))
       .catch(() => setLineState("LINE 狀態無法取得"));
     return () => window.clearInterval(timer);
@@ -205,7 +205,7 @@ export function AIStockWorkflow({
     <section className="ai-section ai-monitor-panel">
       <div className="ai-section-title">
         <div><LineChart size={17} /><div><h2>AI監控區</h2><p>持倉不受五檔限制，直到使用者確認全部賣出才結束</p></div></div>
-        <span className="line-status"><Bell size={13} />LINE {lineState}</span>
+        <span className="line-status"><Bell size={13} />AI選股 LINE {lineState}</span>
       </div>
       <div className="ai-monitor-tabs">
         <button className={tab === "waiting" ? "active" : ""} onClick={() => setTab("waiting")}>等待進場 {dashboard?.waiting.length ?? 0}</button>
@@ -248,7 +248,7 @@ export function AIStockWorkflow({
 
     <section className="ai-section ai-alert-log">
       <div className="ai-section-title"><div><Bell size={17} /><div><h2>AI 與 LINE 通知紀錄</h2><p>只記錄買進、加碼、減碼、賣出、停損與資料異常事件</p></div></div>
-        <button onClick={() => void lineNotificationClient.test().then(() => setMessage("LINE 測試通知已送出")).catch((reason) => setMessage(reason.message))}>測試 LINE</button>
+        <button onClick={() => void aiStockLineNotificationClient.test().then(() => setMessage("AI選股 LINE 測試通知已送出")).catch((reason) => setMessage(reason.message))}>測試 AI選股 LINE</button>
       </div>
       {!dashboard?.alerts.length ? <div className="ai-monitor-empty">目前沒有通知紀錄。</div>
         : <div className="ai-alert-list">{dashboard.alerts.slice(0, 20).map((alert) => <article key={alert.id} className={`alert-${alert.alertLevel}`}>

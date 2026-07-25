@@ -161,15 +161,24 @@ class LineApiResult:
 
 
 class LineMessagingClient:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        access_token_setting: str = "line_channel_access_token",
+        channel_secret_setting: str = "line_channel_secret",
+        enabled_setting: str = "line_notifications_enabled",
+    ) -> None:
         self._settings = get_settings()
+        self._access_token_setting = access_token_setting
+        self._channel_secret_setting = channel_secret_setting
+        self._enabled_setting = enabled_setting
 
     @property
     def configured(self) -> bool:
         return bool(
-            self._settings.line_notifications_enabled
-            and self._settings.line_channel_access_token
-            and self._settings.line_channel_secret
+            getattr(self._settings, self._enabled_setting)
+            and getattr(self._settings, self._access_token_setting)
+            and getattr(self._settings, self._channel_secret_setting)
         )
 
     async def _post(
@@ -180,7 +189,7 @@ class LineMessagingClient:
         *,
         retry_key: str | None = None,
     ) -> LineApiResult:
-        token = self._settings.line_channel_access_token
+        token = str(getattr(self._settings, self._access_token_setting))
         if not token:
             return LineApiResult(False, 0, None, "LINE Channel Access Token 尚未設定")
         last_status: int | None = None
