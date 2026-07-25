@@ -5,14 +5,23 @@ from app.config import Settings
 
 def test_macd_signal_only_on_zero_crossing_day() -> None:
     macd = [
-        {"histogram": -2.0},
-        {"histogram": -0.2},
-        {"histogram": 0.0},
-        {"histogram": 0.7},
-        {"histogram": -0.1},
-        {"histogram": -0.4},
+        {"dif": 1.0, "signal": 3.0, "histogram": -2.0},
+        {"dif": 2.8, "signal": 3.0, "histogram": -0.2},
+        {"dif": 3.0, "signal": 3.0, "histogram": 0.0},
+        {"dif": 3.7, "signal": 3.0, "histogram": 0.7},
+        {"dif": 2.9, "signal": 3.0, "histogram": -0.1},
+        {"dif": 2.6, "signal": 3.0, "histogram": -0.4},
     ]
     assert generate_macd_signals(macd) == [None, None, "entry", None, "exit", None]
+
+
+def test_macd_signal_is_suppressed_below_zero_axis() -> None:
+    macd = [
+        {"dif": -1.5, "signal": -1.4, "histogram": -0.1},
+        {"dif": -1.3, "signal": -1.3, "histogram": 0.0},
+        {"dif": -1.4, "signal": -1.3, "histogram": -0.1},
+    ]
+    assert generate_macd_signals(macd) == [None, None, None]
 
 
 def test_indicators_never_use_future_rows() -> None:

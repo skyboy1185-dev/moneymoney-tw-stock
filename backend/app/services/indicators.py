@@ -43,7 +43,11 @@ def generate_macd_signals(macd: list[dict[str, float | None]]) -> list[str | Non
     for index in range(1, len(macd)):
         previous = macd[index - 1]["histogram"]
         current = macd[index]["histogram"]
-        if previous is None or current is None:
+        dif = macd[index].get("dif")
+        signal = macd[index].get("signal")
+        if previous is None or current is None or dif is None or signal is None:
+            continue
+        if dif <= 0 or signal <= 0:
             continue
         if previous < 0 <= current:
             result[index] = "entry"

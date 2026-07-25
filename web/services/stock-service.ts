@@ -88,8 +88,12 @@ function generatePrices(meta: StockMeta, count = 1320): DailyPrice[] {
     const base = raw[patternStart - 1].close;
     for (let offset = 0; offset < patternDays - 1; offset += 1) {
       const progress = offset + 1;
-      const curve = 0.0012 * progress + 0.000035 * progress * progress;
-      const patternedClose = base * (forcedSignal === "entry" ? 1 - curve : 1 + curve);
+      const entryPeak = base * (1 + 0.006 * 20);
+      const patternedClose = forcedSignal === "entry"
+        ? progress <= 20
+          ? base * (1 + 0.006 * progress)
+          : entryPeak * (1 - 0.002 * (progress - 20))
+        : base * (1 + 0.005 * progress);
       const previousClose = offset === 0 ? base : raw[patternStart + offset - 1].close;
       raw[patternStart + offset] = {
         ...raw[patternStart + offset],
@@ -101,7 +105,7 @@ function generatePrices(meta: StockMeta, count = 1320): DailyPrice[] {
     }
     const lastIndex = raw.length - 1;
     const previousClose = raw[lastIndex - 1].close;
-    const lastClose = previousClose * (forcedSignal === "entry" ? 1.095 : 0.905);
+    const lastClose = previousClose * (forcedSignal === "entry" ? 1.098 : 0.94);
     raw[lastIndex] = {
       ...raw[lastIndex],
       open: previousClose,

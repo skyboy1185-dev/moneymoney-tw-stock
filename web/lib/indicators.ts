@@ -42,12 +42,14 @@ export function calculateMACD(
 }
 
 export function generateMACDSignals(
-  macd: Pick<MACDPoint, "date" | "histogram">[],
+  macd: Pick<MACDPoint, "date" | "dif" | "signal" | "histogram">[],
 ): { date: string; macdSignal: MacdSignalType }[] {
   return macd.map((point, index) => {
     if (index === 0) return { date: point.date, macdSignal: null };
     const previous = macd[index - 1].histogram;
     const current = point.histogram;
+    const aboveZeroAxis = point.dif > 0 && point.signal > 0;
+    if (!aboveZeroAxis) return { date: point.date, macdSignal: null };
     if (previous < 0 && current >= 0) return { date: point.date, macdSignal: "entry" };
     if (previous >= 0 && current < 0) return { date: point.date, macdSignal: "exit" };
     return { date: point.date, macdSignal: null };

@@ -159,8 +159,8 @@ export function StockChart({ prices, indicators, marketOpen = false }: { prices:
               <span><i className="dif" />DIF {safeNumber(latestIndicator?.dif, 3)}</span>
               <span><i className="signal" />Signal {safeNumber(latestIndicator?.signal, 3)}</span>
               <span>柱 {safeNumber(latestIndicator?.histogram, 3)}</span>
-              <span className="entry-point"><i />進場</span>
-              <span className="exit-point"><i />出場</span>
+              <span className="entry-point"><i />進場（零軸上）</span>
+              <span className="exit-point"><i />出場（零軸上）</span>
             </div>
           </div>
           {hoverPrice && hoverIndicator && (
@@ -172,7 +172,7 @@ export function StockChart({ prices, indicators, marketOpen = false }: { prices:
           )}
         </div>
       </div>
-      <p className="chart-help">K 線、成交量與 MACD 共用時間軸 · 滾輪縮放 · 拖曳平移 · 十字游標查看完整數值</p>
+      <p className="chart-help">訊號僅在 DIF 與 Signal 同時位於零軸上方且 Histogram 翻色時標記 · K 線、成交量與 MACD 共用時間軸</p>
     </div>
   );
 }

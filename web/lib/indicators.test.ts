@@ -30,24 +30,33 @@ describe("calculateMACD", () => {
 });
 
 describe("generateMACDSignals", () => {
-  it("僅在柱狀圖穿越零軸的第一天產生進場與出場", () => {
+  it("僅在 DIF 與 Signal 都位於零軸上方且柱狀圖翻色時產生進出場", () => {
     const result = generateMACDSignals([
-      { date: "01", histogram: -0.5 },
-      { date: "02", histogram: -0.1 },
-      { date: "03", histogram: 0 },
-      { date: "04", histogram: 0.4 },
-      { date: "05", histogram: -0.01 },
-      { date: "06", histogram: -0.3 },
+      { date: "01", dif: 1, signal: 1.5, histogram: -0.5 },
+      { date: "02", dif: 1.4, signal: 1.5, histogram: -0.1 },
+      { date: "03", dif: 1.6, signal: 1.6, histogram: 0 },
+      { date: "04", dif: 2, signal: 1.6, histogram: 0.4 },
+      { date: "05", dif: 1.59, signal: 1.6, histogram: -0.01 },
+      { date: "06", dif: 1.3, signal: 1.6, histogram: -0.3 },
     ]);
     expect(result.map((item) => item.macdSignal)).toEqual([null, null, "entry", null, "exit", null]);
   });
 
   it("零值視為紅柱，因此 0 到負值為出場", () => {
     const result = generateMACDSignals([
-      { date: "01", histogram: 0 },
-      { date: "02", histogram: -0.1 },
+      { date: "01", dif: 2, signal: 2, histogram: 0 },
+      { date: "02", dif: 1.9, signal: 2, histogram: -0.1 },
     ]);
     expect(result[1].macdSignal).toBe("exit");
+  });
+
+  it("DIF 或 Signal 位於零軸下方時不標記進場或出場", () => {
+    const result = generateMACDSignals([
+      { date: "01", dif: -1.5, signal: -1.4, histogram: -0.1 },
+      { date: "02", dif: -1.3, signal: -1.3, histogram: 0 },
+      { date: "03", dif: -1.4, signal: -1.3, histogram: -0.1 },
+    ]);
+    expect(result.map((item) => item.macdSignal)).toEqual([null, null, null]);
   });
 });
 
