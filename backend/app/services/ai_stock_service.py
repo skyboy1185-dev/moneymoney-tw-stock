@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, time
 from decimal import ROUND_DOWN, Decimal
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -19,6 +19,9 @@ from ..models import (
     PortfolioSettings,
 )
 from ..schemas import AIRecommendationSyncItem, PortfolioSettingsUpdate
+
+if TYPE_CHECKING:
+    from .official_market_data import OfficialStockQuote
 
 
 TAIPEI = ZoneInfo("Asia/Taipei")
@@ -37,6 +40,8 @@ ACTIVE_POSITION_STATUSES = {
 
 
 def decimal_value(value: Any) -> Decimal:
+    if value is None:
+        return Decimal("0")
     if isinstance(value, Decimal):
         return value
     return Decimal(str(value))
@@ -244,7 +249,10 @@ def monitor_payload(item: AIStockMonitor) -> dict[str, Any]:
     }
 
 
-def position_payload(item: AIStockPosition) -> dict[str, Any]:
+def position_payload(
+    item: AIStockPosition,
+    monitor: AIStockMonitor | None = None,
+) -> dict[str, Any]:
     return {
         "id": item.id, "monitorId": item.monitor_id, "symbol": item.symbol,
         "stockName": item.stock_name, "industry": item.industry, "direction": item.direction,
@@ -273,8 +281,55 @@ def position_payload(item: AIStockPosition) -> dict[str, Any]:
         "closedAt": item.closed_at.isoformat() if item.closed_at else None,
         "exitPrice": decimal_json(item.exit_price), "exitReason": item.exit_reason,
         "createdAt": item.created_at.isoformat(), "updatedAt": item.updated_at.isoformat(),
-        "quoteSource": "TWSE MIS", "quoteTimestamp": item.updated_at.isoformat(),
+        "quoteSource": monitor.quote_source if monitor else "未提供",
+        "quoteTimestamp": monitor.quote_timestamp.isoformat() if monitor else None,
     }
+
+
+def monitor_entry_failures(
+    monitor: AIStockMonitor,
+    quote: "OfficialStockQuote",
+    now: datetime | None = None,
+) -> list[str]:
+    current = now or datetime.now(UTC)
+    failures: list[str] = []
+    quote_time = datetime.fromisoformat(quote.quote_timestamp)
+    current_price = decimal_value(quote.price)
+    if not quote.is_realtime or not quote_is_fresh(quote_time, current):
+        failures.append("行情時間過期或不是盤中即時報價")
+    if decimal_value(monitor.total_score) < 75:
+        failures.append("條件符合分數低於 75")
+    if decimal_value(monitor.strategy_fit) < 75:
+        failures.append("策略適配度低於 75%")
+    if decimal_value(monitor.market_fit) < 55:
+        failures.append("大盤適配度不足")
+    if decimal_value(monitor.health_score) < 70:
+        failures.append("健康度低於 70")
+    if decimal_value(monitor.risk_reward_ratio) < Decimal("1.5"):
+        failures.append("風險報酬比低於 1：1.5")
+    if quote.volume < 500_000:
+        failures.append("成交量不足")
+    if current_price * quote.volume < Decimal("50000000"):
+        failures.append("成交金額不足")
+    if quote.best_bid is None or quote.best_ask is None:
+        failures.append("缺少即時買賣價差")
+    else:
+        spread = (decimal_value(quote.best_ask) - decimal_value(quote.best_bid)) / current_price * 100
+        if spread < 0 or spread > Decimal(".5"):
+            failures.append("買賣價差過大")
+    if current_price > decimal_value(monitor.entry_max):
+        failures.append("現價高於建議進場區上緣，禁止追價")
+    elif current_price < decimal_value(monitor.entry_min):
+        failures.append("現價尚未進入建議進場區")
+    if decimal_value(monitor.stop_loss) >= current_price:
+        failures.append("停損價格不合理")
+    if decimal_value(monitor.target_1) <= current_price:
+        failures.append("第一目標價格不合理")
+    if monitor.suggested_initial_quantity <= 0:
+        failures.append("資金配置或單筆風險不合格")
+    if monitor.expired_at <= current:
+        failures.append("訊號已失效")
+    return failures
 
 
 def add_on_payload(item: AIStockAddOn) -> dict[str, Any]:
@@ -403,8 +458,8 @@ def confirm_entry(
     ))
     if monitor is None:
         raise LookupError("AI監控項目不存在")
-    if monitor.monitor_status not in {"buy_confirmed", "monitoring", "near_entry"}:
-        raise ValueError("目前狀態不可確認買進")
+    if monitor.monitor_status != "buy_confirmed":
+        raise ValueError("尚未形成買進確認，不可建立持倉")
     existing = db.scalar(select(AIStockPosition).where(
         AIStockPosition.monitor_id == monitor.id,
         AIStockPosition.position_status.in_(ACTIVE_POSITION_STATUSES),
@@ -415,7 +470,24 @@ def confirm_entry(
     capital = decimal_value(settings.total_capital)
     invested = money(entry_price * quantity)
     stop = custom_stop_loss or decimal_value(monitor.stop_loss)
+    if stop >= entry_price:
+        raise ValueError("停損價格必須低於實際買進價格")
     estimated_risk = money(max(Decimal("0"), entry_price - stop) * quantity)
+    positions = active_positions(db, user_id)
+    total_invested = sum((decimal_value(value.invested_amount) for value in positions), Decimal("0"))
+    industry_invested = sum(
+        (decimal_value(value.invested_amount) for value in positions if value.industry == monitor.industry),
+        Decimal("0"),
+    )
+    total_risk = sum((decimal_value(value.estimated_risk_amount) for value in positions), Decimal("0"))
+    risk_flags = position_risk_failures(
+        settings,
+        invested_amount=invested,
+        estimated_risk=estimated_risk,
+        total_invested_after=total_invested + invested,
+        industry_invested_after=industry_invested + invested,
+        total_risk_after=total_risk + estimated_risk,
+    )
     item = AIStockPosition(
         user_id=user_id, monitor_id=monitor.id, symbol=monitor.symbol,
         stock_name=monitor.stock_name, industry=monitor.industry, direction="long",
@@ -423,14 +495,16 @@ def confirm_entry(
         original_quantity=quantity, remaining_quantity=quantity, entry_time=entry_time,
         stop_loss=stop, target_1=monitor.target_1, target_2=monitor.target_2,
         current_price=entry_price, highest_price=entry_price, lowest_price=entry_price,
-        health_score=monitor.health_score, latest_action="持有中", position_status="holding",
+        health_score=monitor.health_score,
+        latest_action="資金風險超標" if risk_flags else "持有中",
+        position_status="holding",
         target_allocation_percentage=monitor.target_allocation_percentage,
         initial_allocation_percentage=monitor.initial_allocation_percentage,
         current_allocation_percentage=percent(invested / capital * 100 if capital else Decimal("0")),
         invested_amount=invested,
         available_add_on_amount=money(max(Decimal("0"), capital * monitor.target_allocation_percentage / 100 - invested)),
         estimated_risk_amount=estimated_risk, line_exit_notifications=line_exit_notifications,
-        add_on_enabled=add_on_enabled and settings.allow_add_on,
+        add_on_enabled=add_on_enabled and settings.allow_add_on and not risk_flags,
         created_at=datetime.now(UTC), updated_at=datetime.now(UTC),
     )
     monitor.monitor_status = "position"
@@ -439,6 +513,32 @@ def confirm_entry(
     db.commit()
     db.refresh(item)
     return item
+
+
+def position_risk_failures(
+    settings: PortfolioSettings,
+    *,
+    invested_amount: Decimal,
+    estimated_risk: Decimal,
+    total_invested_after: Decimal,
+    industry_invested_after: Decimal,
+    total_risk_after: Decimal,
+) -> list[str]:
+    capital = decimal_value(settings.total_capital)
+    if capital <= 0:
+        return ["可投入總資金設定錯誤"]
+    failures: list[str] = []
+    if invested_amount > capital * decimal_value(settings.max_position_percentage) / 100:
+        failures.append("超過單檔最大資金占比")
+    if total_invested_after > capital * decimal_value(settings.max_total_exposure) / 100:
+        failures.append("超過整體持倉上限")
+    if industry_invested_after > capital * decimal_value(settings.max_industry_percentage) / 100:
+        failures.append("超過單一產業最大占比")
+    if estimated_risk > capital * decimal_value(settings.max_risk_per_trade) / 100:
+        failures.append("超過單筆最大可承受損失")
+    if total_risk_after > capital * decimal_value(settings.max_portfolio_risk) / 100:
+        failures.append("超過整體持倉最大風險")
+    return failures
 
 
 def evaluate_position_action(
@@ -537,9 +637,10 @@ def suggest_add_on(
         not settings.allow_add_on
         or not position.add_on_enabled
         or position.add_on_count >= settings.maximum_add_on_count
-        or decimal_value(position.current_price) <= decimal_value(position.average_cost)
+        or decimal_value(position.current_price) <= decimal_value(position.entry_price)
         or decimal_value(position.health_score) < (Decimal("75") if position.add_on_count == 0 else Decimal("80"))
         or position.latest_action != "續抱"
+        or decimal_value(position.available_add_on_amount) <= 0
     ):
         return None
     stage = position.add_on_count + 1
@@ -553,11 +654,56 @@ def suggest_add_on(
         return existing if existing.status == "suggested" else None
     ratio = settings.first_add_on_ratio if stage == 1 else settings.second_add_on_ratio
     suggested_percentage = decimal_value(position.target_allocation_percentage) * decimal_value(ratio) / 100
-    suggested_amount = money(decimal_value(settings.total_capital) * suggested_percentage / 100)
+    capital = decimal_value(settings.total_capital)
+    positions = active_positions(db, position.user_id)
+    total_invested = sum((decimal_value(item.invested_amount) for item in positions), Decimal("0"))
+    industry_invested = sum(
+        (decimal_value(item.invested_amount) for item in positions if item.industry == position.industry),
+        Decimal("0"),
+    )
+    position_room = max(
+        Decimal("0"),
+        capital * decimal_value(settings.max_position_percentage) / 100
+        - decimal_value(position.invested_amount),
+    )
+    portfolio_room = max(
+        Decimal("0"),
+        capital * decimal_value(settings.max_total_exposure) / 100 - total_invested,
+    )
+    industry_room = max(
+        Decimal("0"),
+        capital * decimal_value(settings.max_industry_percentage) / 100 - industry_invested,
+    )
+    suggested_amount = money(min(
+        capital * suggested_percentage / 100,
+        decimal_value(position.available_add_on_amount),
+        position_room,
+        portfolio_room,
+        industry_room,
+    ))
     quantity = int((suggested_amount / decimal_value(position.current_price)).to_integral_value(rounding=ROUND_DOWN))
     if quantity <= 0:
         return None
     new_stop = max(decimal_value(position.stop_loss), decimal_value(position.average_cost))
+    new_quantity = position.remaining_quantity + quantity
+    new_average = (
+        decimal_value(position.average_cost) * position.remaining_quantity
+        + decimal_value(position.current_price) * quantity
+    ) / new_quantity
+    new_risk = money(max(Decimal("0"), new_average - new_stop) * new_quantity)
+    other_risk = sum(
+        (decimal_value(item.estimated_risk_amount) for item in positions if item.id != position.id),
+        Decimal("0"),
+    )
+    if position_risk_failures(
+        settings,
+        invested_amount=decimal_value(position.invested_amount) + suggested_amount,
+        estimated_risk=new_risk,
+        total_invested_after=total_invested + suggested_amount,
+        industry_invested_after=industry_invested + suggested_amount,
+        total_risk_after=other_risk + new_risk,
+    ):
+        return None
     item = AIStockAddOn(
         position_id=position.id, add_on_number=stage,
         suggested_price_min=price(decimal_value(position.current_price) * Decimal(".995")),
@@ -585,6 +731,7 @@ def confirm_add_on(
     actual_price: Decimal,
     actual_quantity: int,
     add_on_time: datetime,
+    fee: Decimal,
     accept_new_stop_loss: bool,
 ) -> AIStockPosition:
     position = db.scalar(select(AIStockPosition).where(
@@ -598,12 +745,56 @@ def confirm_add_on(
     ).order_by(AIStockAddOn.add_on_number).limit(1))
     if add_on is None:
         raise ValueError("目前沒有待確認的加碼建議")
+    if actual_quantity > add_on.suggested_quantity:
+        raise ValueError("實際加碼股數不可超過本次風控核准數量")
+    settings = get_portfolio_settings(db, user_id)
+    if settings.prohibit_averaging_down and actual_price < decimal_value(position.entry_price):
+        raise ValueError("已啟用禁止虧損攤平，實際加碼價格不得低於初始進場價")
     previous_quantity = position.remaining_quantity
     new_quantity = previous_quantity + actual_quantity
     new_cost = price(
-        (decimal_value(position.average_cost) * previous_quantity + actual_price * actual_quantity)
+        (
+            decimal_value(position.average_cost) * previous_quantity
+            + actual_price * actual_quantity
+            + fee
+        )
         / new_quantity
     )
+    new_invested = money(
+        decimal_value(position.invested_amount) + actual_price * actual_quantity + fee
+    )
+    proposed_stop = (
+        max(decimal_value(position.stop_loss), decimal_value(add_on.new_stop_loss))
+        if accept_new_stop_loss else decimal_value(position.stop_loss)
+    )
+    new_risk = money(max(Decimal("0"), new_cost - proposed_stop) * new_quantity)
+    positions = active_positions(db, user_id)
+    other_invested = sum(
+        (decimal_value(item.invested_amount) for item in positions if item.id != position.id),
+        Decimal("0"),
+    )
+    industry_other = sum(
+        (
+            decimal_value(item.invested_amount)
+            for item in positions
+            if item.id != position.id and item.industry == position.industry
+        ),
+        Decimal("0"),
+    )
+    other_risk = sum(
+        (decimal_value(item.estimated_risk_amount) for item in positions if item.id != position.id),
+        Decimal("0"),
+    )
+    risk_flags = position_risk_failures(
+        settings,
+        invested_amount=new_invested,
+        estimated_risk=new_risk,
+        total_invested_after=other_invested + new_invested,
+        industry_invested_after=industry_other + new_invested,
+        total_risk_after=other_risk + new_risk,
+    )
+    if risk_flags:
+        raise ValueError(f"加碼後風險超標：{'、'.join(risk_flags)}")
     add_on.actual_price = actual_price
     add_on.actual_quantity = actual_quantity
     add_on.new_average_cost = new_cost
@@ -611,10 +802,18 @@ def confirm_add_on(
     add_on.status = "confirmed"
     position.remaining_quantity = new_quantity
     position.average_cost = new_cost
-    position.invested_amount = money(decimal_value(position.invested_amount) + actual_price * actual_quantity)
+    position.invested_amount = new_invested
     position.add_on_count += 1
     if accept_new_stop_loss:
-        position.stop_loss = max(decimal_value(position.stop_loss), decimal_value(add_on.new_stop_loss))
+        position.stop_loss = proposed_stop
+    capital = decimal_value(settings.total_capital)
+    position.current_allocation_percentage = percent(new_invested / capital * 100)
+    position.available_add_on_amount = money(max(
+        Decimal("0"),
+        capital * decimal_value(position.target_allocation_percentage) / 100 - new_invested,
+    ))
+    position.estimated_risk_amount = new_risk
+    position.industry_exposure_percentage = percent((industry_other + new_invested) / capital * 100)
     position.latest_action = "持有中"
     position.position_status = "holding"
     position.updated_at = datetime.now(UTC)
@@ -650,6 +849,20 @@ def partial_exit(
     position.remaining_quantity -= quantity
     position.realized_profit = money(decimal_value(position.realized_profit) + realized)
     position.invested_amount = money(decimal_value(position.average_cost) * position.remaining_quantity)
+    settings = get_portfolio_settings(db, user_id)
+    capital = decimal_value(settings.total_capital)
+    position.current_allocation_percentage = percent(
+        decimal_value(position.invested_amount) / capital * 100 if capital else Decimal("0")
+    )
+    position.estimated_risk_amount = money(
+        max(Decimal("0"), decimal_value(position.average_cost) - decimal_value(position.stop_loss))
+        * position.remaining_quantity
+    )
+    position.available_add_on_amount = money(max(
+        Decimal("0"),
+        capital * decimal_value(position.target_allocation_percentage) / 100
+        - decimal_value(position.invested_amount),
+    ))
     position.latest_action = "部分賣出後繼續監控"
     position.position_status = "holding"
     position.updated_at = datetime.now(UTC)
@@ -681,6 +894,10 @@ def close_position(
     position.realized_profit = money(decimal_value(position.realized_profit) + realized)
     position.remaining_quantity = 0
     position.unrealized_profit = Decimal("0")
+    position.invested_amount = Decimal("0")
+    position.current_allocation_percentage = Decimal("0")
+    position.available_add_on_amount = Decimal("0")
+    position.estimated_risk_amount = Decimal("0")
     position.position_status = "closed"
     position.latest_action = "已全部賣出"
     position.closed_at = exit_time

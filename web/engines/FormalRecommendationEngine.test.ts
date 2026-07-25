@@ -17,7 +17,9 @@ function row(symbol: string, score = 80, overrides: Partial<RankingRow> = {}): R
     rank: 0, symbol, name: symbol, market: "上市", industry: "半導體",
     price: 100, changePercent: 1, volume: 2_000_000,
     strategyId: "trend-start", strategyName: "波段起漲 Bot",
-    score, strategyFit: 82, secondaryStrategies: ["多頭回檔 Bot"],
+    score, scoreBreakdown: {
+      trend: 20, momentum: 16, volume: 12, strategy: 16, market: 8, risk: 8,
+    }, strategyFit: 82, secondaryStrategies: ["多頭回檔 Bot"],
     marketFit: 80, healthScore: 80, riskRewardRatio: 2,
     entryMin: 99, entryMax: 101, stopLoss: 95, target1: 108, target2: 110,
     turnover: 200_000_000, spreadPercentage: .2, distanceMa20: 3, rsi: 60,

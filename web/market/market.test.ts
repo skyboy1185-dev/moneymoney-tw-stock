@@ -7,7 +7,7 @@ import type { MarketContext } from "@/lib/market-types";
 
 const context: MarketContext = {
   score: 52, direction: "bull", confidence: 82, reasons: ["測試"],
-  regime: "wave_up", marketOpen: false,
+  regime: "wave_up", marketOpen: false, futuresMarketOpen: false,
   indexPrice: 24000, indexChange: 200, indexChangePercent: .8,
   futuresPrice: 24000, futuresChange: 180, futuresChangePercent: .75,
   adx: 28, indexAboveMa20: true, indexAboveMa60: true, indexAboveMa120: true,

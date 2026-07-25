@@ -136,6 +136,14 @@ export interface RankingRow {
   strategyId: string;
   strategyName: string;
   score: number;
+  scoreBreakdown: {
+    trend: number;
+    momentum: number;
+    volume: number;
+    strategy: number;
+    market: number;
+    risk: number;
+  };
   strategyFit: number;
   secondaryStrategies: string[];
   marketFit: number;

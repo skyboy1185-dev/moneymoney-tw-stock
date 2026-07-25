@@ -83,12 +83,19 @@ def get_dashboard(user_id: str = Depends(_user_id), db: Session = Depends(get_db
     alerts = db.scalars(select(AIStockAlert).where(
         AIStockAlert.user_id == user_id,
     ).order_by(AIStockAlert.created_at.desc()).limit(50)).all()
+    monitor_map = {item.id: item for item in monitors}
     return {
         "settings": settings_payload(get_portfolio_settings(db, user_id)),
         "allocation": {**allocation_summary(db, user_id), "cacheMode": day_trading_cache.mode, "cacheHealthy": day_trading_cache.healthy},
         "waiting": [monitor_payload(item) for item in monitors if item.monitor_status in ACTIVE_MONITOR_STATUSES],
-        "positions": [position_payload(item) for item in positions if item.position_status in ACTIVE_POSITION_STATUSES],
-        "ended": [position_payload(item) for item in positions if item.position_status == "closed"],
+        "positions": [
+            position_payload(item, monitor_map.get(item.monitor_id))
+            for item in positions if item.position_status in ACTIVE_POSITION_STATUSES
+        ],
+        "ended": [
+            position_payload(item, monitor_map.get(item.monitor_id))
+            for item in positions if item.position_status == "closed"
+        ],
         "alerts": [{
             "id": item.id, "monitorId": item.monitor_id, "positionId": item.position_id,
             "signalId": item.signal_id, "alertType": item.alert_type,
@@ -137,7 +144,7 @@ def confirm_monitor_entry(
             line_exit_notifications=body.line_exit_notifications,
             add_on_enabled=body.add_on_enabled,
         )
-        return position_payload(item)
+        return position_payload(item, db.get(AIStockMonitor, item.monitor_id))
     except LookupError as error:
         raise _not_found(str(error)) from error
     except ValueError as error:
@@ -156,6 +163,25 @@ def ignore_monitor(
     if item is None:
         raise _not_found("AI監控項目不存在")
     item.monitor_status = "ignored"
+    item.updated_at = datetime.now(UTC)
+    db.commit()
+    return monitor_payload(item)
+
+
+@router.post("/ai-stock-monitor/{monitor_id}/continue-monitoring")
+def continue_monitor(
+    monitor_id: int,
+    user_id: str = Depends(_user_id),
+    db: Session = Depends(get_db),
+) -> dict:
+    item = db.scalar(select(AIStockMonitor).where(
+        AIStockMonitor.id == monitor_id, AIStockMonitor.user_id == user_id,
+    ))
+    if item is None:
+        raise _not_found("AI監控項目不存在")
+    if item.monitor_status in {"position", "ended", "removed"}:
+        raise HTTPException(status_code=409, detail="目前狀態不可切回等待進場")
+    item.monitor_status = "monitoring"
     item.updated_at = datetime.now(UTC)
     db.commit()
     return monitor_payload(item)
@@ -189,7 +215,15 @@ def list_positions(user_id: str = Depends(_user_id), db: Session = Depends(get_d
     items = db.scalars(select(AIStockPosition).where(
         AIStockPosition.user_id == user_id,
     ).order_by(AIStockPosition.updated_at.desc())).all()
-    return {"items": [position_payload(item) for item in items]}
+    monitor_ids = {item.monitor_id for item in items}
+    monitors = {
+        item.id: item for item in db.scalars(
+            select(AIStockMonitor).where(AIStockMonitor.id.in_(monitor_ids))
+        ).all()
+    } if monitor_ids else {}
+    return {"items": [
+        position_payload(item, monitors.get(item.monitor_id)) for item in items
+    ]}
 
 
 @router.get("/ai-stock-positions/{position_id}")
@@ -203,7 +237,7 @@ def get_position(
     ))
     if item is None:
         raise _not_found("持倉不存在")
-    return position_payload(item)
+    return position_payload(item, db.get(AIStockMonitor, item.monitor_id))
 
 
 @router.patch("/ai-stock-positions/{position_id}")
@@ -219,11 +253,19 @@ def patch_position(
     if item is None:
         raise _not_found("持倉不存在")
     values = body.model_dump(exclude_none=True)
+    if "stop_loss" in values and values["stop_loss"] < item.stop_loss:
+        raise HTTPException(status_code=400, detail="持倉停損不可向下放寬")
+    if (
+        "trailing_stop" in values
+        and item.trailing_stop is not None
+        and values["trailing_stop"] < item.trailing_stop
+    ):
+        raise HTTPException(status_code=400, detail="移動停利只能向上調整")
     for key, value in values.items():
         setattr(item, key, value)
     item.updated_at = datetime.now(UTC)
     db.commit()
-    return position_payload(item)
+    return position_payload(item, db.get(AIStockMonitor, item.monitor_id))
 
 
 @router.post("/ai-stock-positions/{position_id}/calculate-allocation")
@@ -264,11 +306,13 @@ def confirm_position_add_on(
     db: Session = Depends(get_db),
 ) -> dict:
     try:
-        return position_payload(confirm_add_on(
+        item = confirm_add_on(
             db, user_id, position_id, actual_price=body.actual_price,
             actual_quantity=body.actual_quantity, add_on_time=body.add_on_time,
+            fee=body.fee,
             accept_new_stop_loss=body.accept_new_stop_loss,
-        ))
+        )
+        return position_payload(item, db.get(AIStockMonitor, item.monitor_id))
     except LookupError as error:
         raise _not_found(str(error)) from error
     except ValueError as error:
@@ -289,6 +333,11 @@ def decline_add_on(
     if item is None:
         raise _not_found("待處理加碼建議不存在")
     item.status = "declined"
+    position = db.get(AIStockPosition, item.position_id)
+    if position:
+        position.latest_action = "持有中"
+        position.position_status = "holding"
+        position.updated_at = datetime.now(UTC)
     db.commit()
     return add_on_payload(item)
 
@@ -308,7 +357,7 @@ def disable_add_on(
     item.latest_action = "禁止加碼"
     item.updated_at = datetime.now(UTC)
     db.commit()
-    return position_payload(item)
+    return position_payload(item, db.get(AIStockMonitor, item.monitor_id))
 
 
 @router.post("/ai-stock-positions/{position_id}/partial-exit")
@@ -319,11 +368,12 @@ def confirm_partial_exit(
     db: Session = Depends(get_db),
 ) -> dict:
     try:
-        return position_payload(partial_exit(
+        item = partial_exit(
             db, user_id, position_id, quantity=body.quantity,
             exit_price=body.exit_price, exit_time=body.exit_time,
             fee=body.fee, tax=body.tax,
-        ))
+        )
+        return position_payload(item, db.get(AIStockMonitor, item.monitor_id))
     except LookupError as error:
         raise _not_found(str(error)) from error
     except ValueError as error:
@@ -338,11 +388,12 @@ def confirm_close(
     db: Session = Depends(get_db),
 ) -> dict:
     try:
-        return position_payload(close_position(
+        item = close_position(
             db, user_id, position_id, quantity=body.quantity,
             exit_price=body.exit_price, exit_time=body.exit_time,
             fee=body.fee, tax=body.tax, reason=body.reason,
-        ))
+        )
+        return position_payload(item, db.get(AIStockMonitor, item.monitor_id))
     except LookupError as error:
         raise _not_found(str(error)) from error
     except ValueError as error:
@@ -366,7 +417,7 @@ def continue_monitoring(
     item.latest_action = "持有中"
     item.updated_at = datetime.now(UTC)
     db.commit()
-    return position_payload(item)
+    return position_payload(item, db.get(AIStockMonitor, item.monitor_id))
 
 
 @router.get("/ai-stock-alerts")

@@ -10,7 +10,7 @@ const ALLOWED = [
   /^portfolio\/allocation$/,
   /^ai-stock-monitor$/,
   /^ai-stock-monitor\/\d+$/,
-  /^ai-stock-monitor\/\d+\/(confirm-entry|ignore)$/,
+  /^ai-stock-monitor\/\d+\/(confirm-entry|ignore|continue-monitoring)$/,
   /^ai-stock-positions$/,
   /^ai-stock-positions\/\d+$/,
   /^ai-stock-positions\/\d+\/(calculate-allocation|confirm-add-on|decline-add-on|disable-add-on|add-ons|partial-exit|close|continue-monitoring)$/,

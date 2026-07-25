@@ -105,7 +105,7 @@ export interface AIStockPosition {
   estimatedRiskAmount: number;
   addOnEnabled: boolean;
   quoteSource: string;
-  quoteTimestamp: string;
+  quoteTimestamp: string | null;
 }
 
 export interface AIStockAlert {

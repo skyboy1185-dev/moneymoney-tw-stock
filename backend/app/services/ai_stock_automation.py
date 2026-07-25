@@ -13,6 +13,7 @@ from ..database import SessionLocal
 from ..models import AIStockAlert, AIStockMonitor, AIStockPosition
 from .ai_stock_line import (
     add_on_message,
+    daily_position_summary_message,
     initial_entry_message,
     position_action_message,
     push_ai_stock_message,
@@ -23,6 +24,7 @@ from .ai_stock_service import (
     create_alert,
     decimal_value,
     get_portfolio_settings,
+    monitor_entry_failures,
     monitor_payload,
     position_payload,
     quote_is_fresh,
@@ -119,15 +121,70 @@ class AIStockAutomation:
 
         if session != "open":
             if session == "after_close":
-                with SessionLocal() as db:
-                    for position in db.scalars(select(AIStockPosition).where(
-                        AIStockPosition.position_status.in_(ACTIVE_POSITION_STATUSES),
-                    )).all():
+                close_requests = [
+                    StockQuoteRequest(
+                        position.symbol,
+                        position.stock_name,
+                        monitor_map[position.monitor_id].market
+                        if position.monitor_id in monitor_map else "上市",
+                    )
+                    for position in positions
+                ]
+                quotes = await official_market_data_provider.get_quotes(close_requests)
+                for seed in positions:
+                    with SessionLocal() as db:
+                        position = db.get(AIStockPosition, seed.id)
+                        if position is None or position.position_status not in ACTIVE_POSITION_STATUSES:
+                            continue
+                        monitor = db.get(AIStockMonitor, position.monitor_id)
+                        quote = quotes.get(position.symbol)
+                        if quote is not None:
+                            quote_time = datetime.fromisoformat(quote.quote_timestamp)
+                            update_position_quote(
+                                position,
+                                decimal_value(quote.price),
+                                quote_valid=False,
+                                now=current,
+                            )
+                            if monitor:
+                                monitor.quote_source = quote.source
+                                monitor.quote_timestamp = quote_time
+                                monitor.current_price = decimal_value(quote.price)
+                                monitor.updated_at = current
                         position.overnight_status = True
                         position.position_status = "overnight"
                         position.latest_action = "隔夜持有"
                         position.updated_at = current
-                    db.commit()
+                        db.commit()
+                        settings = get_portfolio_settings(db, position.user_id)
+                        if not settings.daily_summary_enabled:
+                            continue
+                        local_date = current.astimezone(TAIPEI).date().isoformat()
+                        signal_id = f"position-{position.id}-daily-summary-{local_date}"
+                        alert = create_alert(
+                            db,
+                            user_id=position.user_id,
+                            monitor_id=position.monitor_id,
+                            position_id=position.id,
+                            signal_id=signal_id,
+                            alert_type="daily_summary",
+                            alert_level="general",
+                            action="每日持倉摘要",
+                            current_price=decimal_value(position.current_price),
+                            reasons=["收盤後持倉仍未結束，隔日將自動恢復監控"],
+                        )
+                        if alert:
+                            await self._push_alert(
+                                alert.id,
+                                event_type="closing_summary",
+                                action="每日持倉摘要",
+                                message=daily_position_summary_message(
+                                    position_payload(position, monitor)
+                                ),
+                                signal_id=signal_id,
+                                symbol=position.symbol,
+                                priority=8,
+                            )
             self._state["lastRunAt"] = current.isoformat()
             return
 
@@ -141,59 +198,7 @@ class AIStockAutomation:
             )
         quotes = await official_market_data_provider.get_quotes(list(requests.values()))
 
-        for monitor_seed in monitors:
-            quote = quotes.get(monitor_seed.symbol)
-            with SessionLocal() as db:
-                monitor = db.get(AIStockMonitor, monitor_seed.id)
-                if monitor is None or monitor.monitor_status not in ACTIVE_MONITOR_STATUSES:
-                    continue
-                if monitor.expired_at <= current:
-                    monitor.monitor_status = "expired"
-                    monitor.updated_at = current
-                    db.commit()
-                    continue
-                if quote is None:
-                    monitor.monitor_status = "data_abnormal"
-                    monitor.updated_at = current
-                    db.commit()
-                    continue
-                quote_time = datetime.fromisoformat(quote.quote_timestamp)
-                valid = quote.is_realtime and quote_is_fresh(quote_time, current)
-                monitor.current_price = decimal_value(quote.price)
-                monitor.quote_timestamp = quote_time
-                monitor.quote_source = quote.source
-                monitor.updated_at = current
-                if not valid:
-                    monitor.monitor_status = "data_abnormal"
-                    db.commit()
-                    continue
-                was_status = monitor.monitor_status
-                current_price = decimal_value(quote.price)
-                if current_price > decimal_value(monitor.entry_max):
-                    monitor.monitor_status = "chase_blocked"
-                elif decimal_value(monitor.entry_min) <= current_price <= decimal_value(monitor.entry_max):
-                    monitor.monitor_status = "buy_confirmed"
-                elif current_price < decimal_value(monitor.entry_min):
-                    monitor.monitor_status = "waiting_breakout"
-                else:
-                    monitor.monitor_status = "near_entry"
-                db.commit()
-                if monitor.monitor_status == "buy_confirmed" and was_status != "buy_confirmed":
-                    payload = monitor_payload(monitor)
-                    alert = create_alert(
-                        db, user_id=monitor.user_id, monitor_id=monitor.id, position_id=None,
-                        signal_id=monitor.signal_id, alert_type="initial_entry",
-                        alert_level="confirmation", action="初始買進確認",
-                        current_price=current_price,
-                        reasons=json_list(monitor.reasons_json),
-                    )
-                    if alert:
-                        await self._push_alert(
-                            alert.id, event_type="ai_initial_entry", action="初始買進確認",
-                            message=initial_entry_message(payload), signal_id=monitor.signal_id,
-                            symbol=monitor.symbol, priority=6,
-                        )
-
+        # Existing positions always run first: stop-loss and exits outrank add-ons and new entries.
         for position_seed in positions:
             quote = quotes.get(position_seed.symbol)
             with SessionLocal() as db:
@@ -206,14 +211,21 @@ class AIStockAutomation:
                     quote_time = datetime.fromisoformat(quote.quote_timestamp)
                     quote_valid = quote.is_realtime and quote_is_fresh(quote_time, current)
                     current_price = decimal_value(quote.price)
+                    if monitor:
+                        monitor.quote_source = quote.source
+                        monitor.quote_timestamp = quote_time
+                        monitor.current_price = current_price
+                        monitor.updated_at = current
                 else:
                     current_price = decimal_value(position.current_price)
                 previous_action = position.latest_action
+                if quote_valid and position.overnight_status:
+                    position.overnight_status = False
                 action, reasons = update_position_quote(
                     position, current_price, quote_valid=quote_valid, now=current,
                 )
                 db.commit()
-                payload = position_payload(position)
+                payload = position_payload(position, monitor)
                 if action in {"立即停損", "建議全部賣出", "建議減碼 50%"} and action != previous_action:
                     priority = 0 if action == "立即停損" else 1 if action == "建議全部賣出" else 2
                     signal_id = f"position-{position.id}-{current.astimezone(TAIPEI).date().isoformat()}-{action}"
@@ -231,33 +243,150 @@ class AIStockAutomation:
                             action=action, message=position_action_message(payload, action, reasons),
                             signal_id=signal_id, symbol=position.symbol, priority=priority,
                         )
-                elif action == "續抱" and quote_valid:
-                    settings = get_portfolio_settings(db, position.user_id)
-                    add_on = suggest_add_on(db, position, settings)
-                    if add_on:
-                        add_on_data = {
-                            "addOnNumber": add_on.add_on_number,
-                            "suggestedPercentage": float(add_on.suggested_percentage),
-                            "suggestedAmount": float(add_on.suggested_amount),
-                            "suggestedQuantity": add_on.suggested_quantity,
-                            "suggestedPriceMin": float(add_on.suggested_price_min),
-                            "suggestedPriceMax": float(add_on.suggested_price_max),
-                            "newStopLoss": float(add_on.new_stop_loss),
-                        }
-                        alert = create_alert(
-                            db, user_id=position.user_id, monitor_id=position.monitor_id,
-                            position_id=position.id, signal_id=add_on.signal_id,
-                            alert_type="add_on", alert_level="confirmation",
-                            action=f"第{add_on.add_on_number}次加碼確認",
-                            current_price=current_price, reasons=["順勢突破確認", "健康度與部位風險合格"],
+                elif action == "資料異常" and action != previous_action:
+                    local_hour = current.astimezone(TAIPEI).strftime("%Y-%m-%d-%H")
+                    signal_id = f"position-{position.id}-data-abnormal-{local_hour}"
+                    alert = create_alert(
+                        db,
+                        user_id=position.user_id,
+                        monitor_id=position.monitor_id,
+                        position_id=position.id,
+                        signal_id=signal_id,
+                        alert_type="data_alert",
+                        alert_level="important",
+                        action="行情資料異常",
+                        current_price=current_price,
+                        reasons=reasons,
+                    )
+                    if alert and position.line_exit_notifications:
+                        await self._push_alert(
+                            alert.id,
+                            event_type="data_alert",
+                            action="行情資料異常",
+                            message=position_action_message(payload, "行情資料異常", reasons),
+                            signal_id=signal_id,
+                            symbol=position.symbol,
+                            priority=3,
                         )
-                        if alert:
-                            await self._push_alert(
-                                alert.id, event_type="ai_add_on",
-                                action=f"第{add_on.add_on_number}次加碼確認",
-                                message=add_on_message(position_payload(position), add_on_data),
-                                signal_id=add_on.signal_id, symbol=position.symbol, priority=5,
-                            )
+        # Add-on checks are a separate second pass, after every position's exit check.
+        for position_seed in positions:
+            quote = quotes.get(position_seed.symbol)
+            if quote is None:
+                continue
+            quote_time = datetime.fromisoformat(quote.quote_timestamp)
+            if not quote.is_realtime or not quote_is_fresh(quote_time, current):
+                continue
+            with SessionLocal() as db:
+                position = db.get(AIStockPosition, position_seed.id)
+                if (
+                    position is None
+                    or position.position_status not in ACTIVE_POSITION_STATUSES
+                    or position.latest_action != "續抱"
+                ):
+                    continue
+                monitor = db.get(AIStockMonitor, position.monitor_id)
+                settings = get_portfolio_settings(db, position.user_id)
+                add_on = suggest_add_on(db, position, settings)
+                if add_on is None:
+                    continue
+                add_on_data = {
+                    "addOnNumber": add_on.add_on_number,
+                    "suggestedPercentage": float(add_on.suggested_percentage),
+                    "suggestedAmount": float(add_on.suggested_amount),
+                    "suggestedQuantity": add_on.suggested_quantity,
+                    "suggestedPriceMin": float(add_on.suggested_price_min),
+                    "suggestedPriceMax": float(add_on.suggested_price_max),
+                    "newStopLoss": float(add_on.new_stop_loss),
+                }
+                alert = create_alert(
+                    db,
+                    user_id=position.user_id,
+                    monitor_id=position.monitor_id,
+                    position_id=position.id,
+                    signal_id=add_on.signal_id,
+                    alert_type="add_on",
+                    alert_level="confirmation",
+                    action=f"第{add_on.add_on_number}次加碼確認",
+                    current_price=decimal_value(position.current_price),
+                    reasons=["順勢突破確認", "健康度與部位風險合格"],
+                )
+                if alert:
+                    await self._push_alert(
+                        alert.id,
+                        event_type="ai_add_on",
+                        action=f"第{add_on.add_on_number}次加碼確認",
+                        message=add_on_message(position_payload(position, monitor), add_on_data),
+                        signal_id=add_on.signal_id,
+                        symbol=position.symbol,
+                        priority=5,
+                    )
+
+        # New entry checks run only after every open position has completed its exit checks.
+        for monitor_seed in monitors:
+            quote = quotes.get(monitor_seed.symbol)
+            with SessionLocal() as db:
+                monitor = db.get(AIStockMonitor, monitor_seed.id)
+                if monitor is None or monitor.monitor_status not in ACTIVE_MONITOR_STATUSES:
+                    continue
+                if monitor.expired_at <= current:
+                    monitor.monitor_status = "expired"
+                    monitor.updated_at = current
+                    db.commit()
+                    continue
+                if quote is None:
+                    monitor.monitor_status = "data_abnormal"
+                    monitor.updated_at = current
+                    db.commit()
+                    continue
+                quote_time = datetime.fromisoformat(quote.quote_timestamp)
+                current_price = decimal_value(quote.price)
+                monitor.current_price = current_price
+                monitor.quote_timestamp = quote_time
+                monitor.quote_source = quote.source
+                monitor.updated_at = current
+                was_status = monitor.monitor_status
+                failures = monitor_entry_failures(monitor, quote, current)
+                if not failures:
+                    monitor.monitor_status = "buy_confirmed"
+                elif current_price > decimal_value(monitor.entry_max):
+                    monitor.monitor_status = "chase_blocked"
+                elif current_price < decimal_value(monitor.entry_min) and all(
+                    reason == "現價尚未進入建議進場區" for reason in failures
+                ):
+                    monitor.monitor_status = "waiting_breakout"
+                elif any(
+                    key in reason
+                    for reason in failures
+                    for key in ["行情", "買賣價差", "成交量不足", "成交金額不足"]
+                ):
+                    monitor.monitor_status = "data_abnormal"
+                else:
+                    monitor.monitor_status = "signal_weakened"
+                db.commit()
+                if monitor.monitor_status == "buy_confirmed" and was_status != "buy_confirmed":
+                    payload = monitor_payload(monitor)
+                    alert = create_alert(
+                        db,
+                        user_id=monitor.user_id,
+                        monitor_id=monitor.id,
+                        position_id=None,
+                        signal_id=monitor.signal_id,
+                        alert_type="initial_entry",
+                        alert_level="confirmation",
+                        action="初始買進確認",
+                        current_price=current_price,
+                        reasons=json_list(monitor.reasons_json),
+                    )
+                    if alert:
+                        await self._push_alert(
+                            alert.id,
+                            event_type="ai_initial_entry",
+                            action="初始買進確認",
+                            message=initial_entry_message(payload),
+                            signal_id=monitor.signal_id,
+                            symbol=monitor.symbol,
+                            priority=6,
+                        )
 
         self._state["lastRunAt"] = current.isoformat()
 

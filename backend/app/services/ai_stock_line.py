@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -82,6 +82,20 @@ def position_action_message(position: dict[str, Any], action: str, reasons: list
     else:
         title = action
     reason_text = "\n".join(f"- {reason}" for reason in reasons)
+    reduce_text = ""
+    if action.startswith("建議減碼"):
+        try:
+            percentage = Decimal(action.split(" ")[1].replace("%", ""))
+        except (IndexError, ValueError):
+            percentage = Decimal("50")
+        shares = int(
+            (Decimal(position["remainingQuantity"]) * percentage / 100)
+            .to_integral_value(rounding=ROUND_DOWN)
+        )
+        reduce_text = (
+            f"建議賣出數量：{shares:,} 股／{Decimal(shares) / Decimal(1000):.3f} 張\n"
+            f"剩餘部位停損：{_price(position['stopLoss'])}\n"
+        )
     return (
         f"【AI選股機器人｜{title}】\n\n"
         f"股票：{position['symbol']} {position['stockName']}\n"
@@ -89,6 +103,7 @@ def position_action_message(position: dict[str, Any], action: str, reasons: list
         f"實際平均成本：{_price(position['averageCost'])}\n"
         f"目前報酬：{position['returnPercentage']}%\n"
         f"指令：{action}\n"
+        f"{reduce_text}"
         f"停損價格：{_price(position['stopLoss'])}\n"
         f"原因：\n{reason_text}\n"
         f"通知時間：{_time(datetime.now(UTC))}\n\n"
@@ -99,6 +114,16 @@ def position_action_message(position: dict[str, Any], action: str, reasons: list
 
 def add_on_message(position: dict[str, Any], add_on: dict[str, Any]) -> str:
     stage = "第一次" if add_on["addOnNumber"] == 1 else "第二次"
+    quantity = int(add_on["suggestedQuantity"])
+    new_allocation = (
+        Decimal(str(position["currentAllocationPercentage"]))
+        + Decimal(str(add_on["suggestedPercentage"]))
+    )
+    total_quantity = int(position["remainingQuantity"]) + quantity
+    estimated_average = (
+        Decimal(str(position["averageCost"])) * int(position["remainingQuantity"])
+        + Decimal(str(position["currentPrice"])) * quantity
+    ) / max(1, total_quantity)
     return (
         f"【AI選股機器人｜{stage}加碼確認】\n\n"
         f"股票：{position['symbol']} {position['stockName']}\n"
@@ -109,10 +134,37 @@ def add_on_message(position: dict[str, Any], add_on: dict[str, Any]) -> str:
         "建議加碼：\n"
         f"- 建議加碼比例：總資金 {add_on['suggestedPercentage']}%\n"
         f"- 建議加碼金額：新台幣 {_money(add_on['suggestedAmount'])}\n"
-        f"- 建議加碼數量：{add_on['suggestedQuantity']:,} 股\n"
+        f"- 建議加碼數量：{quantity:,} 股／{Decimal(quantity) / Decimal(1000):.3f} 張\n"
+        f"- 加碼後總部位：總資金 {new_allocation}%\n"
         f"加碼參考區：{_price(add_on['suggestedPriceMin'])}～{_price(add_on['suggestedPriceMax'])}\n"
         f"加碼後停損：{_price(add_on['newStopLoss'])}\n\n"
+        f"加碼後平均成本參考：{_price(estimated_average)}\n\n"
+        "原因：\n- 順勢突破確認\n- 健康度與部位風險合格\n\n"
+        "風險：\n- LINE 通知不代表已成交，禁止虧損攤平\n\n"
         "請自行確認即時行情與可用資金。\n"
+        f"{DISCLAIMER}"
+    )
+
+
+def daily_position_summary_message(position: dict[str, Any]) -> str:
+    remaining = max(
+        Decimal("0"),
+        Decimal(str(position["targetAllocationPercentage"]))
+        - Decimal(str(position["currentAllocationPercentage"])),
+    )
+    return (
+        "【AI選股機器人｜每日持倉摘要】\n\n"
+        f"股票：{position['symbol']} {position['stockName']}\n"
+        f"實際平均成本：{_price(position['averageCost'])}\n"
+        f"今日收盤：{_price(position['currentPrice'])}\n"
+        f"目前報酬：{position['returnPercentage']}%\n"
+        f"目前資金占比：{position['currentAllocationPercentage']}%\n"
+        f"健康度：{position['healthScore']}\n"
+        f"最新狀態：{position['latestAction']}\n"
+        f"停損參考：{_price(position['stopLoss'])}\n"
+        f"移動停利：{_price(position.get('trailingStop'))}\n"
+        f"剩餘可加碼：{remaining}%\n\n"
+        "明日監控重點：優先檢查停損、移動停利與原始策略是否仍成立。\n\n"
         f"{DISCLAIMER}"
     )
 

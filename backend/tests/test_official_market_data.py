@@ -19,6 +19,8 @@ def test_parse_twse_mis_quote_uses_latest_trade_and_converts_lots_to_shares() ->
             "v": "32703",
             "d": "20260724",
             "t": "13:30:00",
+            "b": "252.0000_251.5000_",
+            "a": "252.5000_253.0000_",
         },
         StockQuoteRequest("2317", "鴻海", "上市"),
     )
@@ -31,6 +33,8 @@ def test_parse_twse_mis_quote_uses_latest_trade_and_converts_lots_to_shares() ->
     assert quote.volume == 32_703_000
     assert quote.quote_timestamp == "2026-07-24T13:30:00+08:00"
     assert quote.source == "TWSE MIS"
+    assert quote.best_bid == 252
+    assert quote.best_ask == 252.5
 
 
 def test_day_trading_signal_uses_official_quote_but_keeps_strategy_as_demo() -> None:

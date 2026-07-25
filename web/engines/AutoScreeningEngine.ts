@@ -29,21 +29,32 @@ export class AutoScreeningEngine {
       const rsi = calculateRSI(stock.prices).at(-1) ?? null;
       const evaluations = active.map((robot) => ({ robot, result: robot.analyze(stock, market) }))
         .sort((a, b) => b.result.score - a.result.score
+          || Number(b.robot.supportedRegimes.includes(market.direction))
+          - Number(a.robot.supportedRegimes.includes(market.direction))
           || Number(a.result.risks.length) - Number(b.result.risks.length));
       const evaluated = evaluations[0];
       const trendScore = indicator.ma20 && indicator.ma60
         ? (latest.close > indicator.ma20 ? 14 : 5) + (indicator.ma20 > indicator.ma60 ? 11 : 4) : 5;
       const momentumScore = indicator.histogram != null ? Math.min(20, 10 + Math.sign(indicator.histogram) * 6 + (indicator.macdSignal === "entry" ? 4 : 0)) : 5;
       const volumeAverage = stock.prices.slice(-20).reduce((sum, item) => sum + item.volume, 0) / 20;
-      const volumeScore = Math.min(15, 8 + (latest.volume / volumeAverage - 1) * 8);
+      const volumeScore = Math.max(0, Math.min(15, 8 + (latest.volume / volumeAverage - 1) * 8));
       const marketScore = Math.max(0, 5 + market.score / 20);
       const distanceMa20 = indicator.ma20 ? Math.abs((latest.close - indicator.ma20) / indicator.ma20) * 100 : 20;
       const riskScore = Math.max(0, 10 - Math.max(0, distanceMa20 - 7));
       const marketFit = Math.round(Math.max(0, Math.min(100,
         65 + market.score * (evaluated.robot.supportedRegimes.includes(market.direction) ? .35 : -.35),
       )));
+      const strategyScore = evaluated.result.score * .2;
+      const scoreBreakdown = {
+        trend: round(trendScore),
+        momentum: round(momentumScore),
+        volume: round(volumeScore),
+        strategy: round(strategyScore),
+        market: round(marketScore),
+        risk: round(riskScore),
+      };
       const total = Math.round(Math.max(0, Math.min(100,
-        trendScore + momentumScore + volumeScore + evaluated.result.score * .2 + marketScore + riskScore,
+        Object.values(scoreBreakdown).reduce((sum, value) => sum + value, 0),
       )));
       const risks = [...evaluated.result.risks];
       if (distanceMa20 > 12) risks.push("距離 MA20 過遠");
@@ -88,7 +99,7 @@ export class AutoScreeningEngine {
         industry: meta.industry, price: latest.close,
         changePercent: ((latest.close - previous.close) / previous.close) * 100,
         volume: latest.volume, strategyId: evaluated.robot.id, strategyName: evaluated.robot.name,
-        score: total, strategyFit: evaluated.result.score,
+        score: total, scoreBreakdown, strategyFit: evaluated.result.score,
         secondaryStrategies: evaluations.slice(1, 3).filter((item) => item.result.score >= 55).map((item) => item.robot.name),
         marketFit, healthScore: Math.round(Math.max(0, Math.min(100, total * .55 + evaluated.result.score * .45))),
         riskRewardRatio, entryMin, entryMax, stopLoss, target1, target2,
@@ -109,7 +120,7 @@ export class AutoScreeningEngine {
       } satisfies RankingRow;
     }));
     return candidates.filter((row): row is RankingRow => row !== null)
-      .filter((row) => row.score >= 55 || row.strategyId === "exit-warning")
+      .filter((row) => row.score >= 55)
       .sort((a, b) => b.score - a.score)
       .slice(0, 12)
       .map((row, index) => ({ ...row, rank: index + 1 }));

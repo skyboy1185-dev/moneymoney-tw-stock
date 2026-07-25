@@ -1,4 +1,8 @@
-from app.services.ai_stock_line import initial_entry_message, position_action_message
+from app.services.ai_stock_line import (
+    daily_position_summary_message,
+    initial_entry_message,
+    position_action_message,
+)
 
 
 def test_initial_entry_line_message_states_confirmation_not_execution() -> None:
@@ -26,3 +30,23 @@ def test_stop_message_is_explicit_but_does_not_claim_execution() -> None:
     }, "立即停損", ["現價跌破硬性停損"])
     assert "緊急停損" in message
     assert "請自行確認即時行情與實際成交價格" in message
+
+
+def test_daily_position_summary_keeps_overnight_position_as_monitoring() -> None:
+    message = daily_position_summary_message({
+        "symbol": "2330",
+        "stockName": "台積電",
+        "averageCost": 1000,
+        "currentPrice": 1020,
+        "returnPercentage": 2,
+        "targetAllocationPercentage": 20,
+        "currentAllocationPercentage": 8,
+        "healthScore": 82,
+        "latestAction": "隔夜持有",
+        "stopLoss": 970,
+        "trailingStop": 995,
+    })
+    assert "每日持倉摘要" in message
+    assert "隔夜持有" in message
+    assert "剩餘可加碼：12%" in message
+    assert "不構成投資建議" in message

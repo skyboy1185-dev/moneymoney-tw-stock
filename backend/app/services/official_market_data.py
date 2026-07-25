@@ -35,6 +35,8 @@ class OfficialStockQuote:
     quote_timestamp: str
     source: str
     is_realtime: bool
+    best_bid: float | None = None
+    best_ask: float | None = None
 
 
 class MarketDataProvider(Protocol):
@@ -50,6 +52,12 @@ def _number(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return parsed
+
+
+def _first_order_price(value: Any) -> float | None:
+    first = str(value or "").split("_", 1)[0]
+    parsed = _number(first)
+    return parsed if parsed is not None and parsed > 0 else None
 
 
 def _iso_date(value: Any) -> str:
@@ -97,6 +105,8 @@ def parse_mis_quote(row: dict[str, Any], fallback: StockQuoteRequest) -> Officia
         quote_timestamp=f"{date_value}T{time_value}+08:00",
         source="TWSE MIS",
         is_realtime=_is_realtime_quote(date_value, time_value),
+        best_bid=_first_order_price(row.get("b")),
+        best_ask=_first_order_price(row.get("a")),
     )
 
 

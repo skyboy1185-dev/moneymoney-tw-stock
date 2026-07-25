@@ -3,6 +3,8 @@ import type {
   LineNotificationSettings,
 } from "@/lib/day-trading-types";
 
+export type AIStockLineIntegrationStatus = Omit<LineIntegrationStatus, "settings">;
+
 async function request<T>(base: string, path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${base}/${path}`, {
     ...init,
@@ -33,7 +35,7 @@ export const lineNotificationClient = {
 };
 
 export const aiStockLineNotificationClient = {
-  status: () => request<LineIntegrationStatus>("/api/integrations/ai-stock-line", "status"),
+  status: () => request<AIStockLineIntegrationStatus>("/api/integrations/ai-stock-line", "status"),
   test: () => request<{ ok: boolean; sentGroups: number }>("/api/integrations/ai-stock-line", "test", { method: "POST" }),
   unbind: (groupRecordId: number) => request<{ ok: boolean }>("/api/integrations/ai-stock-line", `groups/${groupRecordId}`, { method: "DELETE" }),
 };
