@@ -127,7 +127,7 @@ function generatePrices(meta: StockMeta, count = 1320): DailyPrice[] {
 
 const cache = new Map<string, StockPayload>();
 
-function payloadFor(meta: StockMeta): StockPayload {
+export function payloadFor(meta: StockMeta): StockPayload {
   const cached = cache.get(meta.symbol);
   if (cached) return cached;
   const prices = generatePrices(meta);

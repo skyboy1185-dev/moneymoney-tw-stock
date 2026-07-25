@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { stockService } from "@/services/stock-service";
+import { payloadFor, stockService } from "@/services/stock-service";
 import { clientKey, rateLimit } from "@/lib/server-utils";
 import { getOfficialQuote, mergeOfficialQuote } from "@/services/market-data/official-quote-provider";
+import { resolveOfficialStock } from "@/services/market-data/stock-directory";
 import { getBackendStock } from "@/services/backend-client";
 
 export const dynamic = "force-dynamic";
@@ -15,11 +16,15 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "請輸入股票代號或名稱。" }, { status: 400 });
   }
   const backendPayload = await getBackendStock(query).catch(() => null);
-  const meta = backendPayload?.meta ?? await stockService.search(query);
+  const meta = backendPayload?.meta
+    ?? await stockService.search(query)
+    ?? await resolveOfficialStock(query);
   if (!meta) {
     return NextResponse.json({ error: `找不到「${query}」，請確認股票代號或名稱。` }, { status: 404 });
   }
-  const payload = backendPayload ?? await stockService.getStock(meta.symbol);
+  const payload = backendPayload
+    ?? await stockService.getStock(meta.symbol)
+    ?? payloadFor(meta);
   if (!payload) {
     return NextResponse.json({ error: "個股資料暫時無法取得。" }, { status: 503 });
   }
