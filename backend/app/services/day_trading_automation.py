@@ -171,7 +171,7 @@ class DayTradingAutomationSupervisor:
                 ])
             if session["formalSignalsAllowed"] and self._recommendations:
                 line_tasks.append(
-                    line_notification_dispatcher.send_recommendations(self._recommendations[:3]),
+                    line_notification_dispatcher.send_recommendations(self._recommendations[:5]),
                 )
             if line_tasks:
                 await asyncio.gather(*line_tasks, return_exceptions=True)

@@ -158,26 +158,69 @@ def test_recommendation_hard_filters_and_short_qualification() -> None:
     assert "放空資格待確認" in failures
 
 
-def test_selector_recommends_at_most_three_without_lowering_thresholds() -> None:
+def test_selector_recommends_at_most_five_without_lowering_thresholds() -> None:
     now = datetime(2026, 7, 21, 9, 10, tzinfo=TAIPEI)
     config = TradingScheduleConfig()
     session = trading_session_state(config, now, quote_samples=10, infrastructure_ok=True)
     selector = StableRecommendationSelector()
     official, candidates = selector.select(
         "test-user",
-        [_candidate("a", 92), _candidate("b", 88), _candidate("c", 80), _candidate("d", 74)],
+        [
+            _candidate("a", 92), _candidate("b", 88), _candidate("c", 84),
+            _candidate("d", 82), _candidate("e", 80), _candidate("f", 78),
+            _candidate("g", 74),
+        ],
         config,
         session,
         now=now,
     )
-    assert [item["id"] for item in official] == ["a", "b", "c"]
-    assert len(official) == 3
-    assert next(item for item in candidates if item["id"] == "d")["isOfficialRecommendation"] is False
+    assert [item["id"] for item in official] == ["a", "b", "c", "d", "e"]
+    assert len(official) == 5
+    assert next(item for item in candidates if item["id"] == "f")["isOfficialRecommendation"] is False
+    assert next(item for item in candidates if item["id"] == "g")["isOfficialRecommendation"] is False
 
 
-def test_recommendation_stability_requires_retention_and_five_point_gap() -> None:
+def test_selector_allows_at_most_five_distinct_admissions_per_taipei_hour() -> None:
     now = datetime(2026, 7, 21, 9, 10, tzinfo=TAIPEI)
-    config = TradingScheduleConfig(recommendation_refresh_seconds=5)
+    config = TradingScheduleConfig(recommendation_refresh_seconds=5, minimum_retention_minutes=0)
+    session = trading_session_state(config, now, quote_samples=10, infrastructure_ok=True)
+    selector = StableRecommendationSelector()
+    timing = {
+        "generatedAt": now.isoformat(),
+        "expiresAt": (now + timedelta(hours=2)).isoformat(),
+    }
+    first_candidates = [_candidate(signal_id, 90 - index, **timing) for index, signal_id in enumerate("abcde")]
+    first, _ = selector.select("hourly-user", first_candidates, config, session, now=now)
+    assert len(first) == 5
+
+    same_hour = now + timedelta(minutes=10)
+    same_session = trading_session_state(config, same_hour, quote_samples=10, infrastructure_ok=True)
+    sixth = _candidate("f", 99, **timing)
+    within_hour, _ = selector.select(
+        "hourly-user",
+        [*first_candidates[:4], sixth],
+        config,
+        same_session,
+        now=same_hour,
+    )
+    assert "f" not in {item["id"] for item in within_hour}
+
+    next_hour = now + timedelta(hours=1)
+    next_session = trading_session_state(config, next_hour, quote_samples=10, infrastructure_ok=True)
+    after_reset, _ = selector.select(
+        "hourly-user",
+        [*first_candidates[:4], sixth],
+        config,
+        next_session,
+        now=next_hour,
+    )
+    assert "f" in {item["id"] for item in after_reset}
+    assert len(after_reset) == 5
+
+
+def test_full_hourly_quota_prevents_churn_until_next_hour() -> None:
+    now = datetime(2026, 7, 21, 9, 10, tzinfo=TAIPEI)
+    config = TradingScheduleConfig(recommendation_refresh_seconds=5, maximum_recommendations=3)
     session = trading_session_state(config, now, quote_samples=10, infrastructure_ok=True)
     selector = StableRecommendationSelector()
     first, _ = selector.select(
@@ -190,11 +233,26 @@ def test_recommendation_stability_requires_retention_and_five_point_gap() -> Non
         [_candidate("a", 90), _candidate("b", 85), _candidate("c", 80), _candidate("d", 90)],
         config, session, now=now + timedelta(minutes=1),
     )
-    replaced, _ = selector.select(
+    still_capped, _ = selector.select(
         "stable-user",
         [_candidate("a", 90), _candidate("b", 85), _candidate("c", 80), _candidate("d", 90)],
         config, session, now=now + timedelta(minutes=4),
     )
+    next_hour = now + timedelta(hours=1)
+    next_session = trading_session_state(config, next_hour, quote_samples=10, infrastructure_ok=True)
+    reset, _ = selector.select(
+        "stable-user",
+        [
+            _candidate("a", 90, expiresAt=(next_hour + timedelta(minutes=20)).isoformat()),
+            _candidate("b", 85, expiresAt=(next_hour + timedelta(minutes=20)).isoformat()),
+            _candidate("c", 80, expiresAt=(next_hour + timedelta(minutes=20)).isoformat()),
+            _candidate("d", 90, expiresAt=(next_hour + timedelta(minutes=20)).isoformat()),
+        ],
+        config,
+        next_session,
+        now=next_hour,
+    )
     assert [item["id"] for item in first] == ["a", "b", "c"]
     assert {item["id"] for item in too_soon} == {"a", "b", "c"}
-    assert {item["id"] for item in replaced} == {"a", "b", "d"}
+    assert {item["id"] for item in still_capped} == {"a", "b", "c"}
+    assert {item["id"] for item in reset} == {"a", "b", "d"}

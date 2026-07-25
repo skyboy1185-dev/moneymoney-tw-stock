@@ -381,7 +381,7 @@ class LineNotificationDispatcher:
 
     async def send_recommendations(self, recommendations: list[dict[str, Any]]) -> int:
         events: list[LineNotificationEvent] = []
-        for signal in recommendations[:3]:
+        for signal in recommendations[:5]:
             if not signal.get("isOfficialRecommendation"):
                 continue
             action = str(signal.get("action", ""))

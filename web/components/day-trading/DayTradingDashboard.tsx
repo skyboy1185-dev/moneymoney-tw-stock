@@ -197,7 +197,7 @@ export function DayTradingDashboard() {
       <div><span>推薦方向</span><strong>{regime.preferredDirection}</strong></div>
       <div><span>行情來源</span><strong>{regime.dataSource}</strong></div>
       <div><span>機器人</span><strong className="scanning"><Bot size={14} />{regime.automation.robotStatus}</strong></div>
-      <div><span>今日精選</span><strong>{signals.length} / {regime.maximumRecommendations} 檔</strong></div>
+      <div><span>本小時精選</span><strong>{signals.length} / {regime.maximumRecommendations} 檔</strong></div>
       <div><span>交易時段</span><strong>{regime.session}</strong></div>
       <div><span>最後更新</span><strong>{new Date(regime.updatedAt).toLocaleTimeString("zh-TW", { hour12: false })}</strong></div>
     </section>
@@ -208,10 +208,10 @@ export function DayTradingDashboard() {
     </div>
 
     <section className="live-signal-section">
-      <div className="dt-section-heading"><div><span className="eyebrow">AI OFFICIAL PICKS</span><h2>今日 AI 當沖精選：{signals.length}／{regime.maximumRecommendations} 檔</h2><p>出場與停損通知永遠優先；只有通過全部硬性風控的候選才列為正式推薦</p></div><span className="signals-only"><Gauge size={15} />只提供訊號，不自動下單</span></div>
+      <div className="dt-section-heading"><div><span className="eyebrow">AI OFFICIAL PICKS</span><h2>本小時 AI 當沖精選：{signals.length}／{regime.maximumRecommendations} 檔</h2><p>每小時最多 5 檔；出場與停損通知永遠優先，且不會為湊滿名額降低風控門檻</p></div><span className="signals-only"><Gauge size={15} />只提供訊號，不自動下單</span></div>
       {signals.length
         ? <div className="live-signal-grid">{signals.map((signal) => <LiveSignalCard key={signal.id} signal={signal} onMonitor={monitor} onSimulate={(item) => void simulate(item)} onAnalyze={(symbol) => { window.location.href = `/?symbol=${symbol}&view=analysis`; }} />)}</div>
-        : <div className="dt-empty official-empty"><Bot /><h3>今日 AI 當沖精選：0／{regime.maximumRecommendations} 檔</h3><p>{regime.automation.phase === "scanning" ? "目前沒有符合風控標準的交易機會，建議觀望。" : regime.automation.statusMessage}</p></div>}
+        : <div className="dt-empty official-empty"><Bot /><h3>本小時 AI 當沖精選：0／{regime.maximumRecommendations} 檔</h3><p>{regime.automation.phase === "scanning" ? "目前沒有符合風控標準的交易機會，建議觀望。" : regime.automation.statusMessage}</p></div>}
     </section>
 
     <DayTradingRankingTable signals={candidates} monitored={monitored} onMonitor={monitor} onSimulate={(item) => void simulate(item)} onAnalyze={(symbol) => { window.location.href = `/?symbol=${symbol}&view=analysis`; }} />

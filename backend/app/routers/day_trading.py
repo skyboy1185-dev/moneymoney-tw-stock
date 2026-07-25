@@ -638,12 +638,14 @@ async def trigger_scenario(
                 f"{config.health_check_time} 系統與行情來源檢查完成\n"
                 f"{config.market_open_time} 開盤，暖機 {config.warmup_minutes} 分鐘\n"
                 f"{simulated_at.strftime('%H:%M')} 暖機完成，即時掃描中\n"
-                f"今日 AI 當沖精選：{len(official)}／3 檔"
+                f"本小時 AI 當沖精選：{len(official)}／{config.maximum_recommendations} 檔"
             ),
             f"simulation:friday-open:{nonce}",
             priority=2,
         )
-        recommendation_sent = await line_notification_dispatcher.send_recommendations(official[:3])
+        recommendation_sent = await line_notification_dispatcher.send_recommendations(
+            official[:config.maximum_recommendations],
+        )
         return {
             "accepted": True,
             "scenario": scenario,
@@ -654,7 +656,7 @@ async def trigger_scenario(
             "formalSignalsAllowed": session["formalSignalsAllowed"],
             "recommended": official,
             "candidates": ranked,
-            "maximumRecommendations": 3,
+            "maximumRecommendations": config.maximum_recommendations,
             "lineMessagesSent": opening_sent + recommendation_sent,
         }
     day_trading_engine.trigger(scenario)

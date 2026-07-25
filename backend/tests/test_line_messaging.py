@@ -134,3 +134,41 @@ def test_queue_sends_emergency_before_entry(monkeypatch: Any) -> None:
 
     asyncio.run(run())
     assert order == ["stop_loss", "long_entry"]
+
+
+def test_line_recommendations_are_capped_at_five_per_batch(monkeypatch: Any) -> None:
+    dispatcher = LineNotificationDispatcher()
+    captured: list[LineNotificationEvent] = []
+
+    async def fake_dispatch_many(events: list[LineNotificationEvent]) -> int:
+        captured.extend(events)
+        return len(events)
+
+    monkeypatch.setattr(dispatcher, "dispatch_many", fake_dispatch_many)
+    recommendations = [
+        {
+            "id": f"signal-{index}",
+            "symbol": f"23{index:02d}",
+            "stockName": f"測試股{index}",
+            "direction": "long",
+            "action": "突破買進",
+            "price": 100,
+            "entryMin": 99,
+            "entryMax": 100,
+            "stopLoss": 97,
+            "target1": 104,
+            "target2": 108,
+            "confidenceScore": 90,
+            "healthScore": 85,
+            "riskRewardRatio": 2,
+            "generatedAt": "2026-07-24T09:03:00+08:00",
+            "expiresAt": "2026-07-24T09:08:00+08:00",
+            "reasons": ["站上 VWAP"],
+            "warnings": [],
+            "isOfficialRecommendation": True,
+        }
+        for index in range(6)
+    ]
+    sent = asyncio.run(dispatcher.send_recommendations(recommendations))
+    assert sent == 5
+    assert len(captured) == 5

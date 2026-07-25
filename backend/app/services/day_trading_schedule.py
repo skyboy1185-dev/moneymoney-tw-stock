@@ -30,7 +30,7 @@ class TradingScheduleConfig:
     minimum_volume: float = 500_000
     minimum_turnover: float = 50_000_000
     maximum_stop_distance: float = 3.0
-    maximum_recommendations: int = 3
+    maximum_recommendations: int = 5
     holidays: frozenset[date] = field(default_factory=frozenset)
 
 
@@ -227,6 +227,8 @@ class StableRecommendationSelector:
         self._lock = threading.Lock()
         self._active: dict[str, dict[str, datetime]] = {}
         self._last_ranked_at: dict[str, datetime] = {}
+        self._hour_buckets: dict[str, str] = {}
+        self._hourly_admitted: dict[str, set[str]] = {}
 
     def select(
         self,
@@ -261,7 +263,14 @@ class StableRecommendationSelector:
         eligible.sort(key=_ranking_key, reverse=True)
 
         with self._lock:
+            hour_bucket = current_time.astimezone(ZoneInfo(config.timezone)).strftime("%Y-%m-%dT%H")
+            if self._hour_buckets.get(user_id) != hour_bucket:
+                self._hour_buckets[user_id] = hour_bucket
+                self._active[user_id] = {}
+                self._hourly_admitted[user_id] = set()
+                self._last_ranked_at.pop(user_id, None)
             active = self._active.setdefault(user_id, {})
+            admitted = self._hourly_admitted.setdefault(user_id, set())
             last_ranked = self._last_ranked_at.get(user_id)
             refresh_due = (
                 last_ranked is None
@@ -278,14 +287,22 @@ class StableRecommendationSelector:
                 if len(selected) >= config.maximum_recommendations:
                     break
                 if row not in selected:
+                    if row["id"] not in admitted and len(admitted) >= config.maximum_recommendations:
+                        continue
                     selected.append(row)
                     active[row["id"]] = current_time
+                    admitted.add(row["id"])
 
             if refresh_due:
                 challengers = [row for row in eligible if row not in selected]
                 for challenger in challengers:
                     if not selected:
                         break
+                    if (
+                        challenger["id"] not in admitted
+                        and len(admitted) >= config.maximum_recommendations
+                    ):
+                        continue
                     weakest = min(selected, key=lambda row: float(row["confidenceScore"]))
                     retained_for = current_time - active.get(weakest["id"], current_time)
                     can_replace = retained_for >= timedelta(minutes=config.minimum_retention_minutes)
@@ -295,6 +312,7 @@ class StableRecommendationSelector:
                         active.pop(weakest["id"], None)
                         selected.append(challenger)
                         active[challenger["id"]] = current_time
+                        admitted.add(challenger["id"])
                 self._last_ranked_at[user_id] = current_time
 
             selected = sorted(selected, key=_ranking_key, reverse=True)[: config.maximum_recommendations]
