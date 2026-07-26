@@ -136,7 +136,14 @@ export default function Home() {
         {error && <div className="error-banner" role="alert">{error}</div>}
         {tab === "analysis" ? (
           loading && !stock ? <div className="page-loading"><span className="spinner" /><p>正在整理個股資料與技術指標…</p></div>
-          : stock ? <StockAnalysis data={stock} loading={loading} marketOpen={snapshot?.marketOpen ?? false} />
+          : stock ? (
+            <StockAnalysis
+              data={stock}
+              loading={loading}
+              marketOpen={snapshot?.marketOpen ?? false}
+              onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }}
+            />
+          )
           : <div className="empty-state"><Search size={30} /><h2>找不到股票資料</h2><p>請嘗試輸入其他股票代號或名稱。</p></div>
         ) : tab === "screener" ? (
           <Screener onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }} />

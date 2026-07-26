@@ -3,11 +3,23 @@
 import { useMemo, useState } from "react";
 import { ArrowDownRight, ArrowUpRight, Clock3, RefreshCw } from "lucide-react";
 import { AnalysisSidebar } from "./AnalysisSidebar";
+import { LeaderPowerPanel } from "./LeaderPowerPanel";
 import { StockChart } from "./StockChart";
 import { formatPercent, formatVolume, safeNumber, valueClass } from "@/lib/format";
+import { calculatePowerScore } from "@/lib/power-score";
 import type { StockPayload } from "@/lib/types";
 
-export function StockAnalysis({ data, loading, marketOpen = false }: { data: StockPayload; loading: boolean; marketOpen?: boolean }) {
+export function StockAnalysis({
+  data,
+  loading,
+  marketOpen = false,
+  onSelectStock,
+}: {
+  data: StockPayload;
+  loading: boolean;
+  marketOpen?: boolean;
+  onSelectStock?: (symbol: string) => void;
+}) {
   const [range, setRange] = useState("120d");
   const [customStart, setCustomStart] = useState("");
   const [customEnd, setCustomEnd] = useState("");
@@ -15,6 +27,10 @@ export function StockAnalysis({ data, loading, marketOpen = false }: { data: Sto
   const previous = data.prices.at(-2)!;
   const change = latest.close - previous.close;
   const changePercent = (change / previous.close) * 100;
+  const powerScore = useMemo(
+    () => calculatePowerScore(data.prices, data.indicators),
+    [data.indicators, data.prices],
+  );
 
   const visibleData = useMemo(() => {
     if (range === "custom") {
@@ -56,6 +72,7 @@ export function StockAnalysis({ data, loading, marketOpen = false }: { data: Sto
               <span className={data.quote ? "official-badge" : "demo-mini-badge"}>
                 {data.quote ? `${data.quote.isRealtime ? "官方準即時" : "官方收盤"} · ${data.quote.source}` : "展示資料"}
               </span>
+              <span className="power-mini-badge">馬力 {powerScore.powerValue}/17 · {powerScore.starLabel}</span>
             </div>
             <p>{data.meta.symbol} · {data.meta.industry}</p>
           </div>
@@ -75,6 +92,13 @@ export function StockAnalysis({ data, loading, marketOpen = false }: { data: Sto
         <div className="update-time"><Clock3 size={13} /> {data.quote ? "官方報價" : "展示資料"}更新於 {new Date(data.updatedAt).toLocaleString("zh-TW", { hour12: false })}</div>
       </section>
       {data.dataNotice && <div className={data.quote ? "quote-data-notice official" : "quote-data-notice"}>{data.dataNotice}</div>}
+
+      <LeaderPowerPanel
+        currentSymbol={data.meta.symbol}
+        currentName={data.meta.name}
+        score={powerScore}
+        onSelectStock={onSelectStock}
+      />
 
       <div className="workspace-grid">
         <section className="chart-card">

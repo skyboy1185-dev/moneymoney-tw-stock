@@ -959,7 +959,74 @@ footer span { color: #566177; }
 .emergency-modal p { color: #bd8e94; font-size: 9px; }
 .emergency-modal button { width: 100%; min-height: 42px; color: white; background: #d33a47; border: 0; border-radius: 7px; cursor: pointer; font-weight: 800; }
 
+/* Individual-stock AI leader power score. */
+.power-mini-badge { padding: 4px 8px; color: #ffd978; background: rgba(250,190,55,.1); border: 1px solid rgba(250,190,55,.25); border-radius: 20px; font-size: 9px; font-weight: 800; letter-spacing: .02em; }
+.leader-power-section { margin: 16px 0; display: grid; grid-template-columns: minmax(380px, .72fr) minmax(600px, 1.28fr); gap: 12px; }
+.current-power-card, .weighted-power-board { min-width: 0; overflow: hidden; background: linear-gradient(145deg, #121a28, #0e1521); border: 1px solid #28364b; border-radius: 12px; box-shadow: 0 12px 36px rgba(0,0,0,.18); }
+.current-power-card { padding: 16px; }
+.power-card-heading, .weighted-board-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.power-card-heading > div:first-child, .weighted-board-heading > div { display: flex; align-items: center; gap: 7px; color: #d8def0; font-size: 12px; font-weight: 800; }
+.power-card-heading > div:first-child svg, .weighted-board-heading svg { color: #8f83ff; }
+.power-card-heading small, .weighted-board-heading small { color: #77849a; font-size: 8px; font-weight: 500; }
+.power-main-score { display: flex; align-items: baseline; color: #ffd56a; }
+.power-main-score strong { font-size: 31px; line-height: 1; }
+.power-main-score span { margin-left: 3px; color: #ad9761; font-size: 9px; }
+.power-score-strip { margin-top: 12px; min-height: 42px; padding: 8px 10px; display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 10px; background: #0a121d; border: 1px solid #202d40; border-radius: 8px; }
+.power-score-strip > div:first-child { display: flex; align-items: baseline; gap: 4px; color: #aab6c8; font-size: 9px; }
+.power-score-strip > div:first-child svg { align-self: center; color: #8275f2; }
+.power-score-strip > div:first-child strong { color: white; font-size: 18px; }
+.power-score-strip > div:first-child small { color: #66758c; }
+.power-stars, .table-stars { color: #ffd35f; font-size: 12px; letter-spacing: 1px; white-space: nowrap; }
+.power-coverage { padding: 4px 6px; color: #8da1bb; background: #131f2e; border-radius: 4px; font-size: 8px; white-space: nowrap; }
+.power-level-grid { margin-top: 9px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.power-level-grid > div { padding: 8px; display: grid; gap: 4px; background: #0b131f; border: 1px solid #202c3e; border-radius: 6px; }
+.power-level-grid span, .power-status-grid span { color: #748298; font-size: 8px; }
+.power-level-grid strong { overflow: hidden; color: #e8edf5; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.power-status-grid { margin-top: 9px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.power-status-grid > div { padding: 7px 8px; display: grid; gap: 3px; background: #111a27; border-radius: 5px; }
+.power-status-grid .power-yes, .power-status-grid .power-no { font-size: 9px; font-weight: 800; }
+.power-yes { color: #ff8589; }
+.power-no { color: #7f8da2; }
+.power-suggestion { margin-top: 9px; padding: 9px 10px; display: flex; align-items: flex-start; gap: 8px; color: #f1cd73; background: rgba(223,171,43,.07); border: 1px solid rgba(223,171,43,.18); border-radius: 7px; }
+.power-suggestion svg { flex: 0 0 auto; margin-top: 1px; }
+.power-suggestion strong { font-size: 9px; }
+.power-suggestion p { margin: 3px 0 0; color: #aa9b78; font-size: 9px; line-height: 1.55; }
+.power-section-bars { margin-top: 11px; display: grid; gap: 5px; }
+.power-section-bars > div { display: grid; grid-template-columns: 62px 1fr 42px; align-items: center; gap: 7px; }
+.power-section-bars span, .power-section-bars strong { color: #8491a6; font-size: 8px; }
+.power-section-bars strong { text-align: right; }
+.power-section-bars i { height: 4px; overflow: hidden; background: #202b3c; border-radius: 4px; }
+.power-section-bars b { height: 100%; display: block; background: linear-gradient(90deg, #665ce0, #d95c73); border-radius: inherit; }
+.power-deductions { margin-top: 10px; padding-top: 9px; border-top: 1px solid #222e40; }
+.power-deductions summary { display: flex; align-items: center; gap: 5px; color: #9ca8ba; cursor: pointer; font-size: 9px; }
+.power-deductions summary::marker { display: none; }
+.power-deductions ul { max-height: 185px; margin: 8px 0 0; padding: 8px 8px 8px 23px; overflow-y: auto; color: #7f8ca0; background: #0a111b; border-radius: 6px; font-size: 8px; line-height: 1.7; }
+.weighted-power-board { padding: 0; }
+.weighted-board-heading { min-height: 52px; padding: 0 14px; border-bottom: 1px solid #253247; }
+.weighted-table-wrap { overflow-x: auto; }
+.weighted-power-table { width: 100%; min-width: 710px; border-collapse: collapse; font-size: 9px; }
+.weighted-power-table th { height: 31px; color: #718096; background: #0c1420; font-size: 8px; font-weight: 700; text-align: left; white-space: nowrap; }
+.weighted-power-table th:first-child, .weighted-power-table td:first-child { padding-left: 14px; text-align: center; }
+.weighted-power-table td { height: 37px; padding-right: 9px; color: #aeb8c7; border-bottom: 1px solid #1d293a; white-space: nowrap; }
+.weighted-power-table tbody tr { cursor: pointer; transition: background .15s ease; }
+.weighted-power-table tbody tr:hover, .weighted-power-table tbody tr.current { background: rgba(102,92,224,.1); }
+.weighted-power-table td:nth-child(2) strong, .weighted-power-table td:nth-child(2) span { display: block; }
+.weighted-power-table td:nth-child(2) strong { color: #eef1f6; font-size: 10px; }
+.weighted-power-table td:nth-child(2) span { margin-top: 1px; color: #78869b; font-size: 8px; }
+.weighted-power-table .up { color: var(--up); }
+.weighted-power-table .down { color: var(--down); }
+.table-power-value { color: #ffd76f; font-size: 14px; }
+.weighted-power-table td small { color: #68778e; font-size: 7px; }
+.weighted-power-table button { width: 24px; height: 24px; display: grid; place-items: center; color: #8291a7; background: #172235; border: 1px solid #2b3a51; border-radius: 5px; cursor: pointer; }
+.power-board-state { min-height: 440px; display: flex; align-items: center; justify-content: center; gap: 7px; color: #8491a5; font-size: 10px; }
+.power-board-state.error { color: #ff999d; }
+.power-board-note { min-height: 36px; padding: 8px 13px; display: flex; align-items: center; gap: 6px; color: #738197; background: #0a121d; font-size: 8px; line-height: 1.45; }
+.power-board-note svg { flex: 0 0 auto; color: #8276ee; }
+.power-board-note a { margin-left: auto; color: #9e94ff; white-space: nowrap; }
+
 @media (max-width: 1280px) {
+  .leader-power-section { grid-template-columns: 1fr; }
+  .power-board-state { min-height: 180px; }
   .dt-system-strip { grid-template-columns: repeat(5, 1fr); }
   .dt-system-strip > div { border-bottom: 1px solid var(--line); }
   .market-metric-grid { grid-template-columns: repeat(4, 1fr); }
@@ -979,6 +1046,17 @@ footer span { color: #566177; }
   .line-group-item { grid-template-columns: 1fr 1fr; }
 }
 @media (max-width: 700px) {
+  .leader-power-section { margin: 12px 0; }
+  .current-power-card { padding: 13px; }
+  .power-card-heading { align-items: flex-start; }
+  .power-card-heading > div:first-child { align-items: flex-start; flex-wrap: wrap; }
+  .power-card-heading small { width: 100%; padding-left: 24px; }
+  .power-score-strip { grid-template-columns: 1fr auto; }
+  .power-coverage { grid-column: 1 / -1; width: fit-content; }
+  .power-level-grid, .power-status-grid { grid-template-columns: repeat(2, 1fr); }
+  .power-section-bars > div { grid-template-columns: 52px 1fr 39px; }
+  .power-board-note { align-items: flex-start; flex-wrap: wrap; }
+  .power-board-note a { margin-left: 18px; }
   .day-trading-main { width: min(100% - 24px, 1760px); padding-top: 14px; }
   .dt-hero { padding: 18px; align-items: flex-start; flex-direction: column; }
   .dt-hero-status { justify-content: flex-start; }
