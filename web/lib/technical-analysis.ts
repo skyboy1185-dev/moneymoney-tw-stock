@@ -31,6 +31,13 @@ export interface TechnicalMarker {
   text: string;
 }
 
+export interface CompositeTradeSignal {
+  date: string;
+  type: "entry" | "exit";
+  price: number;
+  reasons: string[];
+}
+
 export interface TechnicalSummary {
   trend: TrendLabel;
   healthScore: number;
@@ -54,6 +61,7 @@ export interface TechnicalAnalysis {
   volume: VolumeAnalysisPoint[];
   macd: MacdAnalysisPoint[];
   markers: TechnicalMarker[];
+  tradeSignals: CompositeTradeSignal[];
 }
 
 function finite(value: number | null | undefined): value is number {
@@ -196,6 +204,75 @@ function buildMarkers(
   return markers.slice(-16);
 }
 
+export function generateCompositeTradeSignals(
+  prices: DailyPrice[],
+  indicators: TechnicalIndicator[],
+): CompositeTradeSignal[] {
+  if (prices.length < 30 || indicators.length !== prices.length) return [];
+  const volumeMa5 = calculateSMA(prices.map((price) => price.volume), 5);
+  const signals: CompositeTradeSignal[] = [];
+  let holding = false;
+  for (let index = 20; index < prices.length; index += 1) {
+    const price = prices[index];
+    const previousPrice = prices[index - 1];
+    const current = indicators[index];
+    const previous = indicators[index - 1];
+    if (!current || !previous || !finite(current.histogram) || !finite(previous.histogram)) continue;
+    const priorFiveHigh = Math.max(...prices.slice(index - 5, index).map((item) => item.high));
+    const priorTwentyLow = Math.min(...prices.slice(index - 20, index).map((item) => item.low));
+    const histogramTurnedPositive = previous.histogram < 0 && current.histogram >= 0;
+    const histogramTurnedNegative = previous.histogram >= 0 && current.histogram < 0;
+    const goldenCross = finite(current.dif) && finite(current.signal) && finite(previous.dif) && finite(previous.signal)
+      && previous.dif <= previous.signal && current.dif > current.signal;
+    const deathCross = finite(current.dif) && finite(current.signal) && finite(previous.dif) && finite(previous.signal)
+      && previous.dif >= previous.signal && current.dif < current.signal;
+    const aboveShortMa = finite(current.ma5) && finite(current.ma10) && price.close > current.ma5 && price.close > current.ma10;
+    const belowShortMa = (finite(current.ma10) && price.close < current.ma10)
+      || (finite(current.ma20) && price.close < current.ma20);
+    const breakout = price.close > priorFiveHigh;
+    const supportBreak = price.close < priorTwentyLow;
+    const averageVolume5 = volumeMa5[index];
+    const previousMa5 = indicators[index - 2]?.ma5;
+    const volumeConfirmed = finite(averageVolume5) && price.volume > averageVolume5 * 1.2;
+    const downVolumeConfirmed = price.close < previousPrice.close && finite(averageVolume5) && price.volume > averageVolume5;
+    const ma5TurningUp = finite(current.ma5) && finite(previousMa5) && current.ma5 > previousMa5;
+    const macdBothDown = finite(current.dif) && finite(current.signal) && finite(previous.dif) && finite(previous.signal)
+      && current.dif < previous.dif && current.signal < previous.signal;
+
+    if (!holding) {
+      const checks = [
+        [histogramTurnedPositive, "MACD 柱狀由負翻正"],
+        [goldenCross, "DIF 向上穿越 DEA"],
+        [aboveShortMa, "收盤站上 MA5 與 MA10"],
+        [breakout, "收盤突破近 5 日高點"],
+        [volumeConfirmed, "成交量大於 5 日均量 1.2 倍"],
+        [ma5TurningUp, "MA5 開始向上"],
+      ] as const;
+      const reasons = checks.filter(([matched]) => matched).map(([, reason]) => reason);
+      if ((histogramTurnedPositive || goldenCross) && reasons.length >= 4) {
+        signals.push({ date: price.date, type: "entry", price: price.close, reasons });
+        holding = true;
+      }
+      continue;
+    }
+
+    const checks = [
+      [histogramTurnedNegative, "MACD 柱狀由正翻負"],
+      [deathCross, "DIF 向下跌破 DEA"],
+      [belowShortMa, "收盤跌破 MA10 或 MA20"],
+      [supportBreak, "收盤跌破近 20 日支撐"],
+      [downVolumeConfirmed, "下跌成交量大於 5 日均量"],
+      [macdBothDown, "DIF 與 DEA 同時向下"],
+    ] as const;
+    const reasons = checks.filter(([matched]) => matched).map(([, reason]) => reason);
+    if ((histogramTurnedNegative || deathCross || supportBreak) && reasons.length >= 2) {
+      signals.push({ date: price.date, type: "exit", price: price.close, reasons });
+      holding = false;
+    }
+  }
+  return signals;
+}
+
 export function analyzeTechnicalData(
   prices: DailyPrice[],
   indicators: TechnicalIndicator[],
@@ -248,6 +325,7 @@ export function analyzeTechnicalData(
       volume,
       macd,
       markers: [],
+      tradeSignals: [],
       summary: {
         trend: "盤整", healthScore: 50, klineStatus: "資料不足，暫不判斷趨勢",
         volumeStatus: "資料不足", volumeExplanation: "至少需要 120 個交易日資料。",
@@ -430,14 +508,23 @@ export function analyzeTechnicalData(
         : !aboveMa20 ? "股價尚未站穩 MA20，中期趨勢仍有轉弱風險。"
           : "若收盤跌破 MA20 且成交量放大，技術面將明顯轉弱。";
 
+  const tradeSignals = generateCompositeTradeSignals(prices, indicators);
   const markers = buildMarkers(prices, indicators, volume, divergence);
-  if (signal !== "neutral") {
+  for (const tradeSignal of tradeSignals.slice(-80)) {
+    const entry = tradeSignal.type === "entry";
+    markers.push({
+      date: tradeSignal.date,
+      position: entry ? "belowBar" : "aboveBar",
+      color: entry ? "#ff6467" : "#2bce7f",
+      shape: entry ? "arrowUp" : "arrowDown",
+      text: entry ? "進場" : "出場",
+    });
+  }
+  if (signal === "observe" || signal === "add" || signal === "reduce") {
     const markerBySignal = {
       observe: { text: "止跌觀察", color: "#f1bd5d", position: "belowBar" as const, shape: "circle" as const },
-      entry: { text: "初步進場", color: "#ff6467", position: "belowBar" as const, shape: "arrowUp" as const },
       add: { text: "加碼觀察", color: "#ff7678", position: "belowBar" as const, shape: "arrowUp" as const },
       reduce: { text: "減碼觀察", color: "#ff9f43", position: "aboveBar" as const, shape: "arrowDown" as const },
-      exit: { text: "出場觀察", color: "#2bce7f", position: "aboveBar" as const, shape: "arrowDown" as const },
     }[signal];
     markers.push({ date: latest.date, ...markerBySignal });
   }
@@ -445,6 +532,7 @@ export function analyzeTechnicalData(
     volume,
     macd,
     markers,
+    tradeSignals,
     summary: {
       trend, healthScore, klineStatus, volumeStatus: `${latestVolume.status}・${volumeSignal}`,
       volumeExplanation, macdStatus, support, resistance, operation, operationReasons,

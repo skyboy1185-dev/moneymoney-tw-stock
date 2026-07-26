@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { calculateIndicators } from "./indicators";
-import { analyzeTechnicalData } from "./technical-analysis";
+import { analyzeTechnicalData, generateCompositeTradeSignals } from "./technical-analysis";
 import type { DailyPrice } from "./types";
 
 function candles(closes: number[], volumes?: number[]): DailyPrice[] {
@@ -45,5 +45,20 @@ describe("technical analysis engine", () => {
     const prices = candles(closes, closes.map((_, index) => 1_000_000 + index * 20_000));
     const result = analyzeTechnicalData(prices, calculateIndicators(prices), true);
     if (result.summary.signal !== "neutral") expect(result.summary.operation).toContain("盤中尚未確認");
+  });
+
+  it("generates alternating entry and exit points from price, volume and MACD confirmation", () => {
+    const closes = [
+      ...Array.from({ length: 90 }, (_, index) => 130 - index * 0.25),
+      ...Array.from({ length: 35 }, (_, index) => 107.5 + index * 1.2),
+      ...Array.from({ length: 35 }, (_, index) => 148.3 - index * 1.5),
+    ];
+    const volumes = closes.map((_, index) => index >= 90 ? 2_800_000 + index * 15_000 : 1_000_000);
+    const prices = candles(closes, volumes);
+    const signals = generateCompositeTradeSignals(prices, calculateIndicators(prices));
+    expect(signals.some((signal) => signal.type === "entry")).toBe(true);
+    expect(signals.some((signal) => signal.type === "exit")).toBe(true);
+    expect(signals.every((signal) => signal.reasons.length >= 2)).toBe(true);
+    expect(signals.every((signal, index) => index === 0 || signal.type !== signals[index - 1].type)).toBe(true);
   });
 });

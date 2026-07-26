@@ -54,6 +54,7 @@ export function StockChart({
   );
   const fullIndexByDate = useMemo(() => new Map(analysisPrices.map((price, index) => [price.date, index])), [analysisPrices]);
   const visibleIndexByDate = useMemo(() => new Map(prices.map((price, index) => [price.date, index])), [prices]);
+  const tradeSignalByDate = useMemo(() => new Map(analysis.tradeSignals.map((signal) => [signal.date, signal])), [analysis.tradeSignals]);
   const latestIndicator = indicators.at(-1);
   const latestFullIndex = analysisPrices.length - 1;
   const latestVolume = analysis.volume[latestFullIndex];
@@ -169,7 +170,7 @@ export function StockChart({
         price: 0, color: "#69758b", lineWidth: 1, lineStyle: charts.LineStyle.Solid,
         axisLabelVisible: true, title: "零軸",
       });
-      const macdMarkerTexts = new Set(["止跌觀察", "初步進場", "加碼觀察", "減碼觀察", "出場觀察", "底背離", "頂背離"]);
+      const macdMarkerTexts = new Set(["進場", "出場", "止跌觀察", "初步進場", "加碼觀察", "減碼觀察", "出場觀察", "底背離", "頂背離"]);
       histogramSeries.setMarkers(analysis.markers.filter((marker) => visibleDates.has(marker.date) && macdMarkerTexts.has(marker.text)).map((marker) => ({
         time: marker.date as never,
         position: marker.position,
@@ -253,6 +254,7 @@ export function StockChart({
   const hoverIndicator = hoverIndex == null ? analysisIndicators.at(-1) : analysisIndicators[hoverIndex];
   const hoverVolume = hoverIndex == null ? analysis.volume.at(-1) : analysis.volume[hoverIndex];
   const hoverMacd = hoverIndex == null ? analysis.macd.at(-1) : analysis.macd[hoverIndex];
+  const hoverTradeSignal = hoverPrice ? tradeSignalByDate.get(hoverPrice.date) : undefined;
   const previousPrice = hoverIndex == null ? analysisPrices.at(-2) : analysisPrices[hoverIndex - 1];
   const changePercent = hoverPrice && previousPrice ? (hoverPrice.close - previousPrice.close) / previousPrice.close * 100 : 0;
   const amplitude = hoverPrice && previousPrice ? (hoverPrice.high - hoverPrice.low) / previousPrice.close * 100 : 0;
@@ -282,16 +284,20 @@ export function StockChart({
           <div className="shared-chart-values">
             {hoverPrice && hoverIndicator && hoverVolume && hoverMacd ? (
               <>
-                <strong>{hoverPrice.date}</strong>
+                <strong>{hoverPrice.date}{hoverTradeSignal ? `・${hoverTradeSignal.type === "entry" ? "進場點" : "出場點"}` : ""}</strong>
                 <span>開 {safeNumber(hoverPrice.open)}　高 {safeNumber(hoverPrice.high)}　低 {safeNumber(hoverPrice.low)}　收 {safeNumber(hoverPrice.close)}</span>
                 <span>漲跌 {formatPercent(changePercent)}　振幅 {formatPercent(amplitude)}　量 {formatVolume(hoverPrice.volume)}</span>
                 <span>MA5 {safeNumber(hoverIndicator.ma5)}　MA10 {safeNumber(hoverIndicator.ma10)}　MA20 {safeNumber(hoverIndicator.ma20)}　MA60 {safeNumber(hoverIndicator.ma60)}　MA120 {safeNumber(hoverIndicator.ma120)}</span>
+                {hoverTradeSignal && <span className={`hover-trade-reason ${hoverTradeSignal.type}`}>{hoverTradeSignal.reasons.join("・")}</span>}
               </>
             ) : <span>移動滑鼠查看詳細數值</span>}
           </div>
 
           <section className="chart-pane price-pane">
-            <div className="pane-title"><BarChart3 size={13} /><strong>日 K 線與均線</strong><span className={`trend-label ${signalClass(summary.signal)}`}>{summary.trend}</span></div>
+            <div className="pane-title">
+              <BarChart3 size={13} /><strong>日 K 線與均線</strong><span className={`trend-label ${signalClass(summary.signal)}`}>{summary.trend}</span>
+              <span className="trade-legend entry"><i />綜合進場</span><span className="trade-legend exit"><i />綜合出場</span>
+            </div>
             <div ref={priceRef} className="technical-price-chart" />
           </section>
           <section className="chart-pane volume-pane">
