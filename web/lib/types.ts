@@ -45,8 +45,18 @@ export interface StockPayload {
   indicators: TechnicalIndicator[];
   updatedAt: string;
   quote?: StockQuote;
-  dataMode?: "demo" | "official_quote_demo_history";
+  dataMode?: "demo" | "official_quote_demo_history" | "official_history";
+  dataQuality?: StockDataQuality;
   dataNotice?: string;
+}
+
+export interface StockDataQuality {
+  status: "official_realtime" | "official_close" | "delayed" | "demo" | "unavailable";
+  historySource: string;
+  quoteSource: string;
+  quoteTimestamp: string;
+  lastTradingDate: string;
+  signalEligible: boolean;
 }
 
 export interface StockQuote {

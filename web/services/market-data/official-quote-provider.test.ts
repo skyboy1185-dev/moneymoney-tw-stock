@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mergeOfficialQuote } from "./official-quote-provider";
+import { isQuoteRealtime, mergeOfficialQuote } from "./official-quote-provider";
 import { MockStockDataProvider } from "@/services/stock-service";
 import type { StockQuote } from "@/lib/types";
 
@@ -20,5 +20,19 @@ describe("mergeOfficialQuote", () => {
     expect(merged.prices.at(-2)?.close).toBe(2405);
     expect(merged.indicators).toHaveLength(merged.prices.length);
     expect(merged.dataMode).toBe("official_quote_demo_history");
+  });
+});
+
+describe("isQuoteRealtime", () => {
+  it("requires the same trading date and a recent timestamp", () => {
+    const now = new Date("2026-07-21T01:30:30.000Z");
+    expect(isQuoteRealtime("2026-07-21", "09:30:00", now)).toBe(true);
+    expect(isQuoteRealtime("2026-07-21", "09:20:00", now)).toBe(false);
+    expect(isQuoteRealtime("2026-07-20", "09:30:00", now)).toBe(false);
+  });
+
+  it("rejects weekends and off-hours", () => {
+    expect(isQuoteRealtime("2026-07-25", "09:30:00", new Date("2026-07-25T01:30:30.000Z"))).toBe(false);
+    expect(isQuoteRealtime("2026-07-21", "14:00:00", new Date("2026-07-21T06:00:30.000Z"))).toBe(false);
   });
 });

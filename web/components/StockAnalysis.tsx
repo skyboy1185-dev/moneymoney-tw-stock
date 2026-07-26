@@ -69,8 +69,10 @@ export function StockAnalysis({
             <div className="stock-title-row">
               <h1>{data.meta.name}</h1>
               <span className="market-badge">{data.meta.market}</span>
-              <span className={data.quote ? "official-badge" : "demo-mini-badge"}>
-                {data.quote ? `${data.quote.isRealtime ? "官方準即時" : "官方收盤"} · ${data.quote.source}` : "展示資料"}
+              <span className={data.dataMode === "official_history" || data.quote ? "official-badge" : "demo-mini-badge"}>
+                {data.dataMode === "official_history"
+                  ? `${data.quote?.isRealtime ? "官方盤中" : "官方收盤"} · ${data.dataQuality?.quoteSource ?? data.quote?.source ?? "TWSE／TPEx"}`
+                  : data.quote ? `${data.quote.isRealtime ? "官方準即時" : "官方收盤"} · ${data.quote.source}` : "展示資料"}
               </span>
               <span className="power-mini-badge">馬力 {powerScore.powerValue}/17 · {powerScore.starLabel}</span>
             </div>
@@ -89,9 +91,13 @@ export function StockAnalysis({
             <div key={label}><span>{label}</span><strong>{value}</strong></div>
           ))}
         </div>
-        <div className="update-time"><Clock3 size={13} /> {data.quote ? "官方報價" : "展示資料"}更新於 {new Date(data.updatedAt).toLocaleString("zh-TW", { hour12: false })}</div>
+        <div className="update-time">
+          <Clock3 size={13} />
+          {data.dataMode === "official_history" ? "官方行情與歷史資料" : data.quote ? "官方報價" : "展示資料"}更新於{" "}
+          {new Date(data.updatedAt).toLocaleString("zh-TW", { hour12: false })}
+        </div>
       </section>
-      {data.dataNotice && <div className={data.quote ? "quote-data-notice official" : "quote-data-notice"}>{data.dataNotice}</div>}
+      {data.dataNotice && <div className={data.dataMode === "official_history" || data.quote ? "quote-data-notice official" : "quote-data-notice"}>{data.dataNotice}</div>}
 
       <LeaderPowerPanel
         currentSymbol={data.meta.symbol}

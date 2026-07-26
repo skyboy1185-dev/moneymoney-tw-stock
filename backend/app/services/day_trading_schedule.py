@@ -166,6 +166,10 @@ def recommendation_qualification(
         failures.append(str(session["statusMessage"]))
     if candidate.get("dataStatus", "normal") != "normal":
         failures.append("行情資料異常")
+    if candidate.get("dataMode") != "official":
+        failures.append("策略或歷史行情仍為展示資料，禁止正式訊號")
+    if candidate.get("quoteIsRealtime") is not True:
+        failures.append("缺少可驗證的盤中行情")
     if candidate.get("status") != "confirmed" or _expired(candidate, current):
         failures.append("訊號已失效或尚未確認")
     if str(candidate.get("action", "")).startswith(("等待", "觀望", "禁止", "行情異常")):

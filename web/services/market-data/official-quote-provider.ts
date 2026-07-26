@@ -17,15 +17,26 @@ function isoDate(value: string): string {
   return value;
 }
 
-function isTaiwanTradingTime() {
+export function isQuoteRealtime(date: string, time: string, now = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Taipei", weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false,
-  }).formatToParts(new Date());
+  }).formatToParts(now);
   const weekday = parts.find((part) => part.type === "weekday")?.value;
   const hour = Number(parts.find((part) => part.type === "hour")?.value ?? 0);
   const minute = Number(parts.find((part) => part.type === "minute")?.value ?? 0);
   const minutes = hour * 60 + minute;
-  return !["Sat", "Sun"].includes(weekday ?? "") && minutes >= 540 && minutes <= 810;
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(now);
+  const quoteTime = new Date(`${date}T${time}+08:00`);
+  const delaySeconds = Math.abs(now.getTime() - quoteTime.getTime()) / 1_000;
+  return (
+    !["Sat", "Sun"].includes(weekday ?? "")
+    && minutes >= 540 && minutes <= 810
+    && date === today
+    && Number.isFinite(quoteTime.getTime())
+    && delaySeconds <= 120
+  );
 }
 
 async function fetchMisQuote(meta: StockMeta): Promise<StockQuote | null> {
@@ -44,6 +55,8 @@ async function fetchMisQuote(meta: StockMeta): Promise<StockQuote | null> {
   const payload = await response.json();
   const row = payload.msgArray?.[0];
   if (!row) return null;
+  const quoteDate = isoDate(String(row.d));
+  const quoteTime = String(row.t || row.ot || "13:30:00");
   const previousClose = number(row.y);
   const lastTrade = number(row.z);
   const price = lastTrade && lastTrade > 0 ? lastTrade : previousClose;
@@ -55,13 +68,13 @@ async function fetchMisQuote(meta: StockMeta): Promise<StockQuote | null> {
   const bestAsk = number(String(row.a ?? "").split("_")[0]);
   const bestBid = number(String(row.b ?? "").split("_")[0]);
   return {
-    symbol: meta.symbol, name: String(row.n || meta.name), date: isoDate(String(row.d)), time: String(row.t || row.ot || "13:30:00"),
+    symbol: meta.symbol, name: String(row.n || meta.name), date: quoteDate, time: quoteTime,
     open, high, low, price, previousClose, change,
     changePercent: previousClose ? (change / previousClose) * 100 : 0,
     volume: Math.round((number(row.v) ?? 0) * 1000),
     bestBid: bestBid && bestBid > 0 ? bestBid : undefined,
     bestAsk: bestAsk && bestAsk > 0 ? bestAsk : undefined,
-    source: "TWSE MIS", isRealtime: isTaiwanTradingTime(),
+    source: "TWSE MIS", isRealtime: Boolean(lastTrade && lastTrade > 0 && isQuoteRealtime(quoteDate, quoteTime)),
   };
 }
 

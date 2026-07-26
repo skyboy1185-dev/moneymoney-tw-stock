@@ -91,6 +91,7 @@ def _candidate(signal_id: str, confidence: int = 80, **overrides: object) -> dic
     now = datetime(2026, 7, 21, 9, 10, tzinfo=TAIPEI)
     value: dict[str, object] = {
         "id": signal_id, "direction": "long", "status": "confirmed",
+        "dataMode": "official", "quoteIsRealtime": True,
         "confidenceScore": confidence, "healthScore": 80, "riskRewardRatio": 2.0,
         "volume": 1_000_000, "turnover": 100_000_000, "spreadPercentage": 0.1,
         "tradingEligible": True, "shortAvailabilityKnown": True, "shortEligible": True,
@@ -159,6 +160,12 @@ def test_recommendation_hard_filters_and_short_qualification() -> None:
     )
     assert not passed
     assert "放空資格待確認" in failures
+    demo_passed, demo_failures = recommendation_qualification(
+        _candidate("demo", dataMode="official_quote_demo_strategy"),
+        config, session, now,
+    )
+    assert not demo_passed
+    assert "策略或歷史行情仍為展示資料，禁止正式訊號" in demo_failures
 
 
 def test_selector_recommends_at_most_five_without_lowering_thresholds() -> None:

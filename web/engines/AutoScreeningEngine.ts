@@ -77,6 +77,7 @@ export class AutoScreeningEngine {
       const quoteFresh = Boolean(officialQuote?.isRealtime && officialQuote.date === taipeiDate());
       const turnover = latest.close * latest.volume;
       const hardRiskFailures: string[] = [];
+      if (stock.dataMode !== "official_history") hardRiskFailures.push("歷史 K 線仍為展示資料，禁止正式推薦");
       if (!officialQuote) hardRiskFailures.push("行情資料缺失");
       if (!quoteFresh) hardRiskFailures.push("行情時間過期");
       if (latest.volume < 500_000) hardRiskFailures.push("成交量不足");

@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { payloadFor, stockService } from "@/services/stock-service";
 import { clientKey, rateLimit } from "@/lib/server-utils";
-import { getOfficialQuote, mergeOfficialQuote } from "@/services/market-data/official-quote-provider";
+import { getOfficialQuote } from "@/services/market-data/official-quote-provider";
+import { buildOfficialStockPayload } from "@/services/market-data/official-history-provider";
 import { resolveOfficialStock } from "@/services/market-data/stock-directory";
-import { getBackendStock } from "@/services/backend-client";
 
 export const dynamic = "force-dynamic";
 
@@ -15,23 +14,18 @@ export async function GET(request: NextRequest) {
   if (!query) {
     return NextResponse.json({ error: "請輸入股票代號或名稱。" }, { status: 400 });
   }
-  const backendPayload = await getBackendStock(query).catch(() => null);
-  const meta = backendPayload?.meta
-    ?? await stockService.search(query)
-    ?? await resolveOfficialStock(query);
+  const meta = await resolveOfficialStock(query);
   if (!meta) {
     return NextResponse.json({ error: `找不到「${query}」，請確認股票代號或名稱。` }, { status: 404 });
   }
-  const payload = backendPayload
-    ?? await stockService.getStock(meta.symbol)
-    ?? payloadFor(meta);
-  if (!payload) {
-    return NextResponse.json({ error: "個股資料暫時無法取得。" }, { status: 503 });
+  try {
+    const officialQuote = await getOfficialQuote(meta);
+    const payload = await buildOfficialStockPayload(meta, officialQuote);
+    return NextResponse.json(payload);
+  } catch (error) {
+    return NextResponse.json({
+      error: "官方歷史行情暫時無法取得；為避免顯示錯誤技術指標，本頁不會改用模擬 K 線。",
+      detail: error instanceof Error ? error.message : "unknown",
+    }, { status: 503 });
   }
-  const officialQuote = await getOfficialQuote(meta);
-  return NextResponse.json(officialQuote ? mergeOfficialQuote(payload, officialQuote) : {
-    ...payload,
-    dataMode: "demo",
-    dataNotice: "官方報價暫時無法取得，目前顯示展示模式／模擬資料。",
-  });
 }
