@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
@@ -512,3 +512,91 @@ class AIStockAlert(Base):
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ShareholderDistributionWeekly(Base):
+    __tablename__ = "shareholder_distribution_weekly"
+    __table_args__ = (
+        UniqueConstraint("stock_code", "report_date", "holding_level", name="uq_holder_distribution_stock_date_level"),
+        Index("ix_holder_distribution_date_stock", "report_date", "stock_code"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    stock_code: Mapped[str] = mapped_column(String(12), nullable=False)
+    report_date: Mapped[date] = mapped_column(Date, nullable=False)
+    holding_level: Mapped[int] = mapped_column(Integer, nullable=False)
+    holder_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    share_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    holding_ratio: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class LargeHolderWeeklySummary(Base):
+    __tablename__ = "large_holder_weekly_summary"
+    __table_args__ = (
+        UniqueConstraint("stock_code", "report_date", name="uq_large_holder_summary_stock_date"),
+        Index("ix_large_holder_summary_date", "report_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    stock_code: Mapped[str] = mapped_column(String(12), nullable=False)
+    stock_name: Mapped[str] = mapped_column(String(80), default="")
+    market: Mapped[str] = mapped_column(String(20), default="未知")
+    industry: Mapped[str] = mapped_column(String(80), default="未分類")
+    report_date: Mapped[date] = mapped_column(Date, nullable=False)
+    holders_over_400_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    shares_over_400: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    ratio_over_400: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False)
+    holders_over_1000_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    shares_over_1000: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    ratio_over_1000: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False)
+    total_shareholders: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    total_shares: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class LargeHolderWeeklyChange(Base):
+    __tablename__ = "large_holder_weekly_change"
+    __table_args__ = (
+        UniqueConstraint("stock_code", "current_report_date", "previous_report_date", name="uq_large_holder_change_period"),
+        Index("ix_large_holder_change_current", "current_report_date", "change_pp_over_400"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    stock_code: Mapped[str] = mapped_column(String(12), nullable=False)
+    current_report_date: Mapped[date] = mapped_column(Date, nullable=False)
+    previous_report_date: Mapped[date] = mapped_column(Date, nullable=False)
+    current_ratio_over_400: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False)
+    previous_ratio_over_400: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False)
+    change_pp_over_400: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False)
+    change_pct_over_400: Mapped[Decimal | None] = mapped_column(Numeric(14, 6))
+    current_ratio_over_1000: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False)
+    previous_ratio_over_1000: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False)
+    change_pp_over_1000: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False)
+    change_pct_over_1000: Mapped[Decimal | None] = mapped_column(Numeric(14, 6))
+    holder_count_change_over_400: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    holder_count_change_over_1000: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    anomaly_flag: Mapped[bool] = mapped_column(Boolean, default=False)
+    anomaly_reason: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class LargeHolderMonitor(Base):
+    __tablename__ = "large_holder_monitors"
+    __table_args__ = (
+        UniqueConstraint("user_id", "stock_code", name="uq_large_holder_monitor_user_stock"),
+        Index("ix_large_holder_monitor_user_active", "user_id", "active"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    stock_code: Mapped[str] = mapped_column(String(12), nullable=False)
+    stock_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    monitor_type: Mapped[str] = mapped_column(String(20), default="over400")
+    line_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

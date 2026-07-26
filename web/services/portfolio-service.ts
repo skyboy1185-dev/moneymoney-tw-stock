@@ -113,6 +113,21 @@ export function addWatchlist(userId: string, ranking: RankingRow): "created" | "
   return Number(result.changes) === 1 ? "created" : "duplicate";
 }
 
+export function addWatchlistSnapshot(
+  userId: string,
+  item: { symbol: string; name: string; price: number; score: number; sourceName: string; reasons: string[] },
+): "created" | "duplicate" {
+  const result = getDatabase().prepare(`
+    INSERT OR IGNORE INTO watchlist_items
+    (user_id, symbol, name, added_at, added_price, added_score, original_robot_id, original_robot_name, original_reasons_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    userId, item.symbol, item.name, new Date().toISOString(), item.price, item.score,
+    "large_holder_ranking", item.sourceName, JSON.stringify(item.reasons.slice(0, 3)),
+  );
+  return Number(result.changes) === 1 ? "created" : "duplicate";
+}
+
 export function removeWatchlist(userId: string, symbol: string) {
   return Number(getDatabase().prepare("DELETE FROM watchlist_items WHERE user_id = ? AND symbol = ?").run(userId, symbol).changes) > 0;
 }

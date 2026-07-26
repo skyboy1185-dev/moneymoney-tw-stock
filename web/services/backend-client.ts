@@ -4,13 +4,13 @@ const backendBaseUrl = process.env.FASTAPI_URL?.replace(/\/$/, "");
 
 export class BackendUnavailableError extends Error {}
 
-export async function backendJson<T>(path: string, init?: RequestInit): Promise<T> {
+export async function backendJson<T>(path: string, init?: RequestInit, timeoutMs = 5_000): Promise<T> {
   if (!backendBaseUrl) throw new BackendUnavailableError("FASTAPI_URL 尚未設定");
   try {
     const response = await fetch(`${backendBaseUrl}/api/v1${path}`, {
       ...init,
       headers: { Accept: "application/json", ...init?.headers },
-      signal: AbortSignal.timeout(5_000),
+      signal: AbortSignal.timeout(timeoutMs),
       cache: "no-store",
     });
     if (!response.ok) {

@@ -188,3 +188,11 @@ class AIPositionClose(BaseModel):
     fee: Decimal = Field(default=Decimal("0"), ge=0)
     tax: Decimal = Field(default=Decimal("0"), ge=0)
     reason: str = Field(default="使用者確認已全部賣出", max_length=300)
+
+
+class LargeHolderMonitorCreate(BaseModel):
+    stock_code: str = Field(pattern=r"^\d{4,6}$")
+    stock_name: str = Field(min_length=1, max_length=80)
+    monitor_type: Literal["over400", "over1000"] = "over400"
+    action: Literal["watchlist", "ai", "line"] = "ai"
+    current_price: float | None = Field(default=None, gt=0)

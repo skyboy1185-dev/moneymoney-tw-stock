@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     redis_url: str | None = None
     day_trading_stream_seconds: float = 2.0
     ai_stock_monitor_seconds: int = 60
+    large_holder_auto_sync_enabled: bool = True
+    large_holder_sync_interval_seconds: int = 21_600
     twse_timezone: str = "Asia/Taipei"
     twse_holidays: str = ""
     line_channel_access_token: str = ""

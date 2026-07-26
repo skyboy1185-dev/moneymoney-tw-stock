@@ -2,17 +2,18 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { Activity, BarChart3, Bot, BrainCircuit, Flame, Newspaper, Search, SlidersHorizontal, Star, Wifi, WifiOff } from "lucide-react";
+import { Activity, BarChart3, Bot, BrainCircuit, Flame, Newspaper, Search, SlidersHorizontal, Star, UsersRound, Wifi, WifiOff } from "lucide-react";
 import { StockAnalysis } from "@/components/StockAnalysis";
 import { Screener } from "@/components/Screener";
 import { AiCenter } from "@/components/AiCenter";
 import { PortfolioPage } from "@/components/PortfolioPage";
 import { IndustryHotspots } from "@/components/IndustryHotspots";
 import { NewsPage } from "@/components/NewsPage";
+import { LargeHolderRankingPage } from "@/components/LargeHolderRankingPage";
 import type { MarketSnapshot } from "@/lib/market-types";
 import type { StockPayload } from "@/lib/types";
 
-type Tab = "analysis" | "screener" | "ai" | "portfolio" | "industries" | "news";
+type Tab = "analysis" | "screener" | "ai" | "large-holders" | "portfolio" | "industries" | "news";
 type Connection = "connecting" | "connected" | "disconnected";
 
 async function fetchStock(query: string): Promise<StockPayload> {
@@ -56,7 +57,7 @@ export default function Home() {
     const requestedView = new URLSearchParams(window.location.search).get("view") as Tab | null;
     setQuery(initial);
     void loadStock(initial).then(() => {
-      if (requestedView && ["analysis", "screener", "ai", "portfolio", "industries", "news"].includes(requestedView)) {
+      if (requestedView && ["analysis", "screener", "ai", "large-holders", "portfolio", "industries", "news"].includes(requestedView)) {
         setTab(requestedView);
       }
     });
@@ -127,6 +128,7 @@ export default function Home() {
         <button className={tab === "screener" ? "active" : ""} onClick={() => setTab("screener")}><SlidersHorizontal size={17} />AI 選股</button>
         <Link className="ai-nav" href="/day-trading-bot"><Bot size={17} />當沖機器人<span>LIVE</span></Link>
         <button className={tab === "ai" ? "active" : ""} onClick={() => setTab("ai")}><BrainCircuit size={17} />AI選股機器人</button>
+        <button className={tab === "large-holders" ? "active" : ""} onClick={() => setTab("large-holders")}><UsersRound size={17} />大戶持股增加榜</button>
         <button className={tab === "portfolio" ? "active" : ""} onClick={() => setTab("portfolio")}><Star size={17} />觀察清單</button>
         <button className={tab === "industries" ? "active" : ""} onClick={() => setTab("industries")}><Flame size={17} />產業熱點</button>
         <button className={tab === "news" ? "active" : ""} onClick={() => setTab("news")}><Newspaper size={17} />新聞</button>
@@ -149,6 +151,8 @@ export default function Home() {
           <Screener onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }} />
         ) : tab === "ai" ? (
           <AiCenter snapshot={snapshot} loading={connection === "connecting"} autoMode={autoMode} onAutoModeChange={setAutoMode} userId={userId} onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }} />
+        ) : tab === "large-holders" ? (
+          <LargeHolderRankingPage userId={userId} onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }} />
         ) : tab === "portfolio" ? (
           <PortfolioPage userId={userId} onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }} />
         ) : tab === "industries" ? (

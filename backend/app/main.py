@@ -13,6 +13,7 @@ from .routers import (
     content,
     day_trading,
     line_integration,
+    large_holders,
     portfolio,
     screener,
     stocks,
@@ -20,6 +21,7 @@ from .routers import (
 from .services.ai_stock_automation import ai_stock_automation
 from .services.day_trading_automation import day_trading_automation
 from .services.line_messaging import line_notification_dispatcher
+from .services.large_holder_automation import large_holder_automation
 
 settings = get_settings()
 
@@ -30,9 +32,11 @@ async def lifespan(_: FastAPI):
     await line_notification_dispatcher.start()
     await day_trading_automation.start()
     await ai_stock_automation.start()
+    await large_holder_automation.start()
     try:
         yield
     finally:
+        await large_holder_automation.stop()
         await ai_stock_automation.stop()
         await day_trading_automation.stop()
         await line_notification_dispatcher.stop()
@@ -59,6 +63,7 @@ app.include_router(day_trading.router, prefix=settings.api_prefix)
 app.include_router(line_integration.router, prefix=settings.api_prefix)
 app.include_router(ai_stock_line_integration.router, prefix=settings.api_prefix)
 app.include_router(ai_stock.router, prefix=settings.api_prefix)
+app.include_router(large_holders.router, prefix=settings.api_prefix)
 app.include_router(line_integration.webhook_router)
 app.include_router(ai_stock_line_integration.webhook_router)
 

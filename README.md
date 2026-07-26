@@ -30,6 +30,7 @@
 - Asia/Taipei 開盤排程、0～10 分鐘暖機、盤中重啟恢復與非交易時段保護
 - AI 正式推薦每小時合計最多 5 檔；硬性風控、3 分鐘保留與 5 分替換門檻
 - 正式推薦與市場掃描候選分流，候選股票不會誤標為正式買進／放空建議
+- 大戶持股增加榜：TDCC 400張以上與千張以上週增排行榜、12週趨勢、AI觀察與LINE設定
 
 ## 一鍵啟動
 
@@ -95,6 +96,8 @@ npm run dev
 ```bash
 cd web
 npm test
+npm run lint
+npx tsc --noEmit
 npm run build
 npm audit
 ```
@@ -139,6 +142,10 @@ curl http://127.0.0.1:8000/api/v1/health
 | GET/PUT | `/api/v1/integrations/line/settings` | LINE 事件通知開關 |
 | POST | `/api/v1/integrations/line/test` | 推送 LINE 測試訊息 |
 | DELETE | `/api/v1/integrations/line/groups/{id}` | 解除群組綁定 |
+| GET | `/api/v1/large-holders/rankings?type=over400` | 400張／千張以上大戶週增排行榜 |
+| GET | `/api/v1/large-holders/stocks/{code}/history` | 最近12週大戶持股歷史 |
+| POST | `/api/v1/large-holders/sync` | 同步最新一期TDCC官方資料 |
+| GET/POST | `/api/v1/large-holders/monitors` | 大戶AI觀察與LINE通知設定 |
 
 自選 API 需帶 `X-User-Id` header。
 
@@ -233,6 +240,31 @@ Mock 資料集中於：
 - 前端降級：`web/services/stock-service.ts`
 
 未來可實作相同 service 邊界替換為 FinMind、TWSE、TPEx 或其他合法行情來源。API Key 僅能放在後端環境變數，請勿使用 `NEXT_PUBLIC_` 前綴。
+
+## 大戶持股增加榜
+
+資料 Provider 介面位於 `backend/app/services/large_holders.py`。正式 Adapter 使用臺灣集中保管結算所 OpenAPI：
+
+```text
+https://openapi.tdcc.com.tw/v1/opendata/1-5
+```
+
+同步後會保存原始持股級距、週摘要與週增減到 PostgreSQL。400張以上嚴格加總 TDCC 持股分級 12、13、14、15；千張以上加總所有千張以上級距（目前格式為分級15），不會誤取單一400～600張級距。系統每6小時檢查一次最新官方週資料，資料日期已存在時不重複寫入：
+
+```env
+LARGE_HOLDER_AUTO_SYNC_ENABLED=true
+LARGE_HOLDER_SYNC_INTERVAL_SECONDS=21600
+```
+
+官方大量下載只提供最新一期，歷史週資料由本站 PostgreSQL 每週累積。首次部署尚未累積兩期時，頁面使用可重現的展示 Adapter，並固定標示「展示模式」，不會把模擬排行宣稱為本週官方排行。新一期同步失敗時，資料庫仍保留最後成功資料。
+
+Migration：
+
+```bash
+psql "$DATABASE_URL" -f backend/migrations/006_large_holder_rankings.sql
+```
+
+FastAPI 啟動時的 SQLAlchemy `create_all()` 也會建立缺少的資料表。正式環境建議先執行 migration，再重新部署後端。
 
 ## 免責聲明
 
