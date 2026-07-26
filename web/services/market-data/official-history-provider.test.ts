@@ -4,6 +4,7 @@ import {
   mergeOfficialHistoryWithQuote,
   parseTpexMonthlyHistory,
   parseTwseMonthlyHistory,
+  validateOfficialHistoryContinuity,
 } from "./official-history-provider";
 
 const listed: StockMeta = {
@@ -61,5 +62,20 @@ describe("official historical price parsers", () => {
     expect(mergeOfficialHistoryWithQuote(history, listed, closingQuote)[0].volume).toBe(24_810_509);
     expect(mergeOfficialHistoryWithQuote(history, listed, { ...closingQuote, isRealtime: true })[0].volume)
       .toBe(21_505_000);
+  });
+
+  it("rejects histories with too few rows or a missing calendar month", () => {
+    const row = {
+      symbol: "2330", name: "台積電", open: 100, high: 101, low: 99, close: 100, volume: 1_000,
+    };
+    expect(() => validateOfficialHistoryContinuity(
+      Array.from({ length: 239 }, (_, index) => ({ ...row, date: `2025-01-${String(index + 1).padStart(2, "0")}` })),
+    )).toThrow("不足");
+    const continuous = Array.from({ length: 240 }, (_, index) => {
+      const date = new Date(Date.UTC(2025, 0, 1 + index));
+      return { ...row, date: date.toISOString().slice(0, 10) };
+    });
+    continuous[120] = { ...continuous[120], date: "2026-03-01" };
+    expect(() => validateOfficialHistoryContinuity(continuous)).toThrow("日期缺口");
   });
 });

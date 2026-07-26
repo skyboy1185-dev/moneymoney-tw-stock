@@ -95,14 +95,55 @@ async function fetchMonth(meta: StockMeta, month: { compact: string; slash: stri
   return listed ? parseTwseMonthlyHistory(payload, meta) : parseTpexMonthlyHistory(payload, meta);
 }
 
+async function fetchMonthWithRetry(
+  meta: StockMeta,
+  month: { compact: string; slash: string },
+): Promise<DailyPrice[]> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await fetchMonth(meta, month);
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) {
+        await new Promise((resolve) => setTimeout(resolve, 250 * (2 ** attempt)));
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("官方月行情下載失敗");
+}
+
+export function validateOfficialHistoryContinuity(prices: DailyPrice[]): void {
+  if (prices.length < 240) {
+    throw new Error(`官方歷史行情不足，目前只有 ${prices.length} 個交易日`);
+  }
+  for (let index = 1; index < prices.length; index += 1) {
+    const previous = new Date(`${prices[index - 1].date}T00:00:00Z`);
+    const current = new Date(`${prices[index].date}T00:00:00Z`);
+    const gapDays = (current.getTime() - previous.getTime()) / 86_400_000;
+    if (gapDays > 18) {
+      throw new Error(`官方歷史行情存在日期缺口：${prices[index - 1].date}～${prices[index].date}`);
+    }
+  }
+}
+
 async function loadOfficialHistory(meta: StockMeta): Promise<DailyPrice[]> {
-  const results = await Promise.allSettled(recentMonths().map((month) => fetchMonth(meta, month)));
-  const rows = results.flatMap((result) => result.status === "fulfilled" ? result.value : []);
+  const months = recentMonths();
+  const rows: DailyPrice[] = [];
+  const failures: unknown[] = [];
+  // Smaller batches avoid triggering exchange throttling and make a missing
+  // month less likely than firing every historical request at once.
+  for (let start = 0; start < months.length; start += 3) {
+    const results = await Promise.allSettled(
+      months.slice(start, start + 3).map((month) => fetchMonthWithRetry(meta, month)),
+    );
+    rows.push(...results.flatMap((result) => result.status === "fulfilled" ? result.value : []));
+    failures.push(...results.filter((result) => result.status === "rejected"));
+  }
   const deduplicated = [...new Map(rows.map((row) => [row.date, row])).values()]
     .sort((left, right) => left.date.localeCompare(right.date));
-  if (deduplicated.length < 120) {
-    throw new Error(`官方歷史行情不足，目前只有 ${deduplicated.length} 個交易日`);
-  }
+  validateOfficialHistoryContinuity(deduplicated);
+  if (failures.length && !deduplicated.length) throw new Error("所有官方歷史行情請求均失敗");
   return deduplicated;
 }
 
