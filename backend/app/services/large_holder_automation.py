@@ -5,7 +5,7 @@ import logging
 
 from ..config import get_settings
 from ..database import SessionLocal
-from .large_holders import persist_latest_distribution, tdcc_large_holder_provider
+from .large_holders import fetch_latest_distribution_bundle, persist_latest_distribution
 
 
 logger = logging.getLogger(__name__)
@@ -33,18 +33,7 @@ class LargeHolderAutomation:
     async def _loop(self) -> None:
         while True:
             try:
-                rows = await tdcc_large_holder_provider.fetch_latest()
-                try:
-                    directory = await tdcc_large_holder_provider.fetch_stock_directory()
-                except Exception:
-                    # Stock names/markets are enrichment data. An intermittent
-                    # directory outage must not discard the official TDCC
-                    # shareholder distribution for the week.
-                    logger.warning(
-                        "Stock directory enrichment failed; persisting TDCC data with stock codes",
-                        exc_info=True,
-                    )
-                    directory = {}
+                rows, directory = await fetch_latest_distribution_bundle()
                 await asyncio.to_thread(self._persist, rows, directory)
             except asyncio.CancelledError:
                 raise

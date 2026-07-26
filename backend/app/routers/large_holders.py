@@ -1,4 +1,3 @@
-import asyncio
 from datetime import UTC, datetime
 
 import httpx
@@ -11,10 +10,10 @@ from ..database import get_db
 from ..models import LargeHolderMonitor, WatchlistItem
 from ..schemas import LargeHolderMonitorCreate
 from ..services.large_holders import (
+    fetch_latest_distribution_bundle,
     get_large_holder_history,
     get_large_holder_rankings,
     persist_latest_distribution,
-    tdcc_large_holder_provider,
 )
 from ..services.official_market_data import StockQuoteRequest, official_market_data_provider
 
@@ -50,10 +49,7 @@ async def rankings(
     sync_result = None
     if refresh:
         try:
-            rows, directory = await asyncio.gather(
-                tdcc_large_holder_provider.fetch_latest(),
-                tdcc_large_holder_provider.fetch_stock_directory(),
-            )
+            rows, directory = await fetch_latest_distribution_bundle()
             sync_result = persist_latest_distribution(db, rows, directory)
         except (httpx.HTTPError, ValueError) as error:
             sync_result = {"status": "failed", "message": str(error)}
@@ -93,10 +89,7 @@ def stock_history(
 @router.post("/sync")
 async def sync_tdcc(db: Session = Depends(get_db)) -> dict:
     try:
-        rows, directory = await asyncio.gather(
-            tdcc_large_holder_provider.fetch_latest(),
-            tdcc_large_holder_provider.fetch_stock_directory(),
-        )
+        rows, directory = await fetch_latest_distribution_bundle()
         result = persist_latest_distribution(db, rows, directory)
     except httpx.HTTPError as error:
         raise HTTPException(status_code=502, detail="TDCC 官方資料暫時無法連線") from error

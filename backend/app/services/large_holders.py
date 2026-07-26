@@ -591,3 +591,16 @@ def get_large_holder_history(db: Session, stock_code: str, weeks: int = 12) -> d
 
 
 tdcc_large_holder_provider = TdccOpenDataProvider()
+
+
+async def fetch_latest_distribution_bundle() -> tuple[
+    list[DistributionRow],
+    dict[str, dict[str, str]],
+]:
+    """Fetch required TDCC rows and best-effort stock metadata enrichment."""
+    rows = await tdcc_large_holder_provider.fetch_latest()
+    try:
+        directory = await tdcc_large_holder_provider.fetch_stock_directory()
+    except httpx.HTTPError:
+        directory = {}
+    return rows, directory
