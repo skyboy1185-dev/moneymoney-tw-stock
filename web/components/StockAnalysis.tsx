@@ -43,7 +43,7 @@ export function StockAnalysis({
         return { prices: data.prices.slice(start, end), indicators: data.indicators.slice(start, end) };
       }
     }
-    const count: Record<string, number> = { "20d": 20, "60d": 60, "120d": 120, "240d": 240 };
+    const count: Record<string, number> = { "30d": 30, "60d": 60, "120d": 120, "240d": 240 };
     const start = Math.max(0, data.prices.length - (count[range] ?? 120));
     return {
       prices: data.prices.slice(start),
@@ -108,7 +108,7 @@ export function StockAnalysis({
               <h2>日 K 線・成交量・MACD</h2>
             </div>
             <div className="range-tabs" aria-label="時間區間">
-              {[["20d", "20 日"], ["60d", "60 日"], ["120d", "120 日"], ["240d", "240 日"], ["custom", "自訂日期"]].map(([value, label]) => (
+              {[["30d", "30 日"], ["60d", "60 日"], ["120d", "120 日"], ["240d", "240 日"], ["custom", "自訂日期"]].map(([value, label]) => (
                 <button key={value} className={range === value ? "active" : ""} onClick={() => setRange(value)}>{label}</button>
               ))}
             </div>
