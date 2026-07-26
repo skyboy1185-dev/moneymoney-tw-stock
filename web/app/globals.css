@@ -1013,6 +1013,9 @@ footer span { color: #566177; }
 .weighted-power-table td:nth-child(2) strong, .weighted-power-table td:nth-child(2) span { display: block; }
 .weighted-power-table td:nth-child(2) strong { color: #eef1f6; font-size: 10px; }
 .weighted-power-table td:nth-child(2) span { margin-top: 1px; color: #78869b; font-size: 8px; }
+.power-quote-cell strong, .power-quote-cell small { display: block; }
+.power-quote-cell strong { color: #e8edf5; font-size: 10px; }
+.power-quote-cell small { max-width: 92px; margin-top: 2px; overflow: hidden; color: #66758b; text-overflow: ellipsis; white-space: nowrap; }
 .weighted-power-table .up { color: var(--up); }
 .weighted-power-table .down { color: var(--down); }
 .table-power-value { color: #ffd76f; font-size: 14px; }

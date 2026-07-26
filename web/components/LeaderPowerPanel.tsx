@@ -102,7 +102,10 @@ export function LeaderPowerPanel({
                       <td>{row.rank}</td>
                       <td><strong>{row.symbol}</strong><span>{row.name}</span></td>
                       <td>{row.weight.toFixed(2)}%</td>
-                      <td>{safeNumber(row.price)}</td>
+                      <td className="power-quote-cell" title={`報價時間：${row.quoteTime}`}>
+                        <strong>{safeNumber(row.price)}</strong>
+                        <small>{row.quoteSource}</small>
+                      </td>
                       <td className={valueClass(row.changePercent)}>{formatPercent(row.changePercent)}</td>
                       <td><b className="table-power-value">{row.score.powerValue}</b><small>/17</small></td>
                       <td>{row.score.healthScore}</td>

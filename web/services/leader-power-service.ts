@@ -53,7 +53,7 @@ export async function buildLeaderPowerResponse(): Promise<LeaderPowerResponse> {
     sourceDate: WEIGHTED_LEADER_SOURCE_DATE,
     sourceUrl: WEIGHTED_LEADER_SOURCE_URL,
     updatedAt: new Date().toISOString(),
-    dataNotice: "馬力評分使用技術資料；尚未串接的籌碼、法人、族群與大盤因子不加分，並列入扣分原因。",
+    dataNotice: "現價優先使用官方市場報價；歷史技術資料仍含展示資料。未串接的籌碼、法人、族群與大盤因子不加分，並列入扣分原因。",
     rows,
   };
   cache = { value, expiresAt: Date.now() + 60_000 };
