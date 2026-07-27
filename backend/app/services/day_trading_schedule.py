@@ -88,7 +88,11 @@ def trading_session_state(
             phase, robot_status, message, next_transition = (
                 "health_check", "系統準備中", "系統準備中：正在檢查行情、Redis、即時推送與資料庫。", market_open,
             )
-        elif local_now < warmup_end or quote_samples < config.minimum_live_samples or recovering:
+        elif local_now < latest_entry and (
+            local_now < warmup_end
+            or quote_samples < config.minimum_live_samples
+            or recovering
+        ):
             phase, robot_status, message, next_transition = (
                 "warmup", "開盤暖機中",
                 "市場剛開盤，正在收集量價資料與建立 VWAP，暫不產生正式進場指令。",
@@ -167,7 +171,11 @@ def recommendation_qualification(
     if candidate.get("dataStatus", "normal") != "normal":
         failures.append("行情資料異常")
     if candidate.get("dataMode") != "official":
-        failures.append("策略或歷史行情仍為展示資料，禁止正式訊號")
+        failures.append(
+            "實際行情樣本仍在暖機，暫停正式訊號"
+            if candidate.get("dataMode") == "warming_up"
+            else "策略或歷史行情仍為展示資料，禁止正式訊號"
+        )
     if candidate.get("quoteIsRealtime") is not True:
         failures.append("缺少可驗證的盤中行情")
     if candidate.get("status") != "confirmed" or _expired(candidate, current):

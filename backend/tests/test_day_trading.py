@@ -149,6 +149,16 @@ def test_non_trading_day_and_entry_cutoff_block_formal_signals() -> None:
     assert not cutoff["formalSignalsAllowed"]
 
 
+def test_after_close_is_summary_even_when_service_has_just_restarted() -> None:
+    config = TradingScheduleConfig()
+    state = trading_session_state(
+        config, datetime(2026, 7, 21, 13, 35, tzinfo=TAIPEI),
+        quote_samples=1, infrastructure_ok=True,
+    )
+    assert state["phase"] == "summary"
+    assert not state["formalSignalsAllowed"]
+
+
 def test_recommendation_hard_filters_and_short_qualification() -> None:
     now = datetime(2026, 7, 21, 9, 10, tzinfo=TAIPEI)
     config = TradingScheduleConfig()
