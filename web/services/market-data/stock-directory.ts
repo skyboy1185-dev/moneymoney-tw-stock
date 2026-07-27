@@ -4,7 +4,10 @@ import { stockCatalog } from "@/services/stock-service";
 type DirectoryRow = Record<string, unknown>;
 
 const TWSE_DIRECTORY_URL = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL";
-const TPEX_DIRECTORY_URL = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes";
+// Use the stock-only endpoint. The daily-close-all endpoint also contains
+// thousands of warrants and is large enough to time out in production,
+// which previously caused the whole OTC directory to disappear.
+const TPEX_DIRECTORY_URL = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes";
 const DIRECTORY_CACHE_MS = 6 * 60 * 60 * 1_000;
 
 let directoryCache: { stocks: StockMeta[]; expiresAt: number } | null = null;

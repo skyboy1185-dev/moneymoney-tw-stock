@@ -258,7 +258,7 @@ async function fetchClosingQuote(meta: QuoteStockMeta): Promise<StockQuote | nul
   const listed = meta.market === "上市";
   const endpoint = listed
     ? "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
-    : "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes";
+    : "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes";
   const response = await fetch(endpoint, { signal: AbortSignal.timeout(8_000), next: { revalidate: 60 } });
   if (!response.ok) return null;
   const rows = await response.json();
