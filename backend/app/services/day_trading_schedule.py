@@ -120,7 +120,7 @@ def trading_session_state(
 
     healthy = data_status == "normal" and infrastructure_ok
     formal_allowed = phase == "scanning" and healthy
-    if not healthy:
+    if not healthy and phase in {"health_check", "warmup", "scanning", "entry_closed", "closing"}:
         robot_status = "行情異常，暫停新訊號"
         message = "行情資料異常，暫停產生新交易訊號。"
         formal_allowed = False

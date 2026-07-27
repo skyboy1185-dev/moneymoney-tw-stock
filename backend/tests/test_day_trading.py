@@ -156,6 +156,7 @@ def test_after_close_is_summary_even_when_service_has_just_restarted() -> None:
         quote_samples=1, infrastructure_ok=True,
     )
     assert state["phase"] == "summary"
+    assert state["robotStatus"] == "今日掃描完成"
     assert not state["formalSignalsAllowed"]
 
 

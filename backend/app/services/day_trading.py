@@ -573,7 +573,7 @@ class MockDayTradingEngine:
                 "session": "09:00～13:30",
                 "updatedAt": now.isoformat(),
                 "metrics": live_metrics,
-                "mode": "official" if data_status == "normal" else "warming_up",
+                "mode": "official" if index_quote.source == "TWSE MIS" else "warming_up",
                 "dataNotice": LIVE_DATA_NOTICE,
             }
         return {
