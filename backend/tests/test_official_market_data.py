@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.services.day_trading import MockDayTradingEngine
 from app.services.official_market_data import (
@@ -111,7 +111,7 @@ def test_parse_twse_mis_quote_keeps_last_valid_trade_when_z_is_temporarily_empty
     assert quote.is_realtime is True
 
 
-def test_day_trading_signal_uses_official_quote_but_keeps_strategy_as_demo() -> None:
+def test_day_trading_signal_uses_official_quote_and_waits_for_live_warmup() -> None:
     engine = MockDayTradingEngine()
     engine.update_official_quotes({
         "2317": OfficialStockQuote(
@@ -138,12 +138,48 @@ def test_day_trading_signal_uses_official_quote_but_keeps_strategy_as_demo() -> 
     assert signal["changePercent"] == -1.94
     assert signal["volume"] == 32_703_000
     assert signal["dataSource"] == "TWSE MIS"
-    assert signal["dataMode"] == "official_quote_demo_strategy"
+    assert signal["dataMode"] == "warming_up"
     assert signal["quoteStatus"] == "最近有效行情／收盤"
     assert signal["quoteTimestamp"] == "2026-07-24T13:30:00+08:00"
     assert signal["entryMin"] > 240
     assert "177.5" not in signal["action"]
-    assert "策略分數" in signal["dataNotice"]
+    assert "正在累積實際行情樣本" in signal["dataNotice"]
+
+
+def test_day_trading_signal_becomes_official_after_real_sample_warmup() -> None:
+    engine = MockDayTradingEngine()
+    start = datetime.fromisoformat("2026-07-27T09:05:00+08:00")
+    for index in range(13):
+        quote_time = start + timedelta(seconds=index * 15)
+        price = 250 + index * .5
+        engine.update_official_quotes({
+            "2317": OfficialStockQuote(
+                symbol="2317",
+                name="鴻海",
+                price=price,
+                previous_close=249,
+                open=249.5,
+                high=price,
+                low=249,
+                volume=10_000_000 + index * 100_000,
+                change=price - 249,
+                change_percent=(price - 249) / 249 * 100,
+                quote_timestamp=quote_time.isoformat(),
+                source="TWSE MIS",
+                is_realtime=True,
+                best_bid=price - .5,
+                best_ask=price,
+            ),
+        })
+
+    signal = next(item for item in engine.signals(start + timedelta(minutes=3)) if item["symbol"] == "2317")
+
+    assert signal["dataMode"] == "official"
+    assert signal["quoteIsRealtime"] is True
+    assert signal["confidenceScore"] >= 75
+    assert signal["status"] == "confirmed"
+    assert signal["action"] == "突破買進"
+    assert "展示" not in signal["dataNotice"]
 
 
 def test_day_trading_signal_countdown_does_not_reset_on_every_refresh() -> None:

@@ -390,6 +390,11 @@ export function SimulationControls({ onTrigger }: { onTrigger: (scenario: string
   </section>;
 }
 
-export function DayTradingDisclaimer() {
-  return <div className="dt-disclaimer"><ShieldAlert size={18} /><div><strong>展示模式，非即時行情</strong><p>本頁所有行情、訊號與模擬交易僅供研究參考，不構成投資建議。系統不會直接下單，所有買進、放空、賣出與回補均須由使用者自行確認。</p></div></div>;
+export function DayTradingDisclaimer({ mode = "demo", notice }: { mode?: string; notice?: string }) {
+  const title = mode === "official"
+    ? "實際市場行情模式"
+    : mode === "warming_up"
+      ? "實際行情暖機中"
+      : "展示模式，非即時行情";
+  return <div className="dt-disclaimer"><ShieldAlert size={18} /><div><strong>{title}</strong><p>{notice || "本頁所有行情、訊號與模擬交易僅供研究參考，不構成投資建議。"} 系統不會直接下單，所有買進、放空、賣出與回補均須由使用者自行確認。</p></div></div>;
 }

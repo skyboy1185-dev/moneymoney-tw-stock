@@ -281,7 +281,9 @@ def get_market_regime(
         "recommendedCount": selection["totalRecommended"],
         "maximumRecommendations": selection["maximumRecommendations"],
         "supervisor": day_trading_automation.state,
-        "mode": "demo", "dataNotice": DATA_NOTICE, "disclaimer": DISCLAIMER,
+        "mode": selection["regime"].get("mode", "demo"),
+        "dataNotice": selection["regime"].get("dataNotice", DATA_NOTICE),
+        "disclaimer": DISCLAIMER,
         "cacheMode": day_trading_cache.mode,
     }
     day_trading_cache.put("market-regime", payload)
@@ -299,8 +301,10 @@ def get_signals(
     return {
         "items": signals, "candidates": selection["candidates"], "total": len(signals),
         "maximum": selection["maximumRecommendations"], "summary": selection["summary"],
-        "automation": selection["session"], "mode": "demo",
-        "dataNotice": DATA_NOTICE, "disclaimer": DISCLAIMER,
+        "automation": selection["session"],
+        "mode": selection["regime"].get("mode", "demo"),
+        "dataNotice": selection["regime"].get("dataNotice", DATA_NOTICE),
+        "disclaimer": DISCLAIMER,
         "updatedAt": datetime.now(UTC).isoformat(),
     }
 
@@ -756,7 +760,9 @@ async def _stream_events(request: Request, user_id: str):
                 "recommendationSummary": selection["summary"],
                 "recommendedCount": selection["totalRecommended"],
                 "maximumRecommendations": selection["maximumRecommendations"],
-                "mode": "demo", "dataNotice": DATA_NOTICE, "disclaimer": DISCLAIMER,
+                "mode": selection["regime"].get("mode", "demo"),
+                "dataNotice": selection["regime"].get("dataNotice", DATA_NOTICE),
+                "disclaimer": DISCLAIMER,
                 "cacheMode": day_trading_cache.mode,
             }
             if scenario == "emergency_exit" and not positions:

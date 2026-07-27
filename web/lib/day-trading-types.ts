@@ -52,6 +52,7 @@ export interface MarketRegime {
   recommendationSummary: string;
   recommendedCount: number;
   maximumRecommendations: number;
+  mode?: "official" | "warming_up" | "demo";
   dataNotice?: string;
   disclaimer?: string;
 }

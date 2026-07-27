@@ -102,6 +102,11 @@ class DayTradingAutomationSupervisor:
                         )
                         for item in seed_candidates
                     ]
+                    quote_requests.append(StockQuoteRequest(
+                        symbol="t00",
+                        name="加權指數",
+                        market="上市",
+                    ))
                     quotes = await official_market_data_provider.get_quotes(
                         quote_requests,
                         force_refresh=True,

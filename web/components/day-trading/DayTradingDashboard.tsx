@@ -163,16 +163,16 @@ export function DayTradingDashboard() {
     setToast("測試情境已送出，將由 SSE 推送結果");
   };
 
-  if (loading || !regime) return <div className="dt-loading"><span className="spinner" /><h2>正在啟動 AI 當沖多空機器人</h2><p>載入 Mock Streaming Data、風控設定與模擬持倉…</p></div>;
+  if (loading || !regime) return <div className="dt-loading"><span className="spinner" /><h2>正在啟動 AI 當沖多空機器人</h2><p>連接市場行情、風控設定與持倉資料…</p></div>;
 
   return <div className="day-trading-page">
-    <DayTradingDisclaimer />
+    <DayTradingDisclaimer mode={regime.mode} notice={regime.dataNotice} />
     {error && <div className="dt-error"><AlertTriangleIcon />{error}<button onClick={() => { setError(""); void refresh(userId); }}><RefreshCw />重試</button></div>}
     {toast && <div className="dt-toast" role="status"><Activity />{toast}</div>}
     <EmergencyExitModal event={emergency} onDismiss={dismissEmergency} />
 
     <section className="dt-hero">
-      <div><span className="eyebrow"><Radio size={13} /> MOCK STREAMING · SIGNALS ONLY</span><h1>AI 當沖多空機器人</h1><p>即時掃描台股，判斷做多、放空與出場時機</p></div>
+      <div><span className="eyebrow"><Radio size={13} /> {regime.mode === "official" ? "MARKET DATA · SIGNALS ONLY" : regime.mode === "warming_up" ? "MARKET DATA WARMING UP" : "MOCK STREAMING · SIGNALS ONLY"}</span><h1>AI 當沖多空機器人</h1><p>即時掃描台股，判斷做多、放空與出場時機</p></div>
       <div className="dt-hero-status"><StreamConnectionStatus status={connection} /><MarketDataDelayBadge seconds={regime.dataDelaySeconds} status={regime.dataStatus} /></div>
     </section>
 
@@ -228,7 +228,7 @@ export function DayTradingDashboard() {
 
     <LineNotificationPanel />
     <TradeTimeline signals={signals} trades={trades} performance={performance} />
-    <DayTradingDisclaimer />
+    <DayTradingDisclaimer mode={regime.mode} notice={regime.dataNotice} />
   </div>;
 }
 
