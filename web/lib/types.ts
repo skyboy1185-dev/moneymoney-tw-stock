@@ -74,7 +74,7 @@ export interface StockQuote {
   volume: number;
   bestBid?: number;
   bestAsk?: number;
-  source: "TWSE MIS" | "TWSE MIS 五檔參考價" | "TWSE OpenAPI" | "TPEx OpenAPI";
+  source: "TWSE MIS" | "TWSE MIS 五檔參考價" | "TWSE OpenAPI" | "TPEx OpenAPI" | "Yahoo Finance 準即時";
   isRealtime: boolean;
 }
 

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { isQuoteRealtime, mergeOfficialQuote, parseMisStockQuote } from "./official-quote-provider";
+import {
+  isQuoteRealtime,
+  mergeOfficialQuote,
+  parseMisStockQuote,
+  parseYahooChartQuote,
+} from "./official-quote-provider";
 import { MockStockDataProvider } from "@/services/stock-service";
 import type { StockMeta, StockQuote } from "@/lib/types";
 
@@ -87,6 +92,49 @@ describe("parseMisStockQuote", () => {
       change: -4,
       volume: 16_523_000,
       time: "11:06:35",
+      isRealtime: true,
+    });
+  });
+});
+
+describe("parseYahooChartQuote", () => {
+  it("parses an actual intraday market quote and keeps its original timestamp", () => {
+    const quote = parseYahooChartQuote({
+      chart: {
+        result: [{
+          meta: {
+            symbol: "2317.TW",
+            longName: "鴻海精密工業股份有限公司",
+            regularMarketPrice: 246.5,
+            previousClose: 252.5,
+            regularMarketTime: 1785124120,
+            regularMarketVolume: 22_484_679,
+            regularMarketDayHigh: 254.5,
+            regularMarketDayLow: 246,
+          },
+          indicators: {
+            quote: [{
+              open: [253, 252.5],
+              high: [254.5, 253],
+              low: [252, 246],
+              volume: [1_200_000, 2_300_000],
+            }],
+          },
+        }],
+      },
+    }, foxconn, new Date("2026-07-27T03:48:50.000Z"));
+
+    expect(quote).toMatchObject({
+      symbol: "2317",
+      date: "2026-07-27",
+      time: "11:48:40",
+      open: 253,
+      high: 254.5,
+      low: 246,
+      price: 246.5,
+      previousClose: 252.5,
+      volume: 22_484_679,
+      source: "Yahoo Finance 準即時",
       isRealtime: true,
     });
   });

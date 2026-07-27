@@ -23,6 +23,25 @@ function isoDate(value: string): string {
   return value;
 }
 
+function taipeiDateTime(timestampSeconds: number) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Taipei",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date(timestampSeconds * 1_000));
+  const value = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? "";
+  return {
+    date: `${value("year")}-${value("month")}-${value("day")}`,
+    time: `${value("hour")}:${value("minute")}:${value("second")}`,
+  };
+}
+
 export function isQuoteRealtime(date: string, time: string, now = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Taipei", weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false,
@@ -43,6 +62,64 @@ export function isQuoteRealtime(date: string, time: string, now = new Date()) {
     && Number.isFinite(quoteTime.getTime())
     && delaySeconds <= 120
   );
+}
+
+export function parseYahooChartQuote(
+  payload: unknown,
+  meta: QuoteStockMeta,
+  now = new Date(),
+): StockQuote | null {
+  const result = (
+    payload as {
+      chart?: {
+        result?: Array<{
+          meta?: Record<string, unknown>;
+          indicators?: { quote?: Array<Record<string, unknown[]>> };
+        }>;
+      };
+    }
+  )?.chart?.result?.[0];
+  const quoteMeta = result?.meta;
+  const series = result?.indicators?.quote?.[0];
+  if (!quoteMeta || !series) return null;
+
+  const price = number(quoteMeta.regularMarketPrice);
+  const previousClose = number(quoteMeta.previousClose ?? quoteMeta.chartPreviousClose);
+  const timestamp = number(quoteMeta.regularMarketTime);
+  const opens = Array.isArray(series.open) ? series.open.map(number).filter((value): value is number => value != null) : [];
+  const highs = Array.isArray(series.high) ? series.high.map(number).filter((value): value is number => value != null) : [];
+  const lows = Array.isArray(series.low) ? series.low.map(number).filter((value): value is number => value != null) : [];
+  const volumes = Array.isArray(series.volume) ? series.volume.map(number).filter((value): value is number => value != null) : [];
+  const open = opens[0] ?? price;
+  const high = number(quoteMeta.regularMarketDayHigh) ?? (highs.length ? Math.max(...highs) : price);
+  const low = number(quoteMeta.regularMarketDayLow) ?? (lows.length ? Math.min(...lows) : price);
+  const volume = number(quoteMeta.regularMarketVolume)
+    ?? volumes.reduce((sum, value) => sum + value, 0);
+  if (
+    price == null || price <= 0
+    || previousClose == null || previousClose <= 0
+    || timestamp == null || timestamp <= 0
+    || open == null || high == null || low == null || volume == null
+  ) return null;
+
+  const quoteAt = taipeiDateTime(timestamp);
+  const change = price - previousClose;
+  return {
+    symbol: meta.symbol,
+    name: String(quoteMeta.longName || quoteMeta.shortName || meta.name),
+    date: quoteAt.date,
+    time: quoteAt.time,
+    open,
+    high,
+    low,
+    price,
+    previousClose,
+    change,
+    changePercent: change / previousClose * 100,
+    volume: Math.round(volume),
+    source: "Yahoo Finance 準即時",
+    isRealtime: isQuoteRealtime(quoteAt.date, quoteAt.time, now),
+  };
 }
 
 function isMarketSession(now = new Date()) {
@@ -109,6 +186,21 @@ export function parseMisStockQuote(
     source,
     isRealtime: isQuoteRealtime(quoteDate, tradeTime, now),
   };
+}
+
+async function fetchYahooQuote(meta: QuoteStockMeta): Promise<StockQuote | null> {
+  const suffix = meta.market === "上市" ? "TW" : "TWO";
+  const endpoint = `https://query1.finance.yahoo.com/v8/finance/chart/${meta.symbol}.${suffix}?interval=1m&range=1d`;
+  const response = await fetch(endpoint, {
+    headers: {
+      Accept: "application/json",
+      "User-Agent": "Mozilla/5.0 Moneymoney-TWSE-Dashboard",
+    },
+    signal: AbortSignal.timeout(8_000),
+    cache: "no-store",
+  });
+  if (!response.ok) return null;
+  return parseYahooChartQuote(await response.json(), meta);
 }
 
 async function fetchMisRows(metas: QuoteStockMeta[]): Promise<Record<string, unknown>[]> {
@@ -212,7 +304,19 @@ export async function getOfficialQuotes(metas: QuoteStockMeta[]): Promise<Map<st
   } catch {
     // A missing MIS response is handled below without disguising yesterday's close as a live price.
   }
-  if (isMarketSession()) return result;
+  if (isMarketSession()) {
+    await Promise.all(missing.filter((meta) => !result.has(meta.symbol)).map(async (meta) => {
+      try {
+        const fallback = await fetchYahooQuote(meta);
+        if (!fallback) return;
+        quoteCache.set(meta.symbol, { value: fallback, expiresAt: Date.now() + 15_000 });
+        result.set(meta.symbol, fallback);
+      } catch {
+        // Keep the symbol unavailable rather than presenting an old close as today's quote.
+      }
+    }));
+    return result;
+  }
   await Promise.all(missing.filter((meta) => !result.has(meta.symbol)).map(async (meta) => {
     try {
       const fallback = await fetchClosingQuote(meta);
