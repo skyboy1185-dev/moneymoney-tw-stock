@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000"
     mock_data_enabled: bool = True
     redis_url: str | None = None
+    quote_refresh_seconds: float = 1.0
     day_trading_stream_seconds: float = 2.0
     ai_stock_monitor_seconds: int = 60
     large_holder_auto_sync_enabled: bool = True

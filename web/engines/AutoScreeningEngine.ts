@@ -1,7 +1,7 @@
 import type { MarketContext, RankingRow } from "@/lib/market-types";
 import { allRobots } from "@/robots";
 import { stockCatalog, stockService } from "@/services/stock-service";
-import { getOfficialQuote, mergeOfficialQuote } from "@/services/market-data/official-quote-provider";
+import { getOfficialQuotes, mergeOfficialQuote } from "@/services/market-data/official-quote-provider";
 import { calculateRSI } from "@/lib/technical";
 
 function taipeiDate() {
@@ -18,10 +18,12 @@ export class AutoScreeningEngine {
   async scan(market: MarketContext, activeStrategyIds: string[]): Promise<RankingRow[]> {
     const active = allRobots.filter((robot) => activeStrategyIds.includes(robot.id));
     const now = new Date().toISOString();
+    const officialQuotes = await getOfficialQuotes(stockCatalog);
     const candidates: (RankingRow | null)[] = await Promise.all(stockCatalog.map(async (meta): Promise<RankingRow | null> => {
       const baseStock = await stockService.getStock(meta.symbol);
       if (!baseStock || baseStock.prices.length < 240 || !active.length) return null;
-      const officialQuote = await getOfficialQuote(baseStock.meta);
+      const officialQuote = officialQuotes.get(meta.symbol) ?? null;
+      if (!officialQuote) return null;
       const stock = officialQuote ? mergeOfficialQuote(baseStock, officialQuote) : baseStock;
       const latest = stock.prices.at(-1)!;
       const previous = stock.prices.at(-2)!;

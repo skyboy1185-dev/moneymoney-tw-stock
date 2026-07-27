@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   AlertTriangle, Bell, Bot, CheckCircle2, CircleDollarSign, Eye, LineChart,
   RefreshCw, Save, ShieldAlert, Star, TrendingUp, WalletCards,
@@ -79,14 +79,23 @@ export function AIStockWorkflow({
   useEffect(() => {
     if (!userId) return;
     void load();
-    const timer = window.setInterval(() => void load(true), 60_000);
+    let stopped = false;
+    let timer: number | undefined;
+    const refresh = async () => {
+      await load(true);
+      if (!stopped) timer = window.setTimeout(refresh, 10_000);
+    };
+    timer = window.setTimeout(refresh, 10_000);
     void aiStockLineNotificationClient.status()
       .then((status) => {
         setLineDetails(status);
         setLineState(status.connectionStatus === "connected" ? `已連線・${status.groups.length} 個群組` : "尚未綁定");
       })
       .catch(() => setLineState("LINE 狀態無法取得"));
-    return () => window.clearInterval(timer);
+    return () => {
+      stopped = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
 

@@ -87,7 +87,9 @@ class DayTradingAutomationSupervisor:
 
             quote_refresh_due = (
                 self._last_quote_refresh_at is None
-                or now - self._last_quote_refresh_at >= timedelta(seconds=10)
+                or now - self._last_quote_refresh_at >= timedelta(
+                    seconds=max(1.0, get_settings().quote_refresh_seconds),
+                )
             )
             if quote_refresh_due:
                 try:
@@ -100,7 +102,10 @@ class DayTradingAutomationSupervisor:
                         )
                         for item in seed_candidates
                     ]
-                    quotes = await official_market_data_provider.get_quotes(quote_requests)
+                    quotes = await official_market_data_provider.get_quotes(
+                        quote_requests,
+                        force_refresh=True,
+                    )
                     day_trading_engine.update_official_quotes(quotes)
                 except Exception:
                     logger.exception("TWSE MIS quote refresh failed")

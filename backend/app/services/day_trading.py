@@ -117,6 +117,8 @@ class MockDayTradingEngine:
                 value = item.get(key)
                 if isinstance(value, (int, float)):
                     item[key] = round(float(value) * ratio, 2)
+            if item.get("direction") == "short" and "跌破" in str(item.get("action", "")):
+                item["action"] = f"跌破 {float(item['entryMax']):,.2f} 放空"
             item.update({
                 "stockName": quote.name,
                 "price": round(quote.price, 2),

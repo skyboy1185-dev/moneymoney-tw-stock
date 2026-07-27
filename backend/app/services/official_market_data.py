@@ -43,6 +43,8 @@ class MarketDataProvider(Protocol):
     async def get_quotes(
         self,
         stocks: list[StockQuoteRequest],
+        *,
+        force_refresh: bool = False,
     ) -> dict[str, OfficialStockQuote]: ...
 
 
@@ -70,26 +72,60 @@ def _iso_date(value: Any) -> str:
 def _is_realtime_quote(date_value: str, time_value: str, now: datetime | None = None) -> bool:
     local_now = (now or datetime.now(UTC)).astimezone(TAIPEI)
     minutes = local_now.hour * 60 + local_now.minute
+    try:
+        quote_time = datetime.fromisoformat(f"{date_value}T{time_value}+08:00")
+        delay_seconds = abs((local_now - quote_time).total_seconds())
+    except ValueError:
+        return False
     return (
         local_now.weekday() < 5
         and 540 <= minutes <= 810
         and date_value == local_now.date().isoformat()
         and bool(time_value)
+        and delay_seconds <= 120
     )
 
 
-def parse_mis_quote(row: dict[str, Any], fallback: StockQuoteRequest) -> OfficialStockQuote | None:
+def parse_mis_quote(
+    row: dict[str, Any],
+    fallback: StockQuoteRequest,
+    previous_trade: OfficialStockQuote | None = None,
+    *,
+    now: datetime | None = None,
+) -> OfficialStockQuote | None:
     previous_close = _number(row.get("y"))
     last_trade = _number(row.get("z"))
-    price = last_trade if last_trade is not None and last_trade > 0 else previous_close
-    if price is None or previous_close is None or price <= 0 or previous_close <= 0:
+    date_value = _iso_date(row.get("d"))
+    has_last_trade = last_trade is not None and last_trade > 0
+    cached_trade = (
+        previous_trade
+        if previous_trade is not None
+        and previous_trade.source == "TWSE MIS"
+        and previous_trade.quote_timestamp[:10] == date_value
+        else None
+    )
+    if previous_close is None or previous_close <= 0:
+        return None
+    snapshot_time = str(row.get("t") or row.get("ot") or "")
+    if has_last_trade and last_trade is not None:
+        price = last_trade
+        time_value = snapshot_time
+    elif cached_trade is not None:
+        price = cached_trade.price
+        time_value = cached_trade.quote_timestamp[11:19]
+    else:
+        return None
+    if not time_value:
         return None
     open_price = _number(row.get("o")) or price
     high = _number(row.get("h")) or price
     low = _number(row.get("l")) or price
-    volume_lots = _number(row.get("v")) or 0
-    date_value = _iso_date(row.get("d"))
-    time_value = str(row.get("t") or row.get("ot") or "13:30:00")
+    volume_lots = _number(row.get("v"))
+    volume = (
+        round(volume_lots * 1000)
+        if volume_lots is not None
+        else cached_trade.volume if cached_trade is not None else 0
+    )
     change = price - previous_close
     return OfficialStockQuote(
         symbol=str(row.get("c") or fallback.symbol),
@@ -99,12 +135,12 @@ def parse_mis_quote(row: dict[str, Any], fallback: StockQuoteRequest) -> Officia
         open=open_price,
         high=high,
         low=low,
-        volume=round(volume_lots * 1000),
+        volume=volume,
         change=change,
         change_percent=(change / previous_close) * 100,
         quote_timestamp=f"{date_value}T{time_value}+08:00",
         source="TWSE MIS",
-        is_realtime=_is_realtime_quote(date_value, time_value),
+        is_realtime=_is_realtime_quote(date_value, time_value, now),
         best_bid=_first_order_price(row.get("b")),
         best_ask=_first_order_price(row.get("a")),
     )
@@ -113,11 +149,14 @@ def parse_mis_quote(row: dict[str, Any], fallback: StockQuoteRequest) -> Officia
 class TwseMisMarketDataProvider:
     def __init__(self) -> None:
         self._cache: dict[str, tuple[OfficialStockQuote, datetime]] = {}
+        self._last_trades: dict[str, OfficialStockQuote] = {}
         self._lock = asyncio.Lock()
 
     async def get_quotes(
         self,
         stocks: list[StockQuoteRequest],
+        *,
+        force_refresh: bool = False,
     ) -> dict[str, OfficialStockQuote]:
         if not stocks:
             return {}
@@ -125,7 +164,7 @@ class TwseMisMarketDataProvider:
         cached: dict[str, OfficialStockQuote] = {}
         for stock in stocks:
             entry = self._cache.get(stock.symbol)
-            if entry and entry[1] > now:
+            if not force_refresh and entry and entry[1] > now:
                 cached[stock.symbol] = entry[0]
         missing = [stock for stock in stocks if stock.symbol not in cached]
         if not missing:
@@ -134,7 +173,7 @@ class TwseMisMarketDataProvider:
             now = datetime.now(UTC)
             for stock in missing:
                 entry = self._cache.get(stock.symbol)
-                if entry and entry[1] > now:
+                if not force_refresh and entry and entry[1] > now:
                     cached[stock.symbol] = entry[0]
             missing = [stock for stock in missing if stock.symbol not in cached]
             if not missing:
@@ -147,7 +186,12 @@ class TwseMisMarketDataProvider:
                 async with httpx.AsyncClient(timeout=8.0) as client:
                     response = await client.get(
                         MIS_ENDPOINT,
-                        params={"ex_ch": channels, "json": "1", "delay": "0"},
+                        params={
+                            "ex_ch": channels,
+                            "json": "1",
+                            "delay": "0",
+                            "_": str(round(now.timestamp() * 1000)),
+                        },
                         headers={
                             "Accept": "application/json",
                             "Referer": "https://mis.twse.com.tw/stock/fibest.jsp",
@@ -164,10 +208,18 @@ class TwseMisMarketDataProvider:
                 fallback = requests.get(symbol)
                 if fallback is None:
                     continue
-                quote = parse_mis_quote(row, fallback)
+                quote = parse_mis_quote(
+                    row,
+                    fallback,
+                    self._last_trades.get(symbol),
+                    now=now,
+                )
                 if quote is None:
                     continue
-                ttl_seconds = 8 if quote.is_realtime else 60
+                last_trade = _number(row.get("z"))
+                if last_trade is not None and last_trade > 0:
+                    self._last_trades[symbol] = quote
+                ttl_seconds = 2 if quote.is_realtime else 15
                 self._cache[symbol] = (
                     quote,
                     datetime.fromtimestamp(now.timestamp() + ttl_seconds, UTC),
