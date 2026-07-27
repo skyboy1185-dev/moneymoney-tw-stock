@@ -266,9 +266,12 @@ export function mergeOfficialHistoryWithQuote(
   meta: StockMeta,
   quote: StockQuote | null,
 ): DailyPrice[] {
-  if (!quote?.isRealtime) return history;
+  if (!quote) return history;
   const candle = quoteCandle(meta, quote);
   if (!candle) return history;
+  const latestHistoryDate = history.at(-1)?.date;
+  if (!quote.isRealtime && latestHistoryDate && candle.date <= latestHistoryDate) return history;
+  if (latestHistoryDate && candle.date < latestHistoryDate) return history;
   return [...history.filter((row) => row.date !== candle.date), candle]
     .sort((a, b) => a.date.localeCompare(b.date));
 }
@@ -284,26 +287,37 @@ export async function buildOfficialStockPayload(
   const merged = mergeOfficialHistoryWithQuote(history, meta, quote);
   const last = merged.at(-1);
   if (!last) throw new Error("官方歷史行情為空");
-  const liveQuote = quote?.isRealtime ? quote : undefined;
-  const quoteTimestamp = liveQuote ? `${liveQuote.date}T${liveQuote.time}+08:00` : `${last.date}T13:30:00+08:00`;
+  const marketQuote = quote && quote.date === last.date ? quote : undefined;
+  const quoteTimestamp = marketQuote ? `${marketQuote.date}T${marketQuote.time}+08:00` : `${last.date}T13:30:00+08:00`;
   const historySource = historySourceCache.get(meta.symbol)
     ?? (meta.market === "上市" ? "TWSE 個股日成交資訊" : "TPEx 個股日成交資訊");
+  const quoteStatus = marketQuote?.isRealtime
+    ? "official_realtime"
+    : marketQuote?.source === "Yahoo Finance 準即時"
+      ? "delayed"
+      : "official_close";
   return {
     meta,
     prices: merged,
     indicators: calculateIndicators(merged),
     updatedAt: quoteTimestamp,
-    quote: liveQuote,
+    quote: marketQuote,
     dataMode: "official_history",
     dataQuality: {
-      status: liveQuote ? "official_realtime" : "official_close",
+      status: quoteStatus,
       historySource,
-      quoteSource: liveQuote?.source ?? historySource,
+      quoteSource: marketQuote?.source ?? historySource,
       quoteTimestamp,
       lastTradingDate: last.date,
-      signalEligible: Boolean(liveQuote),
+      signalEligible: Boolean(marketQuote?.isRealtime),
     },
-    dataNotice: `日 K、成交量、均線與 MACD 由 ${historySource} 計算；${liveQuote ? "盤中當日 K 棒以 TWSE MIS 行情更新，收盤後改用完整日成交資料" : "目前顯示最近有效的市場收盤資料"}。`,
+    dataNotice: `日 K、成交量、均線與 MACD 由 ${historySource} 計算；${
+      marketQuote?.isRealtime
+        ? `盤中當日 K 棒以 ${marketQuote.source} 更新，收盤後改用完整日成交資料`
+        : marketQuote
+          ? `當日 K 棒使用 ${marketQuote.source} 的實際市場資料，因報價可能延遲，不產生正式交易訊號`
+          : "目前顯示最近有效的市場收盤資料"
+    }。`,
   };
 }
 

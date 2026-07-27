@@ -79,6 +79,22 @@ describe("official historical price parsers", () => {
       .toBe(21_505_000);
   });
 
+  it("shows a delayed quote for a newer trading date without treating it as live", () => {
+    const history = [{
+      symbol: "2330", name: "台積電", date: "2026-07-24",
+      open: 2355, high: 2365, low: 2345, close: 2350, volume: 24_810_509,
+    }];
+    const delayedQuote = {
+      symbol: "2330", name: "台積電", date: "2026-07-27", time: "11:48:40",
+      open: 2350, high: 2370, low: 2330, price: 2340, previousClose: 2350,
+      change: -10, changePercent: -.43, volume: 18_500_000,
+      source: "Yahoo Finance 準即時" as const, isRealtime: false,
+    };
+    expect(mergeOfficialHistoryWithQuote(history, listed, delayedQuote).at(-1)).toMatchObject({
+      date: "2026-07-27", close: 2340, volume: 18_500_000,
+    });
+  });
+
   it("rejects histories with too few rows or a missing calendar month", () => {
     const row = {
       symbol: "2330", name: "台積電", open: 100, high: 101, low: 99, close: 100, volume: 1_000,
