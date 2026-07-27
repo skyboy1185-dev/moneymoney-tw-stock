@@ -179,7 +179,7 @@ export async function buildMarketSnapshot(autoMode = true, forceRefresh = false)
   }));
   events.forEach(saveEvent);
   const snapshot: MarketSnapshot = {
-    mode: "demo",
+    mode: "hybrid",
     marketOpen: status.open,
     futuresMarketOpen,
     marketStatus: status.open

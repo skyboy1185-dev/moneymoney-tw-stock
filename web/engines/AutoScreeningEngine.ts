@@ -1,7 +1,8 @@
 import type { MarketContext, RankingRow } from "@/lib/market-types";
 import { allRobots } from "@/robots";
-import { stockCatalog, stockService } from "@/services/stock-service";
-import { getOfficialQuotes, mergeOfficialQuote } from "@/services/market-data/official-quote-provider";
+import { stockCatalog } from "@/services/stock-service";
+import { getOfficialQuotes } from "@/services/market-data/official-quote-provider";
+import { buildOfficialStockPayload } from "@/services/market-data/official-history-provider";
 import { calculateRSI } from "@/lib/technical";
 
 function taipeiDate() {
@@ -20,11 +21,15 @@ export class AutoScreeningEngine {
     const now = new Date().toISOString();
     const officialQuotes = await getOfficialQuotes(stockCatalog);
     const candidates: (RankingRow | null)[] = await Promise.all(stockCatalog.map(async (meta): Promise<RankingRow | null> => {
-      const baseStock = await stockService.getStock(meta.symbol);
-      if (!baseStock || baseStock.prices.length < 240 || !active.length) return null;
       const officialQuote = officialQuotes.get(meta.symbol) ?? null;
-      if (!officialQuote) return null;
-      const stock = officialQuote ? mergeOfficialQuote(baseStock, officialQuote) : baseStock;
+      if (!officialQuote || !active.length) return null;
+      let stock;
+      try {
+        stock = await buildOfficialStockPayload(meta, officialQuote);
+      } catch {
+        return null;
+      }
+      if (stock.prices.length < 240 || stock.dataMode !== "official_history") return null;
       const latest = stock.prices.at(-1)!;
       const previous = stock.prices.at(-2)!;
       const indicator = stock.indicators.at(-1)!;
@@ -79,7 +84,6 @@ export class AutoScreeningEngine {
       const quoteFresh = Boolean(officialQuote?.isRealtime && officialQuote.date === taipeiDate());
       const turnover = latest.close * latest.volume;
       const hardRiskFailures: string[] = [];
-      if (stock.dataMode !== "official_history") hardRiskFailures.push("歷史 K 線仍為展示資料，禁止正式推薦");
       if (!officialQuote) hardRiskFailures.push("行情資料缺失");
       if (officialQuote?.source === "TWSE MIS 五檔參考價") {
         hardRiskFailures.push("目前為交易所五檔參考價，尚未取得最新成交價");

@@ -227,4 +227,4 @@ export class MockStockDataProvider implements StockDataProvider {
 }
 
 export const stockService: StockDataProvider = new MockStockDataProvider();
-export const stockCatalog = STOCKS.map(({ symbol, name, industry, market }) => ({ symbol, name, industry, market }));
+export const stockCatalog: StockMeta[] = STOCKS.map((stock) => ({ ...stock }));

@@ -416,6 +416,7 @@ footer span { color: #566177; }
 .main-nav .ai-nav { position: relative; }
 .main-nav .ai-nav > span { margin-left: 2px; padding: 2px 4px; color: #b7b0ff; background: rgba(117,103,248,.18); border: 1px solid rgba(117,103,248,.28); border-radius: 4px; font-size: 7px; letter-spacing: .08em; }
 .demo-badge { display: inline-flex; align-items: center; gap: 6px; padding: 7px 10px; color: #f0b95d; background: rgba(240,175,69,.08); border: 1px solid rgba(240,175,69,.23); border-radius: 7px; font-size: 10px; white-space: nowrap; }
+.official-data-badge { display: inline-flex; align-items: center; gap: 6px; padding: 7px 10px; color: #60dda2; background: rgba(35,200,117,.08); border: 1px solid rgba(35,200,117,.23); border-radius: 7px; font-size: 10px; white-space: nowrap; }
 .footer-primary { color: #aeb8c8; }
 
 /* 六個固定策略選股器 */

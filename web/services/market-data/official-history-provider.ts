@@ -3,11 +3,24 @@ import type { DailyPrice, StockMeta, StockPayload, StockQuote } from "@/lib/type
 
 type JsonRecord = Record<string, unknown>;
 type MonthlyPayload = { data?: unknown; tables?: unknown };
+type FinMindRow = {
+  date?: unknown;
+  Trading_Volume?: unknown;
+  open?: unknown;
+  max?: unknown;
+  min?: unknown;
+  close?: unknown;
+};
+type FinMindPayload = { status?: number; msg?: string; data?: FinMindRow[] };
 
 const HISTORY_MONTHS = 16;
 const HISTORY_CACHE_MS = 6 * 60 * 60 * 1_000;
+const HISTORY_CONCURRENCY = 4;
 const historyCache = new Map<string, { value: DailyPrice[]; expiresAt: number }>();
+const historySourceCache = new Map<string, string>();
 const inFlight = new Map<string, Promise<DailyPrice[]>>();
+const historyQueue: (() => void)[] = [];
+let activeHistoryLoads = 0;
 
 function numberValue(value: unknown): number | null {
   const text = String(value ?? "").replaceAll(",", "").replaceAll("+", "").trim();
@@ -66,6 +79,59 @@ export function parseTpexMonthlyHistory(payload: MonthlyPayload, meta: StockMeta
   return firstTable.data
     .map((row) => Array.isArray(row) ? validCandle(meta, row, 1_000) : null)
     .filter((row): row is DailyPrice => row !== null);
+}
+
+export function parseFinMindHistory(payload: FinMindPayload, meta: StockMeta): DailyPrice[] {
+  if (payload.status !== 200 || !Array.isArray(payload.data)) return [];
+  return payload.data.map((row) => {
+    const date = rocDateToIso(row.date);
+    const volume = numberValue(row.Trading_Volume);
+    const open = numberValue(row.open);
+    const high = numberValue(row.max);
+    const low = numberValue(row.min);
+    const close = numberValue(row.close);
+    if (
+      !date || volume == null || open == null || high == null || low == null || close == null
+      || volume < 0 || open <= 0 || high <= 0 || low <= 0 || close <= 0
+      || high < Math.max(open, close) || low > Math.min(open, close)
+    ) return null;
+    return {
+      symbol: meta.symbol,
+      name: meta.name,
+      date,
+      open,
+      high,
+      low,
+      close,
+      volume: Math.round(volume),
+    } satisfies DailyPrice;
+  }).filter((row): row is DailyPrice => row !== null);
+}
+
+function isoDaysAgo(days: number) {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() - days);
+  return date.toISOString().slice(0, 10);
+}
+
+async function fetchFinMindHistory(meta: StockMeta): Promise<DailyPrice[]> {
+  const params = new URLSearchParams({
+    dataset: "TaiwanStockPrice",
+    data_id: meta.symbol,
+    start_date: isoDaysAgo(500),
+    end_date: new Date().toISOString().slice(0, 10),
+  });
+  const token = process.env.FINMIND_API_TOKEN?.trim();
+  if (token) params.set("token", token);
+  const response = await fetch(`https://api.finmindtrade.com/api/v4/data?${params}`, {
+    headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0 Moneymoney-TWSE-Dashboard" },
+    signal: AbortSignal.timeout(15_000),
+    next: { revalidate: 21_600 },
+  });
+  if (!response.ok) throw new Error(`FinMind 歷史行情回應 ${response.status}`);
+  const prices = parseFinMindHistory(await response.json() as FinMindPayload, meta);
+  validateOfficialHistoryContinuity(prices);
+  return prices;
 }
 
 function recentMonths(count = HISTORY_MONTHS): { compact: string; slash: string }[] {
@@ -128,6 +194,14 @@ export function validateOfficialHistoryContinuity(prices: DailyPrice[]): void {
 }
 
 async function loadOfficialHistory(meta: StockMeta): Promise<DailyPrice[]> {
+  try {
+    const prices = await fetchFinMindHistory(meta);
+    historySourceCache.set(meta.symbol, "FinMind TaiwanStockPrice（彙整市場日成交資料）");
+    return prices;
+  } catch {
+    // Use the exchange monthly endpoints when the range adapter is unavailable
+    // or returns an incomplete series.
+  }
   const months = recentMonths();
   const rows: DailyPrice[] = [];
   const failures: unknown[] = [];
@@ -144,7 +218,24 @@ async function loadOfficialHistory(meta: StockMeta): Promise<DailyPrice[]> {
     .sort((left, right) => left.date.localeCompare(right.date));
   validateOfficialHistoryContinuity(deduplicated);
   if (failures.length && !deduplicated.length) throw new Error("所有官方歷史行情請求均失敗");
+  historySourceCache.set(
+    meta.symbol,
+    meta.market === "上市" ? "TWSE 個股日成交資訊" : "TPEx 個股日成交資訊",
+  );
   return deduplicated;
+}
+
+async function withHistoryConcurrency<T>(task: () => Promise<T>): Promise<T> {
+  if (activeHistoryLoads >= HISTORY_CONCURRENCY) {
+    await new Promise<void>((resolve) => historyQueue.push(resolve));
+  }
+  activeHistoryLoads += 1;
+  try {
+    return await task();
+  } finally {
+    activeHistoryLoads -= 1;
+    historyQueue.shift()?.();
+  }
 }
 
 export async function getOfficialHistory(meta: StockMeta): Promise<DailyPrice[]> {
@@ -152,7 +243,7 @@ export async function getOfficialHistory(meta: StockMeta): Promise<DailyPrice[]>
   if (cached && cached.expiresAt > Date.now()) return cached.value;
   const pending = inFlight.get(meta.symbol);
   if (pending) return pending;
-  const request = loadOfficialHistory(meta)
+  const request = withHistoryConcurrency(() => loadOfficialHistory(meta))
     .then((prices) => {
       historyCache.set(meta.symbol, { value: prices, expiresAt: Date.now() + HISTORY_CACHE_MS });
       return prices;
@@ -195,7 +286,8 @@ export async function buildOfficialStockPayload(
   if (!last) throw new Error("官方歷史行情為空");
   const liveQuote = quote?.isRealtime ? quote : undefined;
   const quoteTimestamp = liveQuote ? `${liveQuote.date}T${liveQuote.time}+08:00` : `${last.date}T13:30:00+08:00`;
-  const historySource = meta.market === "上市" ? "TWSE 個股日成交資訊" : "TPEx 個股日成交資訊";
+  const historySource = historySourceCache.get(meta.symbol)
+    ?? (meta.market === "上市" ? "TWSE 個股日成交資訊" : "TPEx 個股日成交資訊");
   return {
     meta,
     prices: merged,
@@ -211,11 +303,12 @@ export async function buildOfficialStockPayload(
       lastTradingDate: last.date,
       signalEligible: Boolean(liveQuote),
     },
-    dataNotice: `日 K、成交量、均線與 MACD 均由${meta.market === "上市" ? "證交所" : "櫃買中心"}官方歷史成交資料計算；${liveQuote ? "盤中當日 K 棒暫以 MIS 行情更新，收盤後改用正式日成交資料" : "目前顯示最近有效的正式收盤資料"}。`,
+    dataNotice: `日 K、成交量、均線與 MACD 由 ${historySource} 計算；${liveQuote ? "盤中當日 K 棒以 TWSE MIS 行情更新，收盤後改用完整日成交資料" : "目前顯示最近有效的市場收盤資料"}。`,
   };
 }
 
 export function resetOfficialHistoryCacheForTests() {
   historyCache.clear();
+  historySourceCache.clear();
   inFlight.clear();
 }

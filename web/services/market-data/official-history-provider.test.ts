@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { StockMeta } from "@/lib/types";
 import {
   mergeOfficialHistoryWithQuote,
+  parseFinMindHistory,
   parseTpexMonthlyHistory,
   parseTwseMonthlyHistory,
   validateOfficialHistoryContinuity,
@@ -17,6 +18,20 @@ const otc: StockMeta = {
 };
 
 describe("official historical price parsers", () => {
+  it("parses FinMind market history without synthetic scaling", () => {
+    const prices = parseFinMindHistory({
+      status: 200,
+      data: [{
+        date: "2026-07-24", Trading_Volume: 24_810_509,
+        open: 2355, max: 2365, min: 2345, close: 2350,
+      }],
+    }, listed);
+    expect(prices).toEqual([{
+      symbol: "2330", name: "台積電", date: "2026-07-24",
+      open: 2355, high: 2365, low: 2345, close: 2350, volume: 24_810_509,
+    }]);
+  });
+
   it("parses TWSE share volume without changing its unit", () => {
     const prices = parseTwseMonthlyHistory({
       data: [["115/06/01", "60,942,792", "144,105,259,583", "2,355.00", "2,415.00", "2,350.00", "2,355.00"]],

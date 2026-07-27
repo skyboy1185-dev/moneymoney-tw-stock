@@ -190,7 +190,7 @@ export interface TimelinePoint {
 }
 
 export interface MarketSnapshot {
-  mode: "demo";
+  mode: "hybrid";
   marketOpen: boolean;
   futuresMarketOpen: boolean;
   marketStatus: string;
