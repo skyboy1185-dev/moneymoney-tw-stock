@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   canCreateEntry, evaluateExit, filterSignals, isExpired, longSignalScore,
-  shortSignalScore, streamRetryDelay,
+  shortSignalScore, signalRemainingMs, streamRetryDelay,
 } from "./day-trading-engine";
 import type { DayTradingSignal, EmergencyEvent } from "./day-trading-types";
 import { useDayTradingStore } from "@/stores/day-trading-store";
@@ -42,6 +42,14 @@ describe("當沖訊號與風控", () => {
   it("辨認訊號有效期限與失效", () => {
     expect(isExpired(new Date(Date.now() - 1).toISOString())).toBe(true);
     expect(isExpired(new Date(Date.now() + 10_000).toISOString())).toBe(false);
+  });
+
+  it("有效倒數使用伺服器時間校準，不受瀏覽器時鐘影響", () => {
+    expect(signalRemainingMs(
+      "2026-07-27T11:45:00+08:00",
+      "2026-07-27T11:40:00+08:00",
+      1_000,
+    )).toBe(299_000);
   });
 
   it("多單停損優先於健康度", () => {

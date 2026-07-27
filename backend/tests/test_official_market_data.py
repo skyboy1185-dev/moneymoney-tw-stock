@@ -144,3 +144,16 @@ def test_day_trading_signal_uses_official_quote_but_keeps_strategy_as_demo() -> 
     assert signal["entryMin"] > 240
     assert "177.5" not in signal["action"]
     assert "策略分數" in signal["dataNotice"]
+
+
+def test_day_trading_signal_countdown_does_not_reset_on_every_refresh() -> None:
+    engine = MockDayTradingEngine()
+    started_at = datetime.fromisoformat("2026-07-27T11:40:00+08:00")
+
+    first = engine.signals(started_at)[0]
+    refreshed = engine.signals(started_at.replace(second=10))[0]
+
+    assert refreshed["id"] == first["id"]
+    assert refreshed["generatedAt"] == first["generatedAt"]
+    assert refreshed["expiresAt"] == first["expiresAt"]
+    assert refreshed["serverNow"] == "2026-07-27T11:40:10+08:00"

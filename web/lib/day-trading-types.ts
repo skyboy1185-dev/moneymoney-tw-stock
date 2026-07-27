@@ -85,6 +85,7 @@ export interface DayTradingSignal {
   warnings: string[];
   generatedAt: string;
   expiresAt: string;
+  serverNow?: string;
   quoteTimestamp: string;
   status: string;
   dataSource: string;

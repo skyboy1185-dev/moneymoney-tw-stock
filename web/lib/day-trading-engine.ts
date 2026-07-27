@@ -6,6 +6,13 @@ export function isExpired(expiresAt: string, now = Date.now()) {
   return new Date(expiresAt).getTime() <= now;
 }
 
+export function signalRemainingMs(expiresAt: string, serverNow?: string, elapsedMs = 0) {
+  const expires = Date.parse(expiresAt);
+  const anchor = serverNow ? Date.parse(serverNow) : Date.now();
+  if (!Number.isFinite(expires) || !Number.isFinite(anchor)) return 0;
+  return Math.max(0, expires - anchor - Math.max(0, elapsedMs));
+}
+
 export function canCreateEntry(dataDelaySeconds: number, dailyLossReached: boolean, consecutiveLosses: number, limit: number) {
   return dataDelaySeconds <= 8 && !dailyLossReached && consecutiveLosses < limit;
 }
@@ -54,7 +61,10 @@ export function filterSignals(signals: DayTradingSignal[], filter: string) {
   if (filter === "waiting") return signals.filter((item) => item.action.includes("等待"));
   if (filter === "confirmed") return signals.filter((item) => item.status === "confirmed");
   if (filter === "high") return signals.filter((item) => item.confidenceScore >= 85);
-  if (filter === "expiring") return signals.filter((item) => new Date(item.expiresAt).getTime() - Date.now() < 60_000);
+  if (filter === "expiring") return signals.filter((item) => {
+    const remaining = signalRemainingMs(item.expiresAt, item.serverNow);
+    return remaining > 0 && remaining < 60_000;
+  });
   if (filter === "listed") return signals.filter((item) => item.market === "上市");
   if (filter === "otc") return signals.filter((item) => item.market === "上櫃");
   return signals;

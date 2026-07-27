@@ -93,6 +93,7 @@ class MockDayTradingEngine:
         self._scenario: str | None = None
         self._emitted_keys: set[str] = set()
         self._official_quotes: dict[str, OfficialStockQuote] = {}
+        self._signal_windows: dict[str, tuple[datetime, datetime, str]] = {}
 
     def trigger(self, scenario: str) -> None:
         with self._lock:
@@ -205,12 +206,29 @@ class MockDayTradingEngine:
             },
         }
 
-    def signals(self) -> list[dict[str, Any]]:
+    def _signal_window(
+        self,
+        key: str,
+        now: datetime,
+        validity: timedelta = timedelta(minutes=5),
+    ) -> tuple[datetime, datetime, str]:
+        with self._lock:
+            current = self._signal_windows.get(key)
+            if current is not None and current[1] > now:
+                return current
+            generated_at = now
+            expires_at = now + validity
+            signal_id = f"{key}-{generated_at.strftime('%Y%m%dT%H%M%S')}"
+            window = (generated_at, expires_at, signal_id)
+            self._signal_windows[key] = window
+            return window
+
+    def signals(self, now: datetime | None = None) -> list[dict[str, Any]]:
         with self._lock:
             self._tick += 1
             tick = self._tick
             scenario = self._scenario
-        now = self._now()
+        now = now or self._now()
         wave = math.sin(tick / 4)
         templates = [
             {
@@ -322,11 +340,14 @@ class MockDayTradingEngine:
                 item["status"] = "blocked"
                 item["warnings"] = ["行情資料異常，目前停止產生新進場訊號"]
         for index, item in enumerate(templates):
-            generated_at = now - timedelta(seconds=20 + index * 8)
-            expires_at = now + timedelta(minutes=3 + index)
+            base_id = str(item["id"])
+            lifecycle_key = f"{base_id}:{item['action']}:{item.get('status', 'confirmed')}"
+            generated_at, expires_at, signal_id = self._signal_window(lifecycle_key, now)
             item.update({
+                "id": signal_id,
                 "rank": index + 1, "generatedAt": generated_at.isoformat(),
                 "expiresAt": expires_at.isoformat(), "quoteTimestamp": now.isoformat(),
+                "serverNow": now.isoformat(),
                 "status": item.get("status", "confirmed"), "dataSource": "mock_stream",
                 "dataMode": "demo", "dataNotice": DATA_NOTICE, "disclaimer": DISCLAIMER,
                 "dataStatus": (

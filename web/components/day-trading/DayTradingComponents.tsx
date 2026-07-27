@@ -6,7 +6,7 @@ import {
   Eye, Gauge, Play, Settings2, ShieldAlert, Siren, TrendingDown,
   TrendingUp, Volume2, VolumeX, Wifi, WifiOff, X,
 } from "lucide-react";
-import { filterSignals, isExpired } from "@/lib/day-trading-engine";
+import { filterSignals, isExpired, signalRemainingMs } from "@/lib/day-trading-engine";
 import type {
   DayTradingAlert, DayTradingPerformance, DayTradingPosition, DayTradingSettings,
   DayTradingSignal, DayTradingTrade, EmergencyEvent, MarketRegime, StreamConnection,
@@ -37,16 +37,17 @@ export function MarketDataDelayBadge({ seconds, status }: { seconds: number; sta
   return <span className={`dt-delay ${level}`}><Clock3 size={13} />延遲 {number(seconds, 1)} 秒</span>;
 }
 
-export function SignalCountdown({ expiresAt }: { expiresAt: string }) {
-  const [remaining, setRemaining] = useState(() => Math.max(0, new Date(expiresAt).getTime() - Date.now()));
+export function SignalCountdown({ expiresAt, serverNow }: { expiresAt: string; serverNow?: string }) {
+  const [remaining, setRemaining] = useState(() => signalRemainingMs(expiresAt, serverNow));
   useEffect(() => {
-    const update = () => setRemaining(Math.max(0, new Date(expiresAt).getTime() - Date.now()));
+    const receivedAt = Date.now();
+    const update = () => setRemaining(signalRemainingMs(expiresAt, serverNow, Date.now() - receivedAt));
     update();
     const timer = window.setInterval(update, 1000);
     return () => window.clearInterval(timer);
-  }, [expiresAt]);
+  }, [expiresAt, serverNow]);
   const seconds = Math.ceil(remaining / 1000);
-  return <span className={`signal-countdown ${seconds <= 60 ? "expiring" : ""}`}>
+  return <span className={`signal-countdown ${seconds > 0 && seconds <= 60 ? "expiring" : ""}`}>
     {remaining ? `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}` : "已失效"}
   </span>;
 }
@@ -109,7 +110,9 @@ export function LiveSignalCard({
   onAnalyze: (symbol: string) => void;
 }) {
   const long = signal.direction === "long";
-  const expired = isExpired(signal.expiresAt);
+  const expired = signal.serverNow
+    ? signalRemainingMs(signal.expiresAt, signal.serverNow) <= 0
+    : isExpired(signal.expiresAt);
   return <article className={`live-signal-card ${long ? "long" : "short"} ${expired ? "expired" : ""}`}>
     <div className="signal-card-top">
       <div className="signal-identity">
@@ -120,7 +123,7 @@ export function LiveSignalCard({
     </div>
     <div className="signal-command">
       <span>明確操作指令</span><strong>{expired ? "訊號已失效" : signal.action}</strong>
-      <div><Clock3 size={13} />有效倒數 <SignalCountdown expiresAt={signal.expiresAt} /></div>
+      <div><Clock3 size={13} />有效倒數 <SignalCountdown expiresAt={signal.expiresAt} serverNow={signal.serverNow} /></div>
     </div>
     <div className="signal-levels">
       <div><span>建議進場區</span><strong>{number(signal.entryMin)}～{number(signal.entryMax)}</strong></div>
@@ -201,7 +204,7 @@ export function DayTradingRankingTable({
       <td><span>{item.confidenceScore}／{item.healthScore}</span><small>R:R 1:{number(item.riskRewardRatio, 1)}</small></td>
       <td>{item.vwapStatus}<small>{item.volumeStatus}</small></td>
       <td className={item.largeOrderForce >= 0 ? "text-up" : "text-down"}>{item.largeOrderForce}<small>{item.industryStrength}</small></td>
-      <td><SignalCountdown expiresAt={item.expiresAt} /></td>
+      <td><SignalCountdown expiresAt={item.expiresAt} serverNow={item.serverNow} /></td>
       <td><div className="table-actions"><button title="查看分析" onClick={() => onAnalyze(item.symbol)}><Eye /></button><button title="加入監控" onClick={() => onMonitor(item)}><Bell /></button><button title={`模擬${item.directionLabel}`} onClick={() => onSimulate(item)}><Play /></button><button title="忽略訊號" onClick={() => setIgnored((current) => [...current, item.id])}><X /></button></div></td>
     </tr>)}</tbody></table></div>
     {!rows.length && <div className="dt-empty">目前沒有符合篩選條件的即時訊號</div>}
