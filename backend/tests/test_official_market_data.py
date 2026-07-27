@@ -39,7 +39,7 @@ def test_parse_twse_mis_quote_uses_latest_trade_and_converts_lots_to_shares() ->
     assert quote.best_ask == 252.5
 
 
-def test_parse_twse_mis_quote_does_not_use_previous_close_as_live_price() -> None:
+def test_parse_twse_mis_quote_uses_labelled_order_book_reference_instead_of_previous_close() -> None:
     quote = parse_mis_quote(
         {
             "c": "2317",
@@ -58,7 +58,11 @@ def test_parse_twse_mis_quote_does_not_use_previous_close_as_live_price() -> Non
         StockQuoteRequest("2317", "鴻海", "上市"),
     )
 
-    assert quote is None
+    assert quote is not None
+    assert quote.price == 248.5
+    assert quote.previous_close == 252.5
+    assert quote.quote_timestamp == "2026-07-27T11:06:40+08:00"
+    assert quote.source == "TWSE MIS 五檔參考價"
 
 
 def test_parse_twse_mis_quote_keeps_last_valid_trade_when_z_is_temporarily_empty() -> None:

@@ -67,19 +67,29 @@ export function parseMisStockQuote(
   const previousClose = number(row.y);
   const matchedPrice = number(row.z);
   const hasMatchedPrice = matchedPrice != null && matchedPrice > 0;
-  const cachedTrade = previousTrade?.source === "TWSE MIS" && previousTrade.date === quoteDate
+  const bestAsk = number(String(row.a ?? "").split("_")[0]);
+  const bestBid = number(String(row.b ?? "").split("_")[0]);
+  const orderBookPrice = bestAsk && bestAsk > 0
+    ? bestAsk
+    : bestBid && bestBid > 0
+      ? bestBid
+      : null;
+  const cachedTrade = previousTrade?.source === "TWSE MIS"
+    && previousTrade.date === quoteDate
+    && isQuoteRealtime(previousTrade.date, previousTrade.time, now)
     ? previousTrade
     : undefined;
-  if (previousClose == null || previousClose <= 0 || (!hasMatchedPrice && !cachedTrade)) return null;
-  const price = hasMatchedPrice ? matchedPrice : cachedTrade!.price;
-  const tradeTime = hasMatchedPrice ? snapshotTime : cachedTrade!.time;
+  if (previousClose == null || previousClose <= 0 || (!hasMatchedPrice && !cachedTrade && !orderBookPrice)) {
+    return null;
+  }
+  const price = hasMatchedPrice ? matchedPrice : cachedTrade?.price ?? orderBookPrice!;
+  const tradeTime = hasMatchedPrice ? snapshotTime : cachedTrade?.time ?? snapshotTime;
+  const source = hasMatchedPrice || cachedTrade ? "TWSE MIS" : "TWSE MIS 五檔參考價";
   const open = number(row.o) ?? cachedTrade?.open ?? price;
   const high = number(row.h) ?? cachedTrade?.high ?? price;
   const low = number(row.l) ?? cachedTrade?.low ?? price;
   if (!tradeTime || open == null || high == null || low == null) return null;
   const change = price - previousClose;
-  const bestAsk = number(String(row.a ?? "").split("_")[0]);
-  const bestBid = number(String(row.b ?? "").split("_")[0]);
   const volumeLots = number(row.v);
   return {
     symbol: meta.symbol,
@@ -96,7 +106,7 @@ export function parseMisStockQuote(
     volume: volumeLots != null ? Math.round(volumeLots * 1000) : cachedTrade?.volume ?? 0,
     bestBid: bestBid && bestBid > 0 ? bestBid : undefined,
     bestAsk: bestAsk && bestAsk > 0 ? bestAsk : undefined,
-    source: "TWSE MIS",
+    source,
     isRealtime: isQuoteRealtime(quoteDate, tradeTime, now),
   };
 }

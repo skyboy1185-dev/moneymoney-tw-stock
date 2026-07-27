@@ -97,11 +97,19 @@ def parse_mis_quote(
     last_trade = _number(row.get("z"))
     date_value = _iso_date(row.get("d"))
     has_last_trade = last_trade is not None and last_trade > 0
+    best_bid = _first_order_price(row.get("b"))
+    best_ask = _first_order_price(row.get("a"))
+    order_book_price = best_ask or best_bid
     cached_trade = (
         previous_trade
         if previous_trade is not None
         and previous_trade.source == "TWSE MIS"
         and previous_trade.quote_timestamp[:10] == date_value
+        and _is_realtime_quote(
+            previous_trade.quote_timestamp[:10],
+            previous_trade.quote_timestamp[11:19],
+            now,
+        )
         else None
     )
     if previous_close is None or previous_close <= 0:
@@ -110,9 +118,15 @@ def parse_mis_quote(
     if has_last_trade and last_trade is not None:
         price = last_trade
         time_value = snapshot_time
+        source = "TWSE MIS"
     elif cached_trade is not None:
         price = cached_trade.price
         time_value = cached_trade.quote_timestamp[11:19]
+        source = "TWSE MIS"
+    elif order_book_price is not None:
+        price = order_book_price
+        time_value = snapshot_time
+        source = "TWSE MIS 五檔參考價"
     else:
         return None
     if not time_value:
@@ -139,10 +153,10 @@ def parse_mis_quote(
         change=change,
         change_percent=(change / previous_close) * 100,
         quote_timestamp=f"{date_value}T{time_value}+08:00",
-        source="TWSE MIS",
+        source=source,
         is_realtime=_is_realtime_quote(date_value, time_value, now),
-        best_bid=_first_order_price(row.get("b")),
-        best_ask=_first_order_price(row.get("a")),
+        best_bid=best_bid,
+        best_ask=best_ask,
     )
 
 

@@ -81,6 +81,9 @@ export class AutoScreeningEngine {
       const hardRiskFailures: string[] = [];
       if (stock.dataMode !== "official_history") hardRiskFailures.push("歷史 K 線仍為展示資料，禁止正式推薦");
       if (!officialQuote) hardRiskFailures.push("行情資料缺失");
+      if (officialQuote?.source === "TWSE MIS 五檔參考價") {
+        hardRiskFailures.push("目前為交易所五檔參考價，尚未取得最新成交價");
+      }
       if (!quoteFresh) hardRiskFailures.push("行情時間過期");
       if (latest.volume < 500_000) hardRiskFailures.push("成交量不足");
       if (turnover < 50_000_000) hardRiskFailures.push("成交金額不足");
@@ -119,7 +122,10 @@ export class AutoScreeningEngine {
         priceSource: officialQuote?.source ?? "Mock Provider",
         priceDate: officialQuote?.date ?? latest.date,
         priceTime: officialQuote?.time ?? "展示資料",
-        isOfficialPrice: Boolean(officialQuote),
+        isOfficialPrice: Boolean(
+          officialQuote
+          && ["TWSE MIS", "TWSE OpenAPI", "TPEx OpenAPI"].includes(officialQuote.source),
+        ),
       } satisfies RankingRow;
     }));
     return candidates.filter((row): row is RankingRow => row !== null)

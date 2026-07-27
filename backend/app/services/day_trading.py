@@ -134,7 +134,12 @@ class MockDayTradingEngine:
                 "dataSource": quote.source,
                 "dataMode": "official_quote_demo_strategy",
                 "dataNotice": (
-                    "價格、漲跌與成交量取自 TWSE MIS；策略分數、進出場區間與技術條件仍為展示計算。"
+                    (
+                        "目前價格為 TWSE MIS 最新五檔賣價參考，並非最近成交價；"
+                        if quote.source == "TWSE MIS 五檔參考價"
+                        else "價格、漲跌與成交量取自 TWSE MIS；"
+                    )
+                    + "策略分數、進出場區間與技術條件仍為展示計算。"
                 ),
                 "quoteIsRealtime": quote.is_realtime,
                 "quoteStatus": "盤中行情" if quote.is_realtime else "最近有效行情／收盤",

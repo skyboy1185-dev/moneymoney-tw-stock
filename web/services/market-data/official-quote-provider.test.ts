@@ -50,7 +50,7 @@ describe("isQuoteRealtime", () => {
 });
 
 describe("parseMisStockQuote", () => {
-  it("does not disguise the previous close as a live price when z is empty", () => {
+  it("uses a clearly labelled order-book reference instead of disguising previous close as live price", () => {
     const quote = parseMisStockQuote({
       c: "2317", n: "鴻海", z: "-", y: "252.5000",
       o: "253.0000", h: "254.5000", l: "248.0000", v: "16523",
@@ -58,7 +58,13 @@ describe("parseMisStockQuote", () => {
       b: "248.0000_247.5000_", a: "248.5000_249.0000_",
     }, foxconn, undefined, new Date("2026-07-27T03:06:45.000Z"));
 
-    expect(quote).toBeNull();
+    expect(quote).toMatchObject({
+      price: 248.5,
+      previousClose: 252.5,
+      time: "11:06:40",
+      source: "TWSE MIS 五檔參考價",
+      isRealtime: true,
+    });
   });
 
   it("keeps today's last valid trade when a later MIS snapshot has an empty z", () => {
