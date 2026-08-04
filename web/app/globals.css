@@ -1846,6 +1846,12 @@ footer span { color: #566177; }
 .day-trading-adaptive .dt-hero h1 { margin: 4px 0; font-size: 28px; letter-spacing: normal; }
 .day-trading-adaptive .dt-hero p { color: var(--muted); font-size: 12px; }
 .day-trading-adaptive .dt-hero-status { padding-top: 2px; }
+.day-trading-heading-actions { display: grid; justify-items: end; gap: 9px; }
+.day-trading-heading-actions > button { min-height: 36px; padding: 0 12px; display: inline-flex; align-items: center; gap: 6px; color: var(--text); background: var(--surface-2); border: 1px solid var(--line); border-radius: 9px; cursor: pointer; }
+.day-trading-heading-actions > button:disabled { opacity: .5; cursor: wait; }
+.day-trading-regime { border-color: var(--line); }
+.day-trading-regime > div:nth-child(2) > small { color: var(--muted); }
+.day-trading-regime > div:nth-child(2) > small:last-child { display: block; margin-top: 8px; font-size: 10px; }
 .day-trading-adaptive .automation-banner { padding: 16px 18px; background: var(--surface); border-color: var(--line); border-radius: 14px; }
 .day-trading-adaptive .dt-system-strip { padding: 0; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; overflow: visible; background: transparent; border: 0; border-radius: 0; }
 .day-trading-adaptive .dt-system-strip > div { min-height: 72px; padding: 13px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
@@ -1874,6 +1880,8 @@ footer span { color: #566177; }
   .day-trading-adaptive .dt-system-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 @media (max-width: 680px) {
+  .day-trading-heading-actions { margin-top: 12px; justify-items: start; }
+  .day-trading-adaptive .dt-hero-status { justify-content: flex-start; }
   .day-trading-adaptive .dt-system-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .day-trading-adaptive .dt-performance-columns { padding: 12px; }
   .day-trading-adaptive .today-entry-table { padding: 0 12px 12px; }

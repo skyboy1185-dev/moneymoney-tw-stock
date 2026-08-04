@@ -185,6 +185,10 @@ export function DayTradingDashboard() {
 
   if (loading || !regime) return <div className="dt-loading"><span className="spinner" /><h2>正在啟動 AI 當沖多空機器人</h2><p>連接市場行情、風控設定與持倉資料…</p></div>;
 
+  const regimeTone = regime.score >= 65 ? "breakout"
+    : regime.score <= 35 ? "crash"
+      : regime.environmentScore >= 60 ? "recovery" : "range";
+
   return <div className="adaptive-page day-trading-page day-trading-adaptive">
     <DayTradingDisclaimer mode={regime.mode} notice={regime.dataNotice} />
     {error && <div className="dt-error"><AlertTriangleIcon />{error}<button onClick={() => { setError(""); void refresh(userId); }}><RefreshCw />重試</button></div>}
@@ -193,41 +197,25 @@ export function DayTradingDashboard() {
 
     <section className="adaptive-heading dt-hero">
       <div><span className="eyebrow"><Radio size={13} /> {regime.mode === "official" ? "MARKET DATA · SIGNALS ONLY" : regime.mode === "warming_up" ? "MARKET DATA WARMING UP" : "MOCK STREAMING · SIGNALS ONLY"}</span><h1>AI 當沖多空機器人</h1><p>掃描 AI 供應鏈、低軌衛星、玻纖布與廠務工程族群</p></div>
-      <div className="dt-hero-status"><StreamConnectionStatus status={connection} /><MarketDataDelayBadge seconds={regime.dataDelaySeconds} status={regime.dataStatus} /></div>
+      <div className="day-trading-heading-actions"><div className="dt-hero-status"><StreamConnectionStatus status={connection} /><MarketDataDelayBadge seconds={regime.dataDelaySeconds} status={regime.dataStatus} /></div><button onClick={() => void refresh(userId)} disabled={!userId}><RefreshCw size={16} />更新</button></div>
     </section>
 
     {regime.dataStatus !== "normal" && <div className="data-anomaly-banner"><ShieldAlert /><div><strong>行情已延遲 {regime.dataDelaySeconds} 秒</strong><span>目前停止產生新進場訊號，請勿依賴舊報價進行交易；既有持倉仍持續檢查出場風險。</span></div></div>}
-    <section className={`automation-banner phase-${regime.automation.phase}`}>
-      <Clock3 />
-      <div>
-        <strong>{regime.automation.robotStatus}</strong>
-        <span>{regime.recommendationSummary || regime.automation.statusMessage}</span>
-      </div>
-      <dl>
-        <div><dt>台北時間</dt><dd>{new Date(regime.automation.localTime).toLocaleTimeString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" })}</dd></div>
-        <div><dt>行情樣本</dt><dd>{regime.automation.quoteSamples}／{regime.automation.minimumLiveSamples}</dd></div>
-        <div><dt>正式訊號</dt><dd>{regime.automation.formalSignalsAllowed ? "允許" : "暫停"}</dd></div>
-      </dl>
+    <section className={`regime-hero day-trading-regime ${regimeTone}`}>
+      <div className="regime-light" />
+      <div><small>盤中市場與機器人狀態</small><strong>{regime.directionLabel} · {regime.automation.robotStatus}</strong><p>{regime.recommendationSummary || regime.automation.statusMessage}</p><small>資料來源：{regime.dataSource} · 更新：{new Date(regime.updatedAt).toLocaleTimeString("zh-TW", { hour12: false })}</small></div>
+      <div className="regime-stat"><span>多空分數</span><b>{regime.score} / 100</b></div>
+      <div className="regime-stat"><span>當沖環境</span><b>{regime.environmentScore} · {regime.environmentLabel}</b></div>
+      <div className="regime-stat"><span>推薦方向</span><b>{regime.preferredDirection}</b></div>
+      <div className="regime-stat"><span>本小時精選</span><b>{signals.length} / {regime.maximumRecommendations} 檔</b></div>
     </section>
 
-    <section className="dt-system-strip">
-      <div><span>市場狀態</span><strong>{regime.directionLabel}</strong></div>
-      <div><span>多空分數</span><strong>{regime.score} / 100</strong></div>
-      <div><span>當沖環境</span><strong>{regime.environmentScore} · {regime.environmentLabel}</strong></div>
-      <div><span>推薦方向</span><strong>{regime.preferredDirection}</strong></div>
-      <div><span>行情來源</span><strong>{regime.dataSource}</strong></div>
-      <div><span>機器人</span><strong className="scanning"><Bot size={14} />{regime.automation.robotStatus}</strong></div>
-      <div><span>本小時精選</span><strong>{signals.length} / {regime.maximumRecommendations} 檔</strong></div>
-      <div><span>交易時段</span><strong>{regime.session}</strong></div>
-      <div><span>最後更新</span><strong>{new Date(regime.updatedAt).toLocaleTimeString("zh-TW", { hour12: false })}</strong></div>
-    </section>
-
-    <DayTradingPerformancePanel performance={performance} positions={positions} trades={trades} />
-
-    <div className="dt-dashboard-grid">
+    <div className="adaptive-grid dt-dashboard-grid day-trading-overview-grid">
       <MarketRegimeCard regime={regime} />
       <SimulationControls onTrigger={(scenario) => void trigger(scenario)} />
     </div>
+
+    <DayTradingPerformancePanel performance={performance} positions={positions} trades={trades} />
 
     <section className="adaptive-table-card live-signal-section">
       <div className="dt-section-heading"><div><span className="eyebrow">AI OFFICIAL PICKS</span><h2>本小時 AI 當沖精選：{signals.length}／{regime.maximumRecommendations} 檔</h2><p>每小時最多 5 檔；出場與停損通知永遠優先，且不會為湊滿名額降低風控門檻</p></div><span className="signals-only"><Gauge size={15} />只提供訊號，不自動下單</span></div>
