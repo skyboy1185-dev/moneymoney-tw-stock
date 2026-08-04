@@ -33,8 +33,12 @@ function downloadCsv(filename: string, lines: unknown[][]) {
   const anchor = document.createElement("a");
   anchor.href = URL.createObjectURL(blob);
   anchor.download = filename;
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
   anchor.click();
-  URL.revokeObjectURL(anchor.href);
+  const objectUrl = anchor.href;
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000);
 }
 
 export function StreamConnectionStatus({ status }: { status: StreamConnection }) {
@@ -389,7 +393,9 @@ export function DayTradingPerformancePanel({
 }) {
   const tradeDate = performance?.today?.tradeDate ?? taipeiDate(new Date());
   const month = performance?.period ?? tradeDate.slice(0, 7);
-  const todayTrades = trades.filter((trade) => taipeiDate(trade.entryTime) === tradeDate);
+  // The API defines daily realized performance by exit date, so the detail export
+  // must use the same boundary even when a position was opened on an earlier day.
+  const todayTrades = trades.filter((trade) => taipeiDate(trade.exitTime) === tradeDate);
   const todayPositions = positions.filter((position) => taipeiDate(position.openedAt) === tradeDate);
   const monthPositions = positions.filter((position) => taipeiDate(position.openedAt).startsWith(month));
   const liveTodayUnrealized = todayPositions.reduce((sum, item) => sum + item.unrealizedProfit, 0);
