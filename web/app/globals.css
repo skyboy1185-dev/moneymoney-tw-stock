@@ -1876,6 +1876,11 @@ footer span { color: #566177; }
 .day-trading-adaptive .position-grid-list { gap: 12px; }
 .day-trading-adaptive .live-signal-card,
 .day-trading-adaptive .position-card { padding: 16px; border-radius: 10px; }
+.day-trading-adaptive .adaptive-table-wrap .row-actions { flex-wrap: wrap; }
+.day-trading-detail-modal { width: min(980px, 95vw); }
+.day-trading-detail-modal > .live-signal-card,
+.day-trading-detail-modal > .position-card { margin-top: 14px; box-shadow: none; }
+.day-trading-detail-modal > .position-card { grid-column: auto; }
 @media (max-width: 1100px) {
   .day-trading-adaptive .dt-system-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }

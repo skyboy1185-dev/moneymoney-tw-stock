@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Activity, Bot, Clock3, Gauge, Radio, RefreshCw, ShieldAlert } from "lucide-react";
+import { Activity, Bot, Eye, Radio, RefreshCw, ShieldAlert, X } from "lucide-react";
 import { streamRetryDelay } from "@/lib/day-trading-engine";
 import type {
   DayTradingAlert, DayTradingPerformance, DayTradingPosition, DayTradingSettings,
@@ -39,6 +39,13 @@ function currentTaipeiMonth() {
   return `${year}-${month}`;
 }
 
+const displayNumber = (value: number, digits = 2) => value.toLocaleString("zh-TW", {
+  minimumFractionDigits: digits, maximumFractionDigits: digits,
+});
+const displayTime = (value: string) => new Date(value).toLocaleString("zh-TW", {
+  hour12: false, timeZone: "Asia/Taipei",
+});
+
 export function DayTradingDashboard() {
   const {
     regime, signals, positions, alerts, trades, performance, settings, connection, emergency,
@@ -49,6 +56,8 @@ export function DayTradingDashboard() {
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
   const [monitored, setMonitored] = useState<string[]>([]);
+  const [selectedSignalId, setSelectedSignalId] = useState<string | null>(null);
+  const [selectedPositionId, setSelectedPositionId] = useState<number | null>(null);
   const [performanceMonth] = useState(currentTaipeiMonth);
   const reconnectAttempt = useRef(0);
 
@@ -188,6 +197,8 @@ export function DayTradingDashboard() {
   const regimeTone = regime.score >= 65 ? "breakout"
     : regime.score <= 35 ? "crash"
       : regime.environmentScore >= 60 ? "recovery" : "range";
+  const selectedSignal = signals.find((item) => item.id === selectedSignalId) ?? null;
+  const selectedPosition = positions.find((item) => item.id === selectedPositionId) ?? null;
 
   return <div className="adaptive-page day-trading-page day-trading-adaptive">
     <DayTradingDisclaimer mode={regime.mode} notice={regime.dataNotice} />
@@ -217,16 +228,14 @@ export function DayTradingDashboard() {
 
     <DayTradingPerformancePanel performance={performance} positions={positions} trades={trades} />
 
-    <section className="adaptive-table-card live-signal-section">
-      <div className="dt-section-heading"><div><span className="eyebrow">AI OFFICIAL PICKS</span><h2>本小時 AI 當沖精選：{signals.length}／{regime.maximumRecommendations} 檔</h2><p>每小時最多 5 檔；出場與停損通知永遠優先，且不會為湊滿名額降低風控門檻</p></div><span className="signals-only"><Gauge size={15} />只提供訊號，不自動下單</span></div>
-      {signals.length
-        ? <div className="live-signal-grid">{signals.map((signal) => <LiveSignalCard key={signal.id} signal={signal} onMonitor={monitor} onSimulate={(item) => void simulate(item)} onAnalyze={(symbol) => { window.location.href = `/?symbol=${symbol}&view=analysis`; }} />)}</div>
-        : <div className="dt-empty official-empty"><Bot /><h3>本小時 AI 當沖精選：0／{regime.maximumRecommendations} 檔</h3><p>{regime.automation.phase === "scanning" ? "目前沒有符合風控標準的交易機會，建議觀望。" : regime.automation.statusMessage}</p></div>}
+    <section className="adaptive-table-card positions-section">
+      <div className="table-title"><div><h2>我的當沖監控</h2><p>每次行情更新都先檢查停損與出場，再掃描新進場機會。</p></div><span>{positions.length} 筆</span></div>
+      {positions.length ? <div className="adaptive-table-wrap"><table><thead><tr><th>股票</th><th>方向</th><th>進場資訊</th><th>目前價</th><th>未實現盈虧</th><th>停損</th><th>目標價</th><th>健康／狀態</th><th>操作</th></tr></thead><tbody>{positions.map((position) => <tr key={position.id}><td><b>{position.symbol}</b><span>{position.stockName}</span></td><td className={position.direction === "long" ? "text-up" : "text-down"}>{position.direction === "long" ? "做多" : "放空"}</td><td><b>{displayNumber(position.entryPrice)}</b><span>{displayTime(position.openedAt)}</span></td><td>{displayNumber(position.currentPrice)}</td><td className={position.unrealizedProfit >= 0 ? "text-up" : "text-down"}><b>{displayNumber(position.unrealizedProfit, 0)} 元</b><span>{displayNumber(position.returnPercentage)}%</span></td><td>{displayNumber(position.stopLoss)}<span>{position.trailingStop == null ? "未設移動停損" : `移動 ${displayNumber(position.trailingStop)}`}</span></td><td>{displayNumber(position.target1)}<span>{displayNumber(position.target2)}</span></td><td><b>{position.healthScore}</b><span>{position.latestAction}</span></td><td><div className="row-actions"><button onClick={() => setSelectedPositionId(position.id)}><Eye size={14} />管理</button></div></td></tr>)}</tbody></table></div> : <div className="adaptive-empty">尚無模擬持倉；有正式訊號時可建立模擬多單或空單。</div>}
     </section>
 
-    <section className="adaptive-table-card positions-section">
-      <div className="dt-section-heading"><div><span className="eyebrow">POSITION FIRST</span><h2>我的當沖監控</h2><p>每次行情更新都先檢查停損與出場，再掃描新進場機會</p></div><strong>{positions.length} 筆未平倉模擬部位</strong></div>
-      <div className="position-grid-list">{positions.length ? positions.map((position) => <PositionMonitorCard key={position.id} position={position} onClose={(item, percentage) => void closePosition(item, percentage)} onUpdate={(item, body) => void updatePosition(item, body)} />) : <div className="dt-empty large"><Clock3 /><h3>尚無模擬持倉</h3><p>有正式訊號時，可從即時訊號卡建立模擬多單／空單。</p></div>}</div>
+    <section className="adaptive-table-card live-signal-section">
+      <div className="table-title"><div><h2>本小時 AI 當沖精選</h2><p>每小時最多 {regime.maximumRecommendations} 檔；不會為湊滿名額降低風控門檻。</p></div><span>{signals.length}／{regime.maximumRecommendations} 檔</span></div>
+      {signals.length ? <div className="adaptive-table-wrap"><table><thead><tr><th>排名</th><th>股票</th><th>方向／策略</th><th>評分</th><th>目前價</th><th>進場區間</th><th>停損／目標</th><th>風報比／大單</th><th>狀態</th><th>操作</th></tr></thead><tbody>{signals.map((signal) => <tr key={signal.id}><td>#{signal.rank}</td><td><b>{signal.symbol}</b><span>{signal.stockName} · {signal.market}</span></td><td><b className={signal.direction === "long" ? "text-up" : "text-down"}>{signal.direction === "long" ? "做多" : "放空"}</b><span>{signal.action}</span></td><td><b>{signal.confidenceScore}</b><span>健康 {signal.healthScore}</span></td><td>{displayNumber(signal.price)}<span>{signal.changePercent >= 0 ? "+" : ""}{displayNumber(signal.changePercent)}%</span></td><td>{displayNumber(signal.entryMin)}～{displayNumber(signal.entryMax)}<span>{signal.vwapStatus}</span></td><td>{displayNumber(signal.stopLoss)}<span>{displayNumber(signal.target1)}／{displayNumber(signal.target2)}</span></td><td>{displayNumber(signal.riskRewardRatio)}<span>{signal.largeOrderStatus ?? `${displayNumber(signal.largeOrderForce, 0)} 分`}</span></td><td><span className={`candidate-status ${signal.status}`}>{signal.recommendationLabel || signal.status}</span></td><td><div className="row-actions"><button onClick={() => setSelectedSignalId(signal.id)}><Eye size={14} />詳情</button><button onClick={() => monitor(signal)}>監控</button><button onClick={() => void simulate(signal)}>模擬</button></div></td></tr>)}</tbody></table></div> : <div className="adaptive-empty">{regime.automation.phase === "scanning" ? "目前沒有符合風控標準的交易機會，建議觀望。" : regime.automation.statusMessage}</div>}
     </section>
 
     <div className="dt-bottom-grid">
@@ -236,6 +245,8 @@ export function DayTradingDashboard() {
 
     <LineNotificationPanel />
     <TradeTimeline signals={signals} trades={trades} />
+    {selectedSignal && <div className="adaptive-modal-backdrop" onClick={() => setSelectedSignalId(null)}><article className="adaptive-modal day-trading-detail-modal" onClick={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setSelectedSignalId(null)}><X /></button><span className="eyebrow">{selectedSignal.symbol} {selectedSignal.stockName}</span><h2>當沖訊號詳情</h2><LiveSignalCard signal={selectedSignal} onMonitor={monitor} onSimulate={(item) => void simulate(item)} onAnalyze={(symbol) => { window.location.href = `/?symbol=${symbol}&view=analysis`; }} /></article></div>}
+    {selectedPosition && <div className="adaptive-modal-backdrop" onClick={() => setSelectedPositionId(null)}><article className="adaptive-modal day-trading-detail-modal" onClick={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setSelectedPositionId(null)}><X /></button><span className="eyebrow">{selectedPosition.symbol} {selectedPosition.stockName}</span><h2>持倉風控管理</h2><PositionMonitorCard position={selectedPosition} onClose={(item, percentage) => void closePosition(item, percentage).then(() => setSelectedPositionId(null))} onUpdate={(item, body) => void updatePosition(item, body)} /></article></div>}
     <DayTradingDisclaimer mode={regime.mode} notice={regime.dataNotice} />
   </div>;
 }

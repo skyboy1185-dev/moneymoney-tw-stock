@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
-  AlertTriangle, Bell, BellRing, Bot, CheckCircle2, Clock3, Download,
+  AlertTriangle, Bell, BellRing, Bot, CheckCircle2, CircleDollarSign, Clock3, Download,
   Eye, Gauge, Play, Settings2, ShieldAlert, Siren, TrendingDown,
   TrendingUp, Volume2, VolumeX, Wifi, WifiOff, X,
 } from "lucide-react";
@@ -452,40 +452,20 @@ export function DayTradingPerformancePanel({
     ],
   );
 
-  const entryRows = [
-    ...todayPositions.map((item) => ({
-      key: `position-${item.id}`, symbol: item.symbol, name: item.stockName, direction: item.direction,
-      time: item.openedAt, entry: item.entryPrice, latest: item.currentPrice,
-      pnl: item.unrealizedProfit, returnPercentage: item.returnPercentage, status: "持倉中",
-    })),
-    ...todayTrades.map((item) => ({
-      key: `trade-${item.id}`, symbol: item.symbol, name: item.stockName, direction: item.direction,
-      time: item.entryTime, entry: item.entryPrice, latest: item.exitPrice,
-      pnl: item.profit, returnPercentage: item.returnPercentage, status: "已出場",
-    })),
-  ].sort((left, right) => right.time.localeCompare(left.time));
-
   return <section className="adaptive-performance-card dt-card dt-performance-card">
-    <div className="dt-section-heading"><div><span className="eyebrow">DAILY & MONTHLY PAPER PERFORMANCE</span><h2>今日盈虧與本月績效</h2><p>模擬損益；已完成交易已扣除手續費、交易稅與滑價，未實現損益隨持倉行情更新。</p></div><div className="performance-actions"><button onClick={exportToday}><Download size={14} />匯出今日明細</button><button onClick={exportMonth}><Download size={14} />匯出本月績效</button></div></div>
-    <div className="dt-performance-columns">
-      <div className="dt-performance-block today"><h3>{tradeDate} 今日</h3><div className="performance-summary-grid">{[
-        ["完成交易", performance?.today?.tradeCount ?? 0, ""],
-        ["持倉中", todayPositions.length, ""],
-        ["今日已實現", number(todayRealized, 0), pnlClass(todayRealized)],
-        ["今日未實現", number(liveTodayUnrealized, 0), pnlClass(liveTodayUnrealized)],
-        ["今日總盈虧", number(todayTotal, 0), pnlClass(todayTotal)],
-        ["今日交易成本", number(performance?.today?.tradingCost ?? 0, 0), ""],
-      ].map(([label, value, className]) => <div key={String(label)}><span>{label}</span><strong className={String(className)}>{value}</strong></div>)}</div></div>
-      <div className="dt-performance-block month"><h3>{month} 本月</h3><div className="performance-summary-grid">{[
-        ["完成交易", performance?.tradeCount ?? 0, ""],
-        ["本月勝率", `${number(performance?.winRate ?? 0)}%`, ""],
-        ["本月已實現", number(monthRealized, 0), pnlClass(monthRealized)],
-        ["本月未實現", number(liveMonthUnrealized, 0), pnlClass(liveMonthUnrealized)],
-        ["本月總盈虧", number(monthTotal, 0), pnlClass(monthTotal)],
-        ["本月交易成本", number(performance?.tradingCost ?? 0, 0), ""],
-      ].map(([label, value, className]) => <div key={String(label)}><span>{label}</span><strong className={String(className)}>{value}</strong></div>)}</div></div>
+    <div className="adaptive-performance-title"><div><span className="eyebrow">AI PAPER PERFORMANCE</span><h2><CircleDollarSign size={19} />模擬買賣與績效</h2><p>當沖模擬損益；已完成交易已扣除手續費、交易稅與滑價。</p></div><div className="adaptive-performance-actions"><strong>本月勝率 {number(performance?.winRate ?? 0)}%</strong><button onClick={exportToday}><Download size={14} />匯出今日</button><button onClick={exportMonth}><Download size={14} />匯出本月績效表</button></div></div>
+    <div className="adaptive-performance-summary day-trading-performance-summary">
+      <article><span>今日完成交易</span><b>{performance?.today?.tradeCount ?? 0} 筆</b><small>{tradeDate} · 持倉 {todayPositions.length} 筆</small></article>
+      <article className={todayTotal >= 0 ? "profit" : "loss"}><span>今日總盈虧</span><b>{number(todayTotal, 0)} 元</b><small>已實現 {number(todayRealized, 0)} · 未實現 {number(liveTodayUnrealized, 0)}</small></article>
+      <article><span>本月完成交易</span><b>{performance?.tradeCount ?? 0} 筆</b><small>獲利 {performance?.wins ?? 0} · 虧損 {performance?.losses ?? 0}</small></article>
+      <article className={monthTotal >= 0 ? "profit" : "loss"}><span>本月總盈虧</span><b>{number(monthTotal, 0)} 元</b><small>已實現 {number(monthRealized, 0)} · 未實現 {number(liveMonthUnrealized, 0)}</small></article>
+      <article><span>本月交易成本</span><b>{number(performance?.tradingCost ?? 0, 0)} 元</b><small>手續費、交易稅與滑價</small></article>
     </div>
-    <div className="today-entry-table"><h3>今日進場資訊與點位</h3>{entryRows.length ? <div className="adaptive-table-wrap"><table><thead><tr><th>股票</th><th>方向</th><th>進場時間</th><th>進場點位</th><th>出場／現價</th><th>盈虧</th><th>報酬率</th><th>狀態</th></tr></thead><tbody>{entryRows.map((item) => <tr key={item.key}><td><b>{item.symbol}</b><span>{item.name}</span></td><td className={item.direction === "long" ? "text-up" : "text-down"}>{item.direction === "long" ? "做多" : "放空"}</td><td>{new Date(item.time).toLocaleTimeString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" })}</td><td>{number(item.entry)}</td><td>{number(item.latest)}</td><td className={pnlClass(item.pnl)}>{number(item.pnl, 0)}</td><td className={pnlClass(item.returnPercentage)}>{number(item.returnPercentage)}%</td><td>{item.status}</td></tr>)}</tbody></table></div> : <div className="dt-empty compact"><Clock3 /><p>今天尚無模擬進場紀錄。</p></div>}</div>
+    <div className="adaptive-trade-columns">
+      <div><h3>今日模擬持倉</h3>{todayPositions.length ? <div className="adaptive-trade-table"><table><thead><tr><th>股票</th><th>方向</th><th>進場點位</th><th>目前價</th><th>未實現盈虧</th></tr></thead><tbody>{todayPositions.map((item) => <tr key={item.id}><td><b>{item.symbol}</b><span>{item.stockName}</span></td><td>{item.direction === "long" ? "做多" : "放空"}</td><td>{number(item.entryPrice)}<span>{new Date(item.openedAt).toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" })}</span></td><td>{number(item.currentPrice)}</td><td className={item.unrealizedProfit >= 0 ? "profit" : "loss"}>{number(item.unrealizedProfit, 0)} 元<span>{number(item.returnPercentage)}%</span></td></tr>)}</tbody></table></div> : <p className="adaptive-trade-empty">今天尚無模擬進場紀錄。</p>}</div>
+      <div><h3>今日已完成交易</h3>{todayTrades.length ? <div className="adaptive-trade-table"><table><thead><tr><th>股票</th><th>方向</th><th>進場 → 出場</th><th>淨盈虧</th><th>出場原因</th></tr></thead><tbody>{todayTrades.map((item) => <tr key={item.id}><td><b>{item.symbol}</b><span>{item.stockName}</span></td><td>{item.direction === "long" ? "做多" : "放空"}</td><td>{number(item.entryPrice)} → {number(item.exitPrice)}<span>{new Date(item.exitTime).toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" })}</span></td><td className={item.profit >= 0 ? "profit" : "loss"}>{number(item.profit, 0)} 元<span>{number(item.returnPercentage)}%</span></td><td>{item.exitReason}</td></tr>)}</tbody></table></div> : <p className="adaptive-trade-empty">今天尚無已完成的模擬交易。</p>}</div>
+    </div>
+    <footer><AlertTriangle size={14} />這是 AI 當沖模擬績效，不代表真實成交，也不構成投資建議。</footer>
   </section>;
 }
 
