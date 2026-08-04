@@ -12,7 +12,7 @@ export async function GET(request: NextRequest) {
   const strategyId = request.nextUrl.searchParams.get("strategy") ?? MANUAL_STRATEGIES[0].id;
   try {
     const rows = await screenStocksByStrategy(strategyId);
-    return NextResponse.json({ mode: "demo", strategies: MANUAL_STRATEGIES, strategyId, rows, total: rows.length, updatedAt: new Date().toISOString() });
+    return NextResponse.json({ mode: "official", strategies: MANUAL_STRATEGIES, strategyId, rows, total: rows.length, updatedAt: new Date().toISOString() });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "選股服務暫時無法使用。" }, { status: 400 });
   }

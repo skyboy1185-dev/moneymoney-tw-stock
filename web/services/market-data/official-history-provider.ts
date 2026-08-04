@@ -13,12 +13,17 @@ type FinMindRow = {
 };
 type FinMindPayload = { status?: number; msg?: string; data?: FinMindRow[] };
 
-const HISTORY_MONTHS = 16;
+const HISTORY_MONTHS = 62;
+const HISTORY_CALENDAR_DAYS = 1_900;
 const HISTORY_CACHE_MS = 6 * 60 * 60 * 1_000;
 const HISTORY_CONCURRENCY = 4;
+const SCAN_HISTORY_MONTHS = 8;
+const SCAN_HISTORY_CALENDAR_DAYS = 400;
 const historyCache = new Map<string, { value: DailyPrice[]; expiresAt: number }>();
+const scanHistoryCache = new Map<string, { value: DailyPrice[]; expiresAt: number }>();
 const historySourceCache = new Map<string, string>();
 const inFlight = new Map<string, Promise<DailyPrice[]>>();
+const scanInFlight = new Map<string, Promise<DailyPrice[]>>();
 const historyQueue: (() => void)[] = [];
 let activeHistoryLoads = 0;
 
@@ -114,11 +119,15 @@ function isoDaysAgo(days: number) {
   return date.toISOString().slice(0, 10);
 }
 
-async function fetchFinMindHistory(meta: StockMeta): Promise<DailyPrice[]> {
+async function fetchFinMindHistory(
+  meta: StockMeta,
+  calendarDays = HISTORY_CALENDAR_DAYS,
+  minimumTradingDays = 240,
+): Promise<DailyPrice[]> {
   const params = new URLSearchParams({
     dataset: "TaiwanStockPrice",
     data_id: meta.symbol,
-    start_date: isoDaysAgo(500),
+    start_date: isoDaysAgo(calendarDays),
     end_date: new Date().toISOString().slice(0, 10),
   });
   const token = process.env.FINMIND_API_TOKEN?.trim();
@@ -126,11 +135,11 @@ async function fetchFinMindHistory(meta: StockMeta): Promise<DailyPrice[]> {
   const response = await fetch(`https://api.finmindtrade.com/api/v4/data?${params}`, {
     headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0 Moneymoney-TWSE-Dashboard" },
     signal: AbortSignal.timeout(15_000),
-    next: { revalidate: 21_600 },
+    cache: "no-store",
   });
   if (!response.ok) throw new Error(`FinMind 歷史行情回應 ${response.status}`);
   const prices = parseFinMindHistory(await response.json() as FinMindPayload, meta);
-  validateOfficialHistoryContinuity(prices);
+  validateOfficialHistoryContinuity(prices, minimumTradingDays);
   return prices;
 }
 
@@ -154,7 +163,7 @@ async function fetchMonth(meta: StockMeta, month: { compact: string; slash: stri
   const response = await fetch(url, {
     headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0 Moneymoney-TWSE-Dashboard" },
     signal: AbortSignal.timeout(12_000),
-    next: { revalidate: 21_600 },
+    cache: "no-store",
   });
   if (!response.ok) throw new Error(`${listed ? "TWSE" : "TPEx"} 歷史行情回應 ${response.status}`);
   const payload = await response.json() as MonthlyPayload;
@@ -179,8 +188,8 @@ async function fetchMonthWithRetry(
   throw lastError instanceof Error ? lastError : new Error("官方月行情下載失敗");
 }
 
-export function validateOfficialHistoryContinuity(prices: DailyPrice[]): void {
-  if (prices.length < 240) {
+export function validateOfficialHistoryContinuity(prices: DailyPrice[], minimumTradingDays = 240): void {
+  if (prices.length < minimumTradingDays) {
     throw new Error(`官方歷史行情不足，目前只有 ${prices.length} 個交易日`);
   }
   for (let index = 1; index < prices.length; index += 1) {
@@ -191,6 +200,32 @@ export function validateOfficialHistoryContinuity(prices: DailyPrice[]): void {
       throw new Error(`官方歷史行情存在日期缺口：${prices[index - 1].date}～${prices[index].date}`);
     }
   }
+}
+
+async function loadRecentOfficialHistory(meta: StockMeta): Promise<DailyPrice[]> {
+  try {
+    const prices = await fetchFinMindHistory(meta, SCAN_HISTORY_CALENDAR_DAYS, 60);
+    historySourceCache.set(meta.symbol, "FinMind TaiwanStockPrice（彙整市場日成交資料）");
+    return prices;
+  } catch {
+    // The full-market scanner only needs enough history for its 60-day rules.
+  }
+  const months = recentMonths(SCAN_HISTORY_MONTHS);
+  const rows: DailyPrice[] = [];
+  for (let start = 0; start < months.length; start += 3) {
+    const results = await Promise.allSettled(
+      months.slice(start, start + 3).map((month) => fetchMonthWithRetry(meta, month)),
+    );
+    rows.push(...results.flatMap((result) => result.status === "fulfilled" ? result.value : []));
+  }
+  const deduplicated = [...new Map(rows.map((row) => [row.date, row])).values()]
+    .sort((left, right) => left.date.localeCompare(right.date));
+  validateOfficialHistoryContinuity(deduplicated, 60);
+  historySourceCache.set(
+    meta.symbol,
+    meta.market === "上市" ? "TWSE 個股日成交資訊" : "TPEx 個股日成交資訊",
+  );
+  return deduplicated;
 }
 
 async function loadOfficialHistory(meta: StockMeta): Promise<DailyPrice[]> {
@@ -250,6 +285,23 @@ export async function getOfficialHistory(meta: StockMeta): Promise<DailyPrice[]>
     })
     .finally(() => inFlight.delete(meta.symbol));
   inFlight.set(meta.symbol, request);
+  return request;
+}
+
+export async function getOfficialRecentHistory(meta: StockMeta): Promise<DailyPrice[]> {
+  const full = historyCache.get(meta.symbol);
+  if (full && full.expiresAt > Date.now()) return full.value;
+  const cached = scanHistoryCache.get(meta.symbol);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const pending = scanInFlight.get(meta.symbol);
+  if (pending) return pending;
+  const request = withHistoryConcurrency(() => loadRecentOfficialHistory(meta))
+    .then((prices) => {
+      scanHistoryCache.set(meta.symbol, { value: prices, expiresAt: Date.now() + HISTORY_CACHE_MS });
+      return prices;
+    })
+    .finally(() => scanInFlight.delete(meta.symbol));
+  scanInFlight.set(meta.symbol, request);
   return request;
 }
 
@@ -323,6 +375,8 @@ export async function buildOfficialStockPayload(
 
 export function resetOfficialHistoryCacheForTests() {
   historyCache.clear();
+  scanHistoryCache.clear();
   historySourceCache.clear();
   inFlight.clear();
+  scanInFlight.clear();
 }

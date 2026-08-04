@@ -21,6 +21,7 @@ from ..models import (
 )
 from ..schemas import LineNotificationSettingsUpdate
 from ..services.line_messaging import (
+    LINE_GROUP_DISCLAIMER,
     OFFICIAL_ACCOUNT_NAME,
     LineNotificationEvent,
     get_line_notification_settings,
@@ -159,6 +160,8 @@ async def line_webhook(
                 "AI當沖機器人 LINE 群組通知已連線成功。\n"
                 "此訊息為測試通知，非交易訊號。"
             )
+        elif text == "發送免責聲明":
+            reply = LINE_GROUP_DISCLAIMER
         if reply and reply_token:
             await line_notification_dispatcher.client.reply_text(reply_token, reply)
             handled += 1

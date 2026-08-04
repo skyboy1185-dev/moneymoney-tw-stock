@@ -33,6 +33,7 @@ from ..services.ai_stock_service import (
     sync_recommendations,
     update_portfolio_settings,
 )
+from ..services.ai_stock_automation import ai_stock_automation
 from ..services.day_trading_cache import day_trading_cache
 
 
@@ -45,6 +46,11 @@ def _user_id(x_user_id: str = Header(min_length=8, max_length=80)) -> str:
 
 def _not_found(message: str) -> HTTPException:
     return HTTPException(status_code=404, detail=message)
+
+
+@router.get("/ai-stock-automation/status")
+def get_automation_status() -> dict:
+    return ai_stock_automation.state
 
 
 @router.get("/portfolio/settings")
@@ -446,6 +452,7 @@ def read_alert(
     ))
     if item is None:
         raise _not_found("通知不存在")
-    item.read_at = datetime.now(UTC)
+    read_at = datetime.now(UTC)
+    item.read_at = read_at
     db.commit()
-    return {"read": True, "readAt": item.read_at.isoformat()}
+    return {"read": True, "readAt": read_at.isoformat()}

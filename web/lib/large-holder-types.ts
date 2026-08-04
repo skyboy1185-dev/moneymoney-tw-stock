@@ -15,6 +15,9 @@ export interface LargeHolderRankingItem {
   changePercentage: number | null;
   currentHolderCount: number;
   holderCountChange: number;
+  currentLotCount: number;
+  previousLotCount: number;
+  lotCountChange: number;
   foreignNetBuy5d: number | null;
   investmentTrustNetBuy5d: number | null;
   dealerNetBuy5d: number | null;
@@ -52,6 +55,8 @@ export interface LargeHolderHistoryPoint {
   ratioOver1000: number;
   holdersOver400: number;
   holdersOver1000: number;
+  lotsOver400: number;
+  lotsOver1000: number;
   price: number | null;
   volume: number | null;
   foreignNetBuy: number | null;

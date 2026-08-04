@@ -1,18 +1,15 @@
 import { NextResponse } from "next/server";
-import { backendJson } from "@/services/backend-client";
-import { buildMockIndustryHotspots, type IndustryHotspot } from "@/services/content-service";
+import { buildOfficialIndustryHotspots } from "@/services/content-service";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    return NextResponse.json(await backendJson<{ items: IndustryHotspot[]; updatedAt: string; dataMode: "demo" }>("/industries/hotspots"));
-  } catch {
+    return NextResponse.json(await buildOfficialIndustryHotspots());
+  } catch (error) {
     return NextResponse.json({
-      items: await buildMockIndustryHotspots(),
-      updatedAt: new Date().toISOString(),
-      dataMode: "demo",
-      source: "Next.js Mock Provider",
-    });
+      error: error instanceof Error ? error.message : "官方產業行情暫時無法連線",
+      items: [], dataMode: "unavailable",
+    }, { status: 503 });
   }
 }

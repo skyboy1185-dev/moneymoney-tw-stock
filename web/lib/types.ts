@@ -1,5 +1,15 @@
 export type MacdSignalType = "entry" | "exit" | null;
 export type Market = "上市" | "上櫃";
+export type StockTheme =
+  | "AI"
+  | "低軌衛星"
+  | "PCB"
+  | "ABF載板"
+  | "被動元件"
+  | "記憶體"
+  | "玻纖布"
+  | "廠務工程"
+  | "IC設計";
 
 export interface DailyPrice {
   symbol: string;
@@ -37,6 +47,9 @@ export interface StockMeta {
   priceToBook: number | null;
   eps: number | null;
   marketCap: number | null;
+  fundamentalsDate?: string;
+  fundamentalsSource?: string;
+  themes?: StockTheme[];
 }
 
 export interface StockPayload {
@@ -48,6 +61,34 @@ export interface StockPayload {
   dataMode?: "demo" | "official_quote_demo_history" | "official_history";
   dataQuality?: StockDataQuality;
   dataNotice?: string;
+}
+
+export interface StockInstitutionalFlowPoint {
+  date: string;
+  foreign: number;
+  trust: number;
+  dealer: number;
+  total: number;
+}
+
+export interface StockInstitutionalFlowResponse {
+  symbol: string;
+  name: string;
+  market: Market;
+  startDate: string;
+  endDate: string;
+  updatedAt: string;
+  unit: "張";
+  items: StockInstitutionalFlowPoint[];
+  totals: {
+    foreign: number;
+    trust: number;
+    dealer: number;
+    total: number;
+  };
+  source: string;
+  sourceUrl: string;
+  notice: string;
 }
 
 export interface StockDataQuality {

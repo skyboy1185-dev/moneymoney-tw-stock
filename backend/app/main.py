@@ -8,17 +8,22 @@ from sqlalchemy import text
 from .config import get_settings
 from .database import SessionLocal, create_tables
 from .routers import (
+    adaptive_electronic,
     ai_stock,
     ai_stock_line_integration,
     content,
+    chip_flow,
     day_trading,
     line_integration,
     large_holders,
+    market_data,
     portfolio,
     screener,
     stocks,
 )
+from .services.adaptive_electronic_automation import adaptive_electronic_automation
 from .services.ai_stock_automation import ai_stock_automation
+from .services.chip_flow_alerts import electronic_chip_flow_alert_monitor
 from .services.day_trading_automation import day_trading_automation
 from .services.line_messaging import line_notification_dispatcher
 from .services.large_holder_automation import large_holder_automation
@@ -32,11 +37,15 @@ async def lifespan(_: FastAPI):
     await line_notification_dispatcher.start()
     await day_trading_automation.start()
     await ai_stock_automation.start()
+    await adaptive_electronic_automation.start()
     await large_holder_automation.start()
+    await electronic_chip_flow_alert_monitor.start()
     try:
         yield
     finally:
+        await electronic_chip_flow_alert_monitor.stop()
         await large_holder_automation.stop()
+        await adaptive_electronic_automation.stop()
         await ai_stock_automation.stop()
         await day_trading_automation.stop()
         await line_notification_dispatcher.stop()
@@ -58,12 +67,15 @@ app.add_middleware(
 app.include_router(stocks.router, prefix=settings.api_prefix)
 app.include_router(screener.router, prefix=settings.api_prefix)
 app.include_router(content.router, prefix=settings.api_prefix)
+app.include_router(chip_flow.router, prefix=settings.api_prefix)
 app.include_router(portfolio.router, prefix=settings.api_prefix)
 app.include_router(day_trading.router, prefix=settings.api_prefix)
 app.include_router(line_integration.router, prefix=settings.api_prefix)
 app.include_router(ai_stock_line_integration.router, prefix=settings.api_prefix)
 app.include_router(ai_stock.router, prefix=settings.api_prefix)
+app.include_router(adaptive_electronic.router, prefix=settings.api_prefix)
 app.include_router(large_holders.router, prefix=settings.api_prefix)
+app.include_router(market_data.router, prefix=settings.api_prefix)
 app.include_router(line_integration.webhook_router)
 app.include_router(ai_stock_line_integration.webhook_router)
 

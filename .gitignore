@@ -40,6 +40,7 @@ web/data/*.db
 web/data/*.db-shm
 web/data/*.db-wal
 web/dev-server*.log
+.artifacts/
 backend/.venv/
 backend/.env
 **/__pycache__/

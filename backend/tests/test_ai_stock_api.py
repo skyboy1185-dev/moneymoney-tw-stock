@@ -27,6 +27,10 @@ def test_ai_stock_settings_and_dashboard_api() -> None:
     app.dependency_overrides[get_db] = session_dependency
     headers = {"x-user-id": "api-test-user"}
     with TestClient(app) as client:
+        automation = client.get("/api/v1/ai-stock-automation/status")
+        assert automation.status_code == 200
+        assert "lastScanStatus" in automation.json()
+
         settings = client.get("/api/v1/portfolio/settings", headers=headers)
         assert settings.status_code == 200
         assert settings.json()["totalCapital"] == 1_000_000

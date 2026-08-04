@@ -149,8 +149,9 @@ def test_day_trading_signal_uses_official_quote_and_waits_for_live_warmup() -> N
 def test_day_trading_signal_becomes_official_after_real_sample_warmup() -> None:
     engine = MockDayTradingEngine()
     start = datetime.fromisoformat("2026-07-27T09:05:00+08:00")
-    for index in range(13):
-        quote_time = start + timedelta(seconds=index * 15)
+    offsets = [0, 4, 5, 9, 10, 14, 15, 19, 20, 24, 25, 26]
+    for index, minutes in enumerate(offsets):
+        quote_time = start + timedelta(minutes=minutes)
         price = 250 + index * .5
         engine.update_official_quotes({
             "2317": OfficialStockQuote(
@@ -172,14 +173,51 @@ def test_day_trading_signal_becomes_official_after_real_sample_warmup() -> None:
             ),
         })
 
-    signal = next(item for item in engine.signals(start + timedelta(minutes=3)) if item["symbol"] == "2317")
+    signal = next(item for item in engine.signals(start + timedelta(minutes=27)) if item["symbol"] == "2317")
 
     assert signal["dataMode"] == "official"
     assert signal["quoteIsRealtime"] is True
     assert signal["confidenceScore"] >= 75
     assert signal["status"] == "confirmed"
-    assert signal["action"] == "突破買進"
+    assert signal["action"] == "5 分 K 突破買進"
     assert "展示" not in signal["dataNotice"]
+
+
+def test_day_trading_long_signal_blocks_chasing_after_seven_percent_gain() -> None:
+    engine = MockDayTradingEngine()
+    start = datetime.fromisoformat("2026-07-31T09:05:00+08:00")
+    for index in range(13):
+        quote_time = start + timedelta(seconds=index * 15)
+        price = 106.8 + index * .04
+        engine.update_official_quotes({
+            "2317": OfficialStockQuote(
+                symbol="2317",
+                name="鴻海",
+                price=price,
+                previous_close=100,
+                open=106.5,
+                high=price,
+                low=106.5,
+                volume=10_000_000 + index * 100_000,
+                change=price - 100,
+                change_percent=price - 100,
+                quote_timestamp=quote_time.isoformat(),
+                source="TWSE MIS",
+                is_realtime=True,
+                best_bid=price - .1,
+                best_ask=price,
+            ),
+        })
+
+    signal = next(item for item in engine.signals(start + timedelta(minutes=3)) if item["symbol"] == "2317")
+
+    assert signal["direction"] == "long"
+    assert signal["changePercent"] >= 7
+    assert signal["dailyChaseBlocked"] is True
+    assert signal["chaseBlocked"] is True
+    assert signal["status"] == "temporary"
+    assert signal["action"] == "禁止追價（今日漲幅達 7%）"
+    assert "今日漲幅已達 7%，禁止追價" in signal["warnings"]
 
 
 def test_day_trading_signal_countdown_does_not_reset_on_every_refresh() -> None:

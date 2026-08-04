@@ -1,19 +1,24 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import Link from "next/link";
-import { Activity, BarChart3, Bot, BrainCircuit, Flame, Newspaper, Search, SlidersHorizontal, Star, UsersRound, Wifi, WifiOff } from "lucide-react";
+import { Activity, BarChart3, Bot, Flame, Landmark, Newspaper, Search, SlidersHorizontal, Star, TrendingUp, UsersRound, Waves, Wifi, WifiOff } from "lucide-react";
 import { StockAnalysis } from "@/components/StockAnalysis";
 import { Screener } from "@/components/Screener";
-import { AiCenter } from "@/components/AiCenter";
 import { PortfolioPage } from "@/components/PortfolioPage";
 import { IndustryHotspots } from "@/components/IndustryHotspots";
 import { NewsPage } from "@/components/NewsPage";
 import { LargeHolderRankingPage } from "@/components/LargeHolderRankingPage";
+import { InstitutionalInvestorsPage } from "@/components/InstitutionalInvestorsPage";
+import { ChipFlowPage } from "@/components/ChipFlowPage";
+import { DayTradingDashboard } from "@/components/day-trading/DayTradingDashboard";
+import { ElectronicChipFlowTicker } from "@/components/ElectronicChipFlowTicker";
+import { AdaptiveElectronicPage } from "@/components/AdaptiveElectronicPage";
+import { LegalTermsButton } from "@/components/LegalTermsGate";
+import { PrivateSiteLogoutButton } from "@/components/PrivateSiteLogoutButton";
 import type { MarketSnapshot } from "@/lib/market-types";
 import type { StockPayload } from "@/lib/types";
 
-type Tab = "analysis" | "screener" | "ai" | "large-holders" | "portfolio" | "industries" | "news";
+type Tab = "analysis" | "screener" | "day-trading" | "adaptive-electronic" | "large-holders" | "institutional-investors" | "chip-flow" | "portfolio" | "industries" | "news";
 type Connection = "connecting" | "connected" | "disconnected";
 
 async function fetchStock(query: string): Promise<StockPayload> {
@@ -31,7 +36,7 @@ export default function Home() {
   const [error, setError] = useState("");
   const [snapshot, setSnapshot] = useState<MarketSnapshot | null>(null);
   const [connection, setConnection] = useState<Connection>("connecting");
-  const [autoMode, setAutoMode] = useState(true);
+  const [autoMode] = useState(true);
   const [userId, setUserId] = useState("");
 
   const loadStock = useCallback(async (keyword: string) => {
@@ -54,10 +59,12 @@ export default function Home() {
 
   useEffect(() => {
     const initial = new URLSearchParams(window.location.search).get("symbol") ?? "2330";
-    const requestedView = new URLSearchParams(window.location.search).get("view") as Tab | null;
+    const requestedView = new URLSearchParams(window.location.search).get("view") as Tab | "ai" | null;
     setQuery(initial);
     void loadStock(initial).then(() => {
-      if (requestedView && ["analysis", "screener", "ai", "large-holders", "portfolio", "industries", "news"].includes(requestedView)) {
+      if (requestedView === "ai") {
+        setTab("adaptive-electronic");
+      } else if (requestedView && ["analysis", "screener", "day-trading", "adaptive-electronic", "large-holders", "institutional-investors", "chip-flow", "portfolio", "industries", "news"].includes(requestedView)) {
         setTab(requestedView);
       }
     });
@@ -84,16 +91,6 @@ export default function Home() {
     return () => source.close();
   }, [autoMode]);
 
-  useEffect(() => {
-    if (tab !== "ai") return;
-    let cancelled = false;
-    void fetch(`/api/ai?auto=${autoMode ? "1" : "0"}&refresh=1`)
-      .then((response) => response.json())
-      .then((payload) => { if (!cancelled && !payload.error) setSnapshot(payload); })
-      .catch(() => undefined);
-    return () => { cancelled = true; };
-  }, [tab, autoMode]);
-
   const connectionLabel = connection === "connected"
     ? snapshot?.marketOpen
       ? "行情已連線"
@@ -104,6 +101,12 @@ export default function Home() {
 
   return (
     <div className="app-shell">
+      <ElectronicChipFlowTicker
+        onSelectStock={(symbol) => {
+          setQuery(symbol);
+          void loadStock(symbol);
+        }}
+      />
       <header className="topbar enhanced">
         <button className="brand" onClick={() => setTab("analysis")} aria-label="回到個股分析">
           <span className="brand-icon"><BarChart3 size={20} /></span>
@@ -126,9 +129,11 @@ export default function Home() {
       <nav className="main-nav" aria-label="主要功能">
         <button className={tab === "analysis" ? "active" : ""} onClick={() => setTab("analysis")}><Activity size={17} />個股分析</button>
         <button className={tab === "screener" ? "active" : ""} onClick={() => setTab("screener")}><SlidersHorizontal size={17} />AI 選股</button>
-        <Link className="ai-nav" href="/day-trading-bot"><Bot size={17} />當沖機器人<span>LIVE</span></Link>
-        <button className={tab === "ai" ? "active" : ""} onClick={() => setTab("ai")}><BrainCircuit size={17} />AI選股機器人</button>
-        <button className={tab === "large-holders" ? "active" : ""} onClick={() => setTab("large-holders")}><UsersRound size={17} />大戶持股增加榜</button>
+        <button className={tab === "day-trading" ? "active ai-nav" : "ai-nav"} onClick={() => setTab("day-trading")}><Bot size={17} />當沖機器人<span>LIVE</span></button>
+        <button className={tab === "adaptive-electronic" ? "active" : ""} onClick={() => setTab("adaptive-electronic")}><TrendingUp size={17} />AI選股機器人</button>
+        <button className={tab === "large-holders" ? "active" : ""} onClick={() => setTab("large-holders")}><UsersRound size={17} />大戶持股變化榜</button>
+        <button className={tab === "institutional-investors" ? "active" : ""} onClick={() => setTab("institutional-investors")}><Landmark size={17} />三大法人</button>
+        <button className={tab === "chip-flow" ? "active" : ""} onClick={() => setTab("chip-flow")}><Waves size={17} />盤中籌碼</button>
         <button className={tab === "portfolio" ? "active" : ""} onClick={() => setTab("portfolio")}><Star size={17} />觀察清單</button>
         <button className={tab === "industries" ? "active" : ""} onClick={() => setTab("industries")}><Flame size={17} />產業熱點</button>
         <button className={tab === "news" ? "active" : ""} onClick={() => setTab("news")}><Newspaper size={17} />新聞</button>
@@ -149,10 +154,16 @@ export default function Home() {
           : <div className="empty-state"><Search size={30} /><h2>找不到股票資料</h2><p>請嘗試輸入其他股票代號或名稱。</p></div>
         ) : tab === "screener" ? (
           <Screener onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }} />
-        ) : tab === "ai" ? (
-          <AiCenter snapshot={snapshot} loading={connection === "connecting"} autoMode={autoMode} onAutoModeChange={setAutoMode} userId={userId} onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }} />
+        ) : tab === "day-trading" ? (
+          <DayTradingDashboard />
+        ) : tab === "adaptive-electronic" ? (
+          <AdaptiveElectronicPage userId={userId} onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }} />
         ) : tab === "large-holders" ? (
           <LargeHolderRankingPage userId={userId} onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }} />
+        ) : tab === "institutional-investors" ? (
+          <InstitutionalInvestorsPage />
+        ) : tab === "chip-flow" ? (
+          <ChipFlowPage initialSymbol={stock?.meta.symbol ?? query} />
         ) : tab === "portfolio" ? (
           <PortfolioPage userId={userId} onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }} />
         ) : tab === "industries" ? (
@@ -165,6 +176,8 @@ export default function Home() {
       <footer>
         <span className="footer-primary">本網站資訊與選股結果僅供研究參考，不構成任何投資建議。</span>
         <span>個股最新報價優先使用官方市場資訊；歷史圖表與 AI 分析仍含展示資料</span>
+        <LegalTermsButton />
+        <PrivateSiteLogoutButton />
       </footer>
     </div>
   );

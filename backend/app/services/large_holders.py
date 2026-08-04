@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import random
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -19,10 +22,12 @@ from ..models import (
 )
 
 
-TDCC_DISTRIBUTION_URL = "https://openapi.tdcc.com.tw/v1/opendata/1-5"
+TDCC_DISTRIBUTION_URL = "https://smart.tdcc.com.tw/opendata/getOD.ashx"
 TWSE_STOCK_DIRECTORY_URL = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
 TPEX_STOCK_DIRECTORY_URL = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes"
-OVER_400_LEVELS = frozenset({12, 13, 14, 15})
+# TDCC does not publish a 400-499 lot band. Level 12 is the closest official
+# bucket: 400,001-600,000 shares (roughly 400-600 lots).
+OVER_400_LEVELS = frozenset({12})
 OVER_1000_LEVELS = frozenset({15})
 VALID_DISTRIBUTION_LEVELS = frozenset(range(1, 16))
 
@@ -83,10 +88,15 @@ class TdccOpenDataProvider:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(
                 TDCC_DISTRIBUTION_URL,
-                headers={"Accept": "application/json", "User-Agent": "Moneymoney-TWSE-Dashboard"},
+                params={"id": "1-5", "_": str(int(time.time()))},
+                headers={
+                    "Accept": "text/csv,application/json",
+                    "Cache-Control": "no-cache",
+                    "User-Agent": "Moneymoney-TWSE-Dashboard",
+                },
             )
             response.raise_for_status()
-        payload = response.json()
+        payload = list(csv.DictReader(io.StringIO(response.content.decode("utf-8-sig"))))
         if not isinstance(payload, list):
             raise ValueError("TDCC 回傳格式不是陣列")
         rows: list[DistributionRow] = []
@@ -136,7 +146,7 @@ class TdccOpenDataProvider:
 
 
 def aggregate_distribution(rows: list[DistributionRow]) -> list[DistributionSummary]:
-    """Aggregate level 12-15 for 400 lots and level 15 for 1,000 lots."""
+    """Use official level 12 for 400-600 lots and level 15 for 1,000+ lots."""
     grouped: dict[tuple[str, date], list[DistributionRow]] = defaultdict(list)
     for row in rows:
         grouped[(row.stock_code, row.report_date)].append(row)
@@ -166,6 +176,10 @@ def percentage_change(current: Decimal, previous: Decimal) -> Decimal | None:
     if previous == 0:
         return None
     return ((current - previous) / previous * Decimal("100")).quantize(Decimal("0.000001"))
+
+
+def _lots(share_count: int) -> float:
+    return round(share_count / 1_000, 3)
 
 
 def _anomaly_reason(current: DistributionSummary, previous: DistributionSummary) -> str:
@@ -326,25 +340,29 @@ def _demo_fridays(weeks: int = 12) -> list[date]:
 def _demo_history(stock: tuple[str, str, str, str, float]) -> list[dict[str, Any]]:
     symbol, name, market, industry, base_price = stock
     rng = random.Random(int(symbol) * 411)
-    ratio400 = Decimal(str(12 + rng.random() * 35))
-    ratio1000 = ratio400 * Decimal(str(0.35 + rng.random() * 0.35))
+    ratio400 = Decimal(str(.5 + rng.random() * 3.5))
+    ratio1000 = Decimal(str(15 + rng.random() * 55))
+    total_shares = int(300_000_000 + rng.random() * 2_000_000_000)
     price = Decimal(str(base_price * (0.88 + rng.random() * 0.08)))
     history: list[dict[str, Any]] = []
     trend = Decimal(str(0.10 + (int(symbol[-2:]) % 11) * 0.045))
     for index, report_date in enumerate(_demo_fridays()):
         shock = Decimal(str((rng.random() - 0.35) * 0.55))
-        ratio400 = max(Decimal("2"), min(Decimal("85"), ratio400 + trend + shock))
-        ratio1000 = max(Decimal("0.5"), min(ratio400, ratio1000 + trend * Decimal("0.58") + shock * Decimal("0.45")))
+        ratio400 = max(Decimal(".1"), min(Decimal("10"), ratio400 + trend * Decimal(".2") + shock * Decimal(".12")))
+        ratio1000 = max(Decimal("1"), min(Decimal("90"), ratio1000 + trend * Decimal("0.58") + shock * Decimal("0.45")))
         weekly_price_change = Decimal(str((rng.random() - 0.42) * 6))
         price = max(Decimal("5"), price * (Decimal("1") + weekly_price_change / Decimal("100")))
         volume = int(2_000_000 + rng.random() * 42_000_000)
-        holder400 = int(180 + rng.random() * 620 + index * (int(symbol[-1]) % 4))
-        holder1000 = int(25 + rng.random() * 150 + index * (int(symbol[-1]) % 3))
+        shares400 = round(total_shares * float(ratio400) / 100)
+        shares1000 = round(total_shares * float(ratio1000) / 100)
+        holder400 = max(1, round(shares400 / (450_000 + rng.random() * 150_000)))
+        holder1000 = max(1, round(shares1000 / (2_000_000 + rng.random() * 10_000_000)))
         history.append({
             "reportDate": report_date.isoformat(), "stockCode": symbol, "stockName": name,
             "market": market, "industry": industry,
             "ratioOver400": round(float(ratio400), 4), "ratioOver1000": round(float(ratio1000), 4),
             "holdersOver400": holder400, "holdersOver1000": holder1000,
+            "lotsOver400": _lots(shares400), "lotsOver1000": _lots(shares1000),
             "price": round(float(price), 2), "volume": volume,
             "foreignNetBuy": round((rng.random() - .42) * 14_000_000),
             "investmentTrustNetBuy": round((rng.random() - .46) * 5_000_000),
@@ -420,6 +438,7 @@ def _demo_rankings(
             continue
         ratio_key = "ratioOver400" if kind == "over400" else "ratioOver1000"
         holder_key = "holdersOver400" if kind == "over400" else "holdersOver1000"
+        lot_key = "lotsOver400" if kind == "over400" else "lotsOver1000"
         change_pp = current[ratio_key] - previous[ratio_key]
         change_pct = change_pp / previous[ratio_key] * 100 if previous[ratio_key] else None
         score, signal, warnings = _score_and_signal(history, kind)
@@ -435,6 +454,8 @@ def _demo_rankings(
             "changePercentage": round(change_pct, 2) if change_pct is not None else None,
             "currentHolderCount": current[holder_key],
             "holderCountChange": current[holder_key] - previous[holder_key],
+            "currentLotCount": current[lot_key], "previousLotCount": previous[lot_key],
+            "lotCountChange": round(current[lot_key] - previous[lot_key], 3),
             "foreignNetBuy5d": current["foreignNetBuy"],
             "investmentTrustNetBuy5d": current["investmentTrustNetBuy"],
             "dealerNetBuy5d": current["dealerNetBuy"],
@@ -455,7 +476,10 @@ def _demo_rankings(
         "type": kind, "currentReportDate": dates[-1].isoformat(), "previousReportDate": dates[-2].isoformat(),
         "updatedAt": datetime.now(UTC).isoformat(), "dataMode": "demo",
         "dataSource": "TDCC Provider 展示 Adapter",
-        "dataNotice": "展示模式：尚未累積兩期官方集保資料；比例、法人與行情均為可重現模擬資料，不代表本週真實排名。",
+        "dataNotice": (
+            "展示模式：尚未累積兩期官方集保資料；400張榜模擬TDCC第12級"
+            "（400,001～600,000股），千張榜模擬第15級（1,000,001股以上），不代表本週真實排名。"
+        ),
         "industries": sorted({item[3] for item in DEMO_STOCKS}),
         "items": items[:limit],
     }
@@ -471,8 +495,8 @@ def get_large_holder_rankings(
     min_average_turnover: float = 30_000_000,
 ) -> dict[str, Any]:
     report_dates = db.scalars(
-        select(distinct(LargeHolderWeeklySummary.report_date))
-        .order_by(LargeHolderWeeklySummary.report_date.desc())
+        select(distinct(ShareholderDistributionWeekly.report_date))
+        .order_by(ShareholderDistributionWeekly.report_date.desc())
         .limit(2)
     ).all()
     if len(report_dates) < 2:
@@ -483,14 +507,32 @@ def get_large_holder_rankings(
             LargeHolderWeeklySummary.report_date == current_date,
         )).all()
     }
-    changes = db.scalars(select(LargeHolderWeeklyChange).where(
+    changes = {
+        item.stock_code: item for item in db.scalars(select(LargeHolderWeeklyChange).where(
         LargeHolderWeeklyChange.current_report_date == current_date,
         LargeHolderWeeklyChange.previous_report_date == previous_date,
-    )).all()
+        )).all()
+    }
+    target_level = 12 if kind == "over400" else 15
+    current_rows = {
+        item.stock_code: item for item in db.scalars(select(ShareholderDistributionWeekly).where(
+            ShareholderDistributionWeekly.report_date == current_date,
+            ShareholderDistributionWeekly.holding_level == target_level,
+        )).all()
+    }
+    previous_rows = {
+        item.stock_code: item for item in db.scalars(select(ShareholderDistributionWeekly).where(
+            ShareholderDistributionWeekly.report_date == previous_date,
+            ShareholderDistributionWeekly.holding_level == target_level,
+        )).all()
+    }
     items: list[dict[str, Any]] = []
     industries: set[str] = set()
-    for change in changes:
-        current = summaries.get(change.stock_code)
+    for stock_code, current_row in current_rows.items():
+        previous_row = previous_rows.get(stock_code)
+        current = summaries.get(stock_code)
+        if previous_row is None:
+            continue
         if current is None or current.market not in {"上市", "上櫃"}:
             continue
         if market == "listed" and current.market != "上市":
@@ -502,24 +544,27 @@ def get_large_holder_rankings(
         if keyword and keyword not in current.stock_code and keyword not in current.stock_name:
             continue
         industries.add(current.industry)
-        ratio = float(change.current_ratio_over_400 if kind == "over400" else change.current_ratio_over_1000)
-        previous_ratio = float(change.previous_ratio_over_400 if kind == "over400" else change.previous_ratio_over_1000)
-        change_pp = float(change.change_pp_over_400 if kind == "over400" else change.change_pp_over_1000)
-        change_pct_value = change.change_pct_over_400 if kind == "over400" else change.change_pct_over_1000
-        holder_count = current.holders_over_400_count if kind == "over400" else current.holders_over_1000_count
-        holder_change = change.holder_count_change_over_400 if kind == "over400" else change.holder_count_change_over_1000
-        history = db.scalars(select(LargeHolderWeeklySummary).where(
-            LargeHolderWeeklySummary.stock_code == current.stock_code,
-        ).order_by(LargeHolderWeeklySummary.report_date.desc()).limit(5)).all()
-        history_ratio = [
-            float(point.ratio_over_400 if kind == "over400" else point.ratio_over_1000)
-            for point in history
-        ]
+        ratio = float(current_row.holding_ratio)
+        previous_ratio = float(previous_row.holding_ratio)
+        change_pp = ratio - previous_ratio
+        change_pct_value = percentage_change(
+            Decimal(current_row.holding_ratio), Decimal(previous_row.holding_ratio),
+        )
+        holder_count = current_row.holder_count
+        holder_change = current_row.holder_count - previous_row.holder_count
+        history = db.scalars(select(ShareholderDistributionWeekly).where(
+            ShareholderDistributionWeekly.stock_code == current.stock_code,
+            ShareholderDistributionWeekly.holding_level == target_level,
+        ).order_by(ShareholderDistributionWeekly.report_date.desc()).limit(5)).all()
+        history_ratio = [float(point.holding_ratio) for point in history]
         four_week_change = history_ratio[0] - history_ratio[-1] if len(history_ratio) >= 4 else 0
         score = min(30, max(0, round(change_pp / 2.5 * 30)))
         score += min(20, max(0, round(four_week_change / 4 * 20)))
         score += min(10, max(0, 5 + round(holder_change / 20)))
-        if change.anomaly_flag:
+        stored_change = changes.get(stock_code)
+        anomaly_flag = bool(stored_change and stored_change.anomaly_flag)
+        anomaly_reason = stored_change.anomaly_reason if stored_change else ""
+        if anomaly_flag:
             score = max(0, score - 15)
         signal = (
             "大戶明顯加碼" if change_pp >= 1.5
@@ -527,7 +572,7 @@ def get_large_holder_rankings(
             else "大戶首次轉增" if change_pp > 0
             else "需持續觀察"
         )
-        warnings = [change.anomaly_reason] if change.anomaly_flag else []
+        warnings = [anomaly_reason] if anomaly_flag else []
         items.append({
             "rank": 0, "stockCode": current.stock_code, "stockName": current.stock_name,
             "market": current.market, "industry": current.industry,
@@ -536,10 +581,13 @@ def get_large_holder_rankings(
             "changePercentagePoint": round(change_pp, 4),
             "changePercentage": float(change_pct_value) if change_pct_value is not None else None,
             "currentHolderCount": holder_count, "holderCountChange": holder_change,
+            "currentLotCount": _lots(current_row.share_count),
+            "previousLotCount": _lots(previous_row.share_count),
+            "lotCountChange": _lots(current_row.share_count - previous_row.share_count),
             "foreignNetBuy5d": None, "investmentTrustNetBuy5d": None, "dealerNetBuy5d": None,
             "mainForceNetBuy5d": None, "volumeChange5d": None, "averageTurnover20d": None,
             "technicalStatus": "行情因子待串接", "healthScore": score, "aiSignal": signal,
-            "anomalyFlag": change.anomaly_flag, "anomalyReason": change.anomaly_reason,
+            "anomalyFlag": anomaly_flag, "anomalyReason": anomaly_reason,
             "warnings": warnings, "quoteSource": "行情待串接", "quoteTimestamp": "",
         })
     items.sort(key=lambda item: (
@@ -551,9 +599,10 @@ def get_large_holder_rankings(
     return {
         "type": kind, "currentReportDate": current_date.isoformat(),
         "previousReportDate": previous_date.isoformat(), "updatedAt": datetime.now(UTC).isoformat(),
-        "dataMode": "official_tdcc", "dataSource": "臺灣集中保管結算所 OpenAPI",
+        "dataMode": "official_tdcc", "dataSource": "臺灣集中保管結算所官方 CSV",
         "dataNotice": (
-            "大戶比例與週增減為官方集保資料；最新行情優先由TWSE MIS補充。"
+            "400張榜採TDCC第12級（400,001～600,000股），千張榜採第15級"
+            "（1,000,001股以上）；比例、戶數與持股張數週增減均為官方集保資料。"
             "尚未串接的20日均成交金額、法人與主力欄位不計分並顯示暫無資料。"
         ),
         "industries": sorted(industries), "items": items,
@@ -561,24 +610,50 @@ def get_large_holder_rankings(
 
 
 def get_large_holder_history(db: Session, stock_code: str, weeks: int = 12) -> dict[str, Any]:
-    summaries = db.scalars(
-        select(LargeHolderWeeklySummary)
-        .where(LargeHolderWeeklySummary.stock_code == stock_code)
-        .order_by(LargeHolderWeeklySummary.report_date.desc())
-        .limit(weeks)
+    raw_rows = db.scalars(
+        select(ShareholderDistributionWeekly)
+        .where(
+            ShareholderDistributionWeekly.stock_code == stock_code,
+            ShareholderDistributionWeekly.holding_level.in_((12, 15)),
+        )
+        .order_by(ShareholderDistributionWeekly.report_date.desc())
     ).all()
-    if len(summaries) >= 2:
-        points = [{
-            "reportDate": item.report_date.isoformat(), "stockCode": item.stock_code,
-            "ratioOver400": float(item.ratio_over_400), "ratioOver1000": float(item.ratio_over_1000),
-            "holdersOver400": item.holders_over_400_count, "holdersOver1000": item.holders_over_1000_count,
-            "price": None, "volume": None, "foreignNetBuy": None, "investmentTrustNetBuy": None,
-            "dealerNetBuy": None, "mainForceNetBuy": None, "marginBalanceChange": None,
-        } for item in reversed(summaries)]
+    rows_by_date: dict[date, dict[int, ShareholderDistributionWeekly]] = defaultdict(dict)
+    for item in raw_rows:
+        rows_by_date[item.report_date][item.holding_level] = item
+    report_dates = sorted(rows_by_date, reverse=True)[:weeks]
+    if len(report_dates) >= 2:
+        summary = db.scalar(
+            select(LargeHolderWeeklySummary)
+            .where(LargeHolderWeeklySummary.stock_code == stock_code)
+            .order_by(LargeHolderWeeklySummary.report_date.desc())
+            .limit(1)
+        )
+        points = []
+        for report_date in reversed(report_dates):
+            level400 = rows_by_date[report_date].get(12)
+            level1000 = rows_by_date[report_date].get(15)
+            if level400 is None or level1000 is None:
+                continue
+            points.append({
+                "reportDate": report_date.isoformat(), "stockCode": stock_code,
+                "ratioOver400": float(level400.holding_ratio),
+                "ratioOver1000": float(level1000.holding_ratio),
+                "holdersOver400": level400.holder_count,
+                "holdersOver1000": level1000.holder_count,
+                "lotsOver400": _lots(level400.share_count),
+                "lotsOver1000": _lots(level1000.share_count),
+                "price": None, "volume": None, "foreignNetBuy": None, "investmentTrustNetBuy": None,
+                "dealerNetBuy": None, "mainForceNetBuy": None, "marginBalanceChange": None,
+            })
         return {
-            "stockCode": stock_code, "stockName": stock_code, "dataMode": "official_tdcc",
-            "dataSource": "臺灣集中保管結算所 OpenAPI", "items": points,
-            "dataNotice": "大戶比例為官方集保週資料；尚未串接的股價、法人與融資資料顯示暫無資料。",
+            "stockCode": stock_code, "stockName": summary.stock_name if summary else stock_code,
+            "dataMode": "official_tdcc",
+            "dataSource": "臺灣集中保管結算所官方 CSV", "items": points,
+            "dataNotice": (
+                "400張資料為TDCC第12級（400,001～600,000股），千張資料為第15級"
+                "（1,000,001股以上）；比例、戶數與持股張數均為官方週資料。"
+            ),
         }
     stock = next((item for item in DEMO_STOCKS if item[0] == stock_code), None)
     if stock is None:

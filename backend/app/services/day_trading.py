@@ -5,12 +5,97 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from .official_market_data import OfficialStockQuote
+from .day_trading_schedule import MAX_LONG_CHASE_CHANGE_PERCENT
+from .theme_stock_universe import (
+    THEME_STOCKS,
+    ThemeStock,
+    is_target_theme_symbol,
+    themes_for_symbol,
+)
 
 
 DISCLAIMER = "僅供研究參考，不構成投資建議。所有交易均須由使用者自行確認。"
 DATA_NOTICE = "展示模式，非即時行情"
 LIVE_DATA_NOTICE = "價格與盤中技術條件由 TWSE MIS 實際行情樣本計算；僅供研究參考，不構成投資建議。"
 TAIPEI = ZoneInfo("Asia/Taipei")
+LIVE_QUOTE_MAX_DELAY_SECONDS = 20
+SOURCE_INTERRUPTION_SECONDS = 300
+THEME_REFERENCE_PRICES = {
+    "2308": 468.0,
+    "2313": 199.5,
+    "2314": 12.5,
+    "3491": 1155.0,
+    "6285": 249.5,
+    "2368": 895.0,
+    "3037": 848.0,
+    "3189": 710.0,
+    "8046": 1075.0,
+    "2327": 625.0,
+    "2492": 272.0,
+    "3026": 585.0,
+    "2337": 125.5,
+    "2344": 160.0,
+    "2408": 436.0,
+    "8299": 1820.0,
+    "1802": 52.5,
+    "1815": 75.2,
+    "5340": 68.9,
+    "2379": 762.0,
+    "3034": 518.0,
+    "3443": 4050.0,
+    "3661": 3460.0,
+    "5269": 1385.0,
+}
+
+
+def _theme_seed_signal(stock: ThemeStock, wave: float) -> dict[str, Any]:
+    reference = THEME_REFERENCE_PRICES.get(stock.symbol, 100.0)
+    current = reference * (1 + wave * .001)
+    risk_distance = max(current * .012, .1)
+    theme_label = "／".join(stock.themes)
+    return {
+        "id": f"mock-theme-{stock.symbol}",
+        "symbol": stock.symbol,
+        "stockName": stock.name,
+        "market": stock.market,
+        "themes": list(stock.themes),
+        "direction": "long",
+        "directionLabel": "做多",
+        "action": "等待突破",
+        "price": current,
+        "entryMin": current * .998,
+        "entryMax": current * 1.002,
+        "stopLoss": current - risk_distance,
+        "target1": current + risk_distance * 1.5,
+        "target2": current + risk_distance * 2.5,
+        "confidenceScore": 0,
+        "healthScore": 0,
+        "riskRewardRatio": 2.5,
+        "changePercent": 0,
+        "volume": 0,
+        "turnover": 0,
+        "vwapStatus": "等待實際行情",
+        "volumeStatus": "等待實際行情",
+        "largeOrderForce": 0,
+        "industryStrength": theme_label,
+        "spreadPercentage": 999,
+        "tradingEligible": True,
+        "shortEligible": False,
+        "shortAvailabilityKnown": False,
+        "tradeRestricted": False,
+        "nearLimitDown": False,
+        "excessiveNegativeDeviation": False,
+        "chaseBlocked": False,
+        "stopDistancePercent": 1.2,
+        "marketAlignment": 50,
+        "confirmationScore": 0,
+        "volumeScore": 0,
+        "activeForce": 0,
+        "industryScore": 0,
+        "liquidityScore": 0,
+        "reasons": [f"屬於{theme_label}主題股票池", "等待實際盤中行情完成暖機"],
+        "warnings": ["尚未取得足夠實際行情樣本"],
+    }
 
 
 def long_signal_score(metrics: dict[str, float | bool]) -> int:
@@ -18,6 +103,8 @@ def long_signal_score(metrics: dict[str, float | bool]) -> int:
         "vwap_up": 15, "above_vwap": 15, "breakout": 15, "volume": 10,
         "active_buy": 15, "large_buy": 10, "short_trend": 10,
         "market_fit": 5, "industry_fit": 5,
+        "above_open": 10, "five_minute_structure": 10,
+        "five_minute_ma": 10, "bollinger_retest": 5,
     }
     return min(100, round(sum(weight for key, weight in weights.items() if metrics.get(key))))
 
@@ -151,6 +238,10 @@ class MockDayTradingEngine:
             breakdown = bool(metrics["breakdown"])
             direction = (
                 "long"
+                if metrics["fiveMinuteBullish"]
+                else "short"
+                if metrics["fiveMinuteBearish"]
+                else "long"
                 if above_vwap and trend_1m >= 0 and trend_5m >= 0
                 else "short"
                 if not above_vwap and trend_1m <= 0 and trend_5m <= 0
@@ -173,6 +264,10 @@ class MockDayTradingEngine:
                 "short_trend": trend_1m > 0 and trend_5m >= 0,
                 "market_fit": market_alignment >= 55,
                 "industry_fit": False,
+                "above_open": metrics["aboveOpen"],
+                "five_minute_structure": metrics["fiveMinuteHigherLows"],
+                "five_minute_ma": metrics["fiveMinuteMaRising"],
+                "bollinger_retest": metrics["fiveMinuteBollingerRetest"],
             } if direction == "long" else {
                 "vwap_down": not vwap_up,
                 "below_vwap": not above_vwap,
@@ -191,28 +286,37 @@ class MockDayTradingEngine:
             )
             health = round(max(0, min(100, confidence * .65 + metrics["qualityScore"] * .35)))
             deviation = ((price - vwap) / vwap * 100) if vwap else 0
-            chase_blocked = (
+            vwap_chase_blocked = (
                 direction == "long" and deviation > 2.5
             ) or (
                 direction == "short" and deviation < -2.5
             )
-            confirmed = bool(metrics["qualified"]) and confidence >= 75 and not chase_blocked
-            if direction == "long":
+            daily_chase_blocked = (
+                direction == "long"
+                and quote.change_percent >= MAX_LONG_CHASE_CHANGE_PERCENT
+            )
+            chase_blocked = vwap_chase_blocked or daily_chase_blocked
+            confirmed = (
+                bool(metrics["qualified"])
+                and direction == "long"
+                and bool(metrics["fiveMinuteLongSetup"])
+                and confidence >= 75
+                and not chase_blocked
+            )
+            if daily_chase_blocked:
+                action = f"禁止追價（今日漲幅達 {MAX_LONG_CHASE_CHANGE_PERCENT:g}%）"
+            elif direction == "long":
                 action = (
-                    "突破買進"
-                    if confirmed and breakout
-                    else "回踩買進"
-                    if confirmed and above_vwap and abs(deviation) <= .8
-                    else "等待突破"
+                    "5 分 K 突破買進"
+                    if confirmed and metrics["fiveMinuteBreakout"]
+                    else "5 分 K 布林回測買進"
+                    if confirmed and metrics["fiveMinuteBollingerRetest"]
+                    else "5 分 K 順勢買進"
+                    if confirmed
+                    else "等待 5 分 K 多方確認"
                 )
             else:
-                action = (
-                    "跌破放空"
-                    if confirmed and breakdown
-                    else "反彈放空"
-                    if confirmed and not above_vwap and abs(deviation) <= .8
-                    else "等待跌破"
-                )
+                action = "5 分 K 空方轉弱觀察"
             day_range = max(quote.high - quote.low, price * .008)
             risk_distance = min(price * .025, max(price * .008, day_range * .18))
             entry_min = price * (.998 if direction == "long" else .997)
@@ -232,10 +336,16 @@ class MockDayTradingEngine:
                 warnings.append(str(metrics["qualificationMessage"]))
             if quote.source == "TWSE MIS 五檔參考價":
                 warnings.append("目前為五檔參考價，等待最新成交價")
-            if chase_blocked:
+            if daily_chase_blocked:
+                warnings.append(
+                    f"今日漲幅已達 {MAX_LONG_CHASE_CHANGE_PERCENT:g}%，禁止追價"
+                )
+            elif vwap_chase_blocked:
                 warnings.append("價格距離監控期間 VWAP 過遠，禁止追價")
             if direction == "short":
-                warnings.append("放空資格與券源尚待券商確認")
+                warnings.append("空方結構只用於多單減碼／出場，不發放空進場訊息")
+            if metrics["fiveMinuteReady"] and not metrics["fiveMinuteLongSetup"]:
+                warnings.append("尚未同時符合站上開盤價、5 分 K 均線向上與多方價格結構")
             if not volume_accelerating:
                 warnings.append("近期量能尚未明顯增加")
             reasons = [
@@ -244,11 +354,14 @@ class MockDayTradingEngine:
                 f"5 分鐘趨勢 {trend_5m:+.2f}%",
                 f"主動買賣力道推估 {active_force:+.0f}",
                 "突破監控區間高點" if breakout else "跌破監控區間低點" if breakdown else "尚未突破監控區間",
+                f"價格{'站上' if metrics['aboveOpen'] else '跌破'}開盤價 {quote.open:,.2f}",
+                "5 分 K 低點墊高" if metrics["fiveMinuteHigherLows"] else "5 分 K 頭頭低" if metrics["fiveMinuteLowerHighs"] else "5 分 K 結構尚未確認",
+                f"5 分 K MA3 / MA5：{metrics['fiveMinuteMaFast']:.2f} / {metrics['fiveMinuteMaSlow']:.2f}",
             ]
             item.update({
                 "stockName": quote.name,
                 "direction": direction,
-                "directionLabel": "做多" if direction == "long" else "放空",
+                "directionLabel": "做多" if direction == "long" else "空方風險",
                 "action": action,
                 "price": round(price, 2),
                 "previousClose": round(quote.previous_close, 2),
@@ -282,6 +395,7 @@ class MockDayTradingEngine:
                 "tradeRestricted": False,
                 "nearLimitDown": quote.change_percent <= -8.5,
                 "excessiveNegativeDeviation": deviation <= -5,
+                "dailyChaseBlocked": daily_chase_blocked,
                 "chaseBlocked": chase_blocked,
                 "stopDistancePercent": round(risk_distance / price * 100, 2),
                 "marketAlignment": market_alignment,
@@ -304,6 +418,19 @@ class MockDayTradingEngine:
                 "quoteStatus": "盤中行情" if quote.is_realtime else "最近有效行情／收盤",
                 "status": "confirmed" if confirmed else "temporary",
                 "liveSampleCount": len(history),
+                "fiveMinuteBarCount": metrics["fiveMinuteBarCount"],
+                "fiveMinuteStructure": (
+                    "低點墊高" if metrics["fiveMinuteHigherLows"]
+                    else "頭頭低" if metrics["fiveMinuteLowerHighs"]
+                    else "尚未確認"
+                ),
+                "fiveMinuteMaFast": round(float(metrics["fiveMinuteMaFast"]), 2),
+                "fiveMinuteMaSlow": round(float(metrics["fiveMinuteMaSlow"]), 2),
+                "fiveMinuteBollingerMiddle": (
+                    round(float(metrics["fiveMinuteBollingerMiddle"]), 2)
+                    if metrics["fiveMinuteBollingerMiddle"] is not None else None
+                ),
+                "fiveMinuteSetup": metrics["fiveMinuteSetup"],
             })
             if official_strategy:
                 item["id"] = str(item["id"]).replace("mock-", "live-", 1)
@@ -326,6 +453,25 @@ class MockDayTradingEngine:
                 "qualityScore": 0,
                 "confirmationScore": 0,
                 "volumeScore": 0,
+                "fiveMinuteReady": False,
+                "fiveMinuteBarCount": 0,
+                "fiveMinuteHigherLows": False,
+                "fiveMinuteLowerHighs": False,
+                "fiveMinuteMaFast": 0.0,
+                "fiveMinuteMaSlow": 0.0,
+                "fiveMinuteMaRising": False,
+                "fiveMinuteMaFalling": False,
+                "aboveOpen": False,
+                "belowOpen": False,
+                "fiveMinuteBullish": False,
+                "fiveMinuteBearish": False,
+                "fiveMinuteBreakout": False,
+                "fiveMinuteBreakdown": False,
+                "fiveMinuteBollingerMiddle": None,
+                "fiveMinuteBollingerRetest": False,
+                "fiveMinuteLongSetup": False,
+                "fiveMinuteBearishExit": False,
+                "fiveMinuteSetup": "等待 5 分 K 暖機",
             }
         samples = sorted(history, key=lambda item: item.quote_timestamp)
         latest = samples[-1]
@@ -399,17 +545,127 @@ class MockDayTradingEngine:
             item for item in same_day
             if item.source == "TWSE MIS" and item.is_realtime
         ]
+
+        five_minute_bars: list[dict[str, Any]] = []
+        previous_exact: OfficialStockQuote | None = None
+        for sample in exact_samples:
+            sample_time = datetime.fromisoformat(sample.quote_timestamp)
+            bucket = sample_time.replace(
+                minute=(sample_time.minute // 5) * 5,
+                second=0,
+                microsecond=0,
+            )
+            delta_volume = (
+                max(0, sample.volume - previous_exact.volume)
+                if previous_exact is not None else 0
+            )
+            if not five_minute_bars or five_minute_bars[-1]["time"] != bucket:
+                five_minute_bars.append({
+                    "time": bucket,
+                    "open": sample.price,
+                    "high": sample.price,
+                    "low": sample.price,
+                    "close": sample.price,
+                    "volume": delta_volume,
+                })
+            else:
+                bar = five_minute_bars[-1]
+                bar["high"] = max(float(bar["high"]), sample.price)
+                bar["low"] = min(float(bar["low"]), sample.price)
+                bar["close"] = sample.price
+                bar["volume"] = int(bar["volume"]) + delta_volume
+            previous_exact = sample
+
+        # The latest bucket is still forming. Signals only use completed 5-minute bars.
+        completed_bars = five_minute_bars[:-1] if five_minute_bars else []
+        completed_closes = [float(bar["close"]) for bar in completed_bars]
+        five_minute_ready = len(completed_bars) >= 5
+        recent_three = completed_bars[-3:]
+        higher_lows = len(recent_three) == 3 and all(
+            float(recent_three[index]["low"]) < float(recent_three[index + 1]["low"])
+            for index in range(2)
+        )
+        lower_highs = len(recent_three) == 3 and all(
+            float(recent_three[index]["high"]) > float(recent_three[index + 1]["high"])
+            for index in range(2)
+        )
+        ma_fast = (
+            sum(completed_closes[-3:]) / 3
+            if len(completed_closes) >= 3 else latest.price
+        )
+        ma_slow = (
+            sum(completed_closes[-5:]) / 5
+            if len(completed_closes) >= 5 else ma_fast
+        )
+        previous_ma_fast = (
+            sum(completed_closes[-4:-1]) / 3
+            if len(completed_closes) >= 4 else ma_fast
+        )
+        ma_rising = len(completed_closes) >= 4 and ma_fast > previous_ma_fast
+        ma_falling = len(completed_closes) >= 4 and ma_fast < previous_ma_fast
+        opening_price = latest.open if latest.open > 0 else same_day[0].price
+        above_open = latest.price > opening_price
+        below_open = latest.price < opening_price
+        five_minute_breakout = (
+            len(recent_three) == 3
+            and latest.price > max(float(bar["high"]) for bar in recent_three)
+        )
+        five_minute_breakdown = (
+            len(recent_three) == 3
+            and latest.price < min(float(bar["low"]) for bar in recent_three)
+        )
+        bollinger_middle: float | None = None
+        bollinger_retest = False
+        if len(completed_closes) >= 10:
+            window = completed_closes[-10:]
+            bollinger_middle = sum(window) / len(window)
+            variance = sum((value - bollinger_middle) ** 2 for value in window) / len(window)
+            _bollinger_upper = bollinger_middle + 2 * math.sqrt(variance)
+            _bollinger_lower = bollinger_middle - 2 * math.sqrt(variance)
+            last_completed = completed_bars[-1]
+            bollinger_retest = (
+                float(last_completed["low"]) <= bollinger_middle
+                and float(last_completed["close"]) >= bollinger_middle
+                and latest.price >= bollinger_middle
+            )
+        five_minute_bullish = (
+            five_minute_ready
+            and above_open
+            and ma_fast > ma_slow
+            and ma_rising
+            and (higher_lows or five_minute_breakout or bollinger_retest)
+        )
+        five_minute_bearish = (
+            five_minute_ready
+            and below_open
+            and ma_fast < ma_slow
+            and ma_falling
+            and (lower_highs or five_minute_breakdown)
+        )
+        five_minute_setup = (
+            "突破" if five_minute_bullish and five_minute_breakout
+            else "布林中線回測" if five_minute_bullish and bollinger_retest
+            else "低點墊高順勢" if five_minute_bullish and higher_lows
+            else "空方轉弱" if five_minute_bearish
+            else "等待多方確認"
+        )
         qualified = (
             len(exact_samples) >= 12
             and span_seconds >= 180
             and weighted_volume > 0
+            and five_minute_ready
         )
         qualification_message = (
-            "實際行情樣本已完成暖機"
+            "實際行情與 5 分 K 樣本已完成暖機"
             if qualified
-            else f"實際行情暖機中：{len(exact_samples)}/12 筆，累積 {max(0, round(span_seconds))}/180 秒"
+            else f"5 分 K 暖機中：{len(completed_bars)}/5 根完成 K；實際行情 {len(exact_samples)}/12 筆"
         )
-        sample_quality = min(100, len(exact_samples) / 12 * 50 + span_seconds / 180 * 50)
+        sample_quality = min(
+            100,
+            len(exact_samples) / 12 * 35
+            + span_seconds / 180 * 25
+            + len(completed_bars) / 5 * 40,
+        )
         confirmation = min(100, abs(trend_1m) * 35 + abs(trend_5m) * 20 + abs(active_force) * .45)
         volume_score = min(100, 50 + (
             (recent_volume / previous_volume - 1) * 40
@@ -429,6 +685,25 @@ class MockDayTradingEngine:
             "qualityScore": sample_quality,
             "confirmationScore": confirmation,
             "volumeScore": max(0, volume_score),
+            "fiveMinuteReady": five_minute_ready,
+            "fiveMinuteBarCount": len(completed_bars),
+            "fiveMinuteHigherLows": higher_lows,
+            "fiveMinuteLowerHighs": lower_highs,
+            "fiveMinuteMaFast": ma_fast,
+            "fiveMinuteMaSlow": ma_slow,
+            "fiveMinuteMaRising": ma_rising,
+            "fiveMinuteMaFalling": ma_falling,
+            "aboveOpen": above_open,
+            "belowOpen": below_open,
+            "fiveMinuteBullish": five_minute_bullish,
+            "fiveMinuteBearish": five_minute_bearish,
+            "fiveMinuteBreakout": five_minute_breakout,
+            "fiveMinuteBreakdown": five_minute_breakdown,
+            "fiveMinuteBollingerMiddle": bollinger_middle,
+            "fiveMinuteBollingerRetest": bollinger_retest,
+            "fiveMinuteLongSetup": five_minute_bullish,
+            "fiveMinuteBearishExit": five_minute_bearish,
+            "fiveMinuteSetup": five_minute_setup,
         }
 
     def _now(self) -> datetime:
@@ -478,9 +753,9 @@ class MockDayTradingEngine:
                 delay = 999
             data_status = (
                 "normal"
-                if index_quote.source == "TWSE MIS" and index_quote.is_realtime and delay <= 20
+                if index_quote.source == "TWSE MIS" and index_quote.is_realtime and delay <= LIVE_QUOTE_MAX_DELAY_SECONDS
                 else "severe_delay"
-                if index_quote.source == "TWSE MIS" and delay <= 120
+                if index_quote.source == "TWSE MIS" and delay <= SOURCE_INTERRUPTION_SECONDS
                 else "source_error"
             )
             index_metrics = self._live_metrics(histories.get("t00", []))
@@ -734,6 +1009,18 @@ class MockDayTradingEngine:
                 "warnings": ["展示模式價格", "須確認券源與放空限制"],
             },
         ]
+        templates = [
+            item for item in templates
+            if is_target_theme_symbol(str(item["symbol"]))
+        ]
+        existing_symbols = {str(item["symbol"]) for item in templates}
+        templates.extend(
+            _theme_seed_signal(stock, wave)
+            for stock in THEME_STOCKS
+            if stock.symbol not in existing_symbols
+        )
+        for item in templates:
+            item["themes"] = list(themes_for_symbol(str(item["symbol"])))
         if scenario == "long_signal":
             templates[0]["action"] = "突破買進"
             templates[0]["confidenceScore"] = 92
@@ -769,6 +1056,19 @@ class MockDayTradingEngine:
     def quote_for(self, symbol: str) -> float | None:
         signal = next((item for item in self.signals() if item["symbol"] == symbol), None)
         return None if signal is None else float(signal["price"])
+
+    def position_risk_for(self, symbol: str) -> dict[str, str] | None:
+        """Return a long-position exit when completed 5-minute bars turn bearish."""
+        with self._lock:
+            history = list(self._quote_history.get(symbol, []))
+        metrics = self._live_metrics(history)
+        if not metrics["fiveMinuteBearishExit"]:
+            return None
+        return {
+            "level": "important",
+            "action": "5 分 K 轉弱，全部賣出",
+            "reason": "跌破開盤價、5 分 K 短均線向下，且形成頭頭低或跌破近期低點",
+        }
 
     def consume_scenario(self) -> str | None:
         with self._lock:

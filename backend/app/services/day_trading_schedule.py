@@ -6,8 +6,18 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
+from .theme_stock_universe import is_target_theme_symbol
+
 
 TAIPEI = ZoneInfo("Asia/Taipei")
+MAX_LONG_CHASE_CHANGE_PERCENT = 7.0
+MIN_DAY_TRADING_VOLUME_SHARES = 1_000_000
+MIN_DAY_TRADING_TURNOVER = 100_000_000
+MIN_LIQUIDITY_PROGRESS = 0.10
+DAY_TRADING_SIGNAL_START = "09:15"
+DAY_TRADING_ENTRY_CUTOFF = "10:30"
+DAY_TRADING_CLOSE_REMINDER = "13:25"
+DAY_TRADING_FORCED_EXIT = "13:30"
 
 
 @dataclass(frozen=True)
@@ -17,9 +27,10 @@ class TradingScheduleConfig:
     stock_pool_time: str = "08:45"
     health_check_time: str = "08:55"
     market_open_time: str = "09:00"
-    latest_entry_time: str = "13:20"
-    close_reminder_time: str = "13:25"
-    market_close_time: str = "13:30"
+    signal_start_time: str = DAY_TRADING_SIGNAL_START
+    latest_entry_time: str = DAY_TRADING_ENTRY_CUTOFF
+    close_reminder_time: str = DAY_TRADING_CLOSE_REMINDER
+    market_close_time: str = DAY_TRADING_FORCED_EXIT
     warmup_minutes: int = 3
     recommendation_refresh_seconds: int = 10
     replacement_score_gap: int = 5
@@ -27,8 +38,8 @@ class TradingScheduleConfig:
     minimum_live_samples: int = 3
     minimum_risk_reward: float = 1.5
     maximum_spread: float = 0.5
-    minimum_volume: float = 500_000
-    minimum_turnover: float = 50_000_000
+    minimum_volume: float = MIN_DAY_TRADING_VOLUME_SHARES
+    minimum_turnover: float = MIN_DAY_TRADING_TURNOVER
     maximum_stop_distance: float = 3.0
     maximum_recommendations: int = 5
     holidays: frozenset[date] = field(default_factory=frozenset)
@@ -63,7 +74,11 @@ def trading_session_state(
     stock_pool = _at(today, config.stock_pool_time, timezone)
     health_check = _at(today, config.health_check_time, timezone)
     market_open = _at(today, config.market_open_time, timezone)
-    warmup_end = market_open + timedelta(minutes=config.warmup_minutes)
+    signal_start = _at(today, config.signal_start_time, timezone)
+    warmup_end = max(
+        market_open + timedelta(minutes=config.warmup_minutes),
+        signal_start,
+    )
     latest_entry = _at(today, config.latest_entry_time, timezone)
     close_reminder = _at(today, config.close_reminder_time, timezone)
     market_close = _at(today, config.market_close_time, timezone)
@@ -95,7 +110,7 @@ def trading_session_state(
         ):
             phase, robot_status, message, next_transition = (
                 "warmup", "開盤暖機中",
-                "市場剛開盤，正在收集量價資料與建立 VWAP，暫不產生正式進場指令。",
+                f"09:00～{config.signal_start_time} 收集 5 分 K、量能與大單資料，暫不產生正式進場訊號。",
                 warmup_end,
             )
             if local_now >= warmup_end and (quote_samples < config.minimum_live_samples or recovering):
@@ -103,7 +118,7 @@ def trading_session_state(
                 next_transition = None
         elif local_now < latest_entry:
             phase, robot_status, message, next_transition = (
-                "scanning", "即時掃描中", "AI 當沖機器人已啟動，持續掃描符合風控條件的股票。", latest_entry,
+                "scanning", "5 分 K 強勢股掃描中", "AI 當沖機器人正在用 5 分 K 掃描強勢股；10:30 後停止新進場。", latest_entry,
             )
         elif local_now < close_reminder:
             phase, robot_status, message, next_transition = (
@@ -144,6 +159,7 @@ def trading_session_state(
             "stockPoolTime": config.stock_pool_time,
             "healthCheckTime": config.health_check_time,
             "marketOpenTime": config.market_open_time,
+            "signalStartTime": config.signal_start_time,
             "latestEntryTime": config.latest_entry_time,
             "closeReminderTime": config.close_reminder_time,
             "marketCloseTime": config.market_close_time,
@@ -158,6 +174,21 @@ def _expired(candidate: dict[str, Any], now: datetime) -> bool:
     return expires_at <= now.astimezone(UTC)
 
 
+def intraday_liquidity_minimums(
+    config: TradingScheduleConfig,
+    now: datetime | None = None,
+) -> tuple[float, float]:
+    """Scale full-session liquidity targets by elapsed Taipei market time."""
+    timezone = ZoneInfo(config.timezone)
+    current = (now or datetime.now(UTC)).astimezone(timezone)
+    market_open = _at(current.date(), config.market_open_time, timezone)
+    market_close = _at(current.date(), config.market_close_time, timezone)
+    session_seconds = max(1.0, (market_close - market_open).total_seconds())
+    elapsed_seconds = max(0.0, min(session_seconds, (current - market_open).total_seconds()))
+    progress = max(MIN_LIQUIDITY_PROGRESS, elapsed_seconds / session_seconds)
+    return config.minimum_volume * progress, config.minimum_turnover * progress
+
+
 def recommendation_qualification(
     candidate: dict[str, Any],
     config: TradingScheduleConfig,
@@ -166,6 +197,8 @@ def recommendation_qualification(
 ) -> tuple[bool, list[str]]:
     current = now or datetime.now(UTC)
     failures: list[str] = []
+    if not is_target_theme_symbol(str(candidate.get("symbol", ""))):
+        failures.append("不屬於 AI 或低軌衛星主題股票池")
     if not session["formalSignalsAllowed"]:
         failures.append(str(session["statusMessage"]))
     if candidate.get("dataStatus", "normal") != "normal":
@@ -188,14 +221,32 @@ def recommendation_qualification(
         failures.append("健康度未達 70")
     if float(candidate.get("riskRewardRatio", 0)) < config.minimum_risk_reward:
         failures.append(f"風險報酬比未達 1：{config.minimum_risk_reward:g}")
-    if float(candidate.get("volume", 0)) < config.minimum_volume:
-        failures.append("成交量未達最低標準")
-    if float(candidate.get("turnover", 0)) < config.minimum_turnover:
-        failures.append("成交金額未達最低標準")
+    required_volume, required_turnover = intraday_liquidity_minimums(config, current)
+    if float(candidate.get("volume", 0)) < required_volume:
+        failures.append(
+            f"量能進度不足（預估全日至少 {config.minimum_volume / 1000:,.0f} 張）"
+        )
+    if float(candidate.get("turnover", 0)) < required_turnover:
+        failures.append(
+            f"成交金額進度不足（預估全日至少 {config.minimum_turnover / 100_000_000:g} 億元）"
+        )
     if float(candidate.get("spreadPercentage", 999)) > config.maximum_spread:
         failures.append("買賣價差超過允許範圍")
+    if (
+        candidate.get("direction") == "long"
+        and float(candidate.get("changePercent", 0)) >= MAX_LONG_CHASE_CHANGE_PERCENT
+    ):
+        failures.append(
+            f"今日漲幅已達 {MAX_LONG_CHASE_CHANGE_PERCENT:g}%，禁止追價"
+        )
     if candidate.get("chaseBlocked"):
         failures.append("已觸發禁止追多／追空")
+    if candidate.get("isDisposed") or candidate.get("tradeRestricted"):
+        failures.append("處置股或交易受限股票禁止列入當沖")
+    if not candidate.get("largeOrderDataAvailable", False):
+        failures.append("等待逐筆成交大單資料完成暖機")
+    elif not candidate.get("largeOrderContinuousBuy", False):
+        failures.append("大單尚未持續敲進")
     if not candidate.get("tradingEligible", False):
         failures.append("不符合當沖交易資格")
     if float(candidate.get("marketAlignment", 0)) < 30:

@@ -1,5 +1,6 @@
 import { calculateIndicators } from "@/lib/indicators";
 import type { DailyPrice, StockMeta, StockPayload, StockQuote } from "@/lib/types";
+import { backendJson } from "@/services/backend-client";
 
 type QuoteStockMeta = Pick<StockMeta, "symbol" | "name" | "market">;
 
@@ -8,6 +9,26 @@ const lastTradeCache = new Map<string, StockQuote>();
 const LIVE_QUOTE_CACHE_MS = 2_000;
 const MIS_POLL_INTERVAL_MS = 850;
 const MIS_POLL_ATTEMPTS = 8;
+const MIS_BATCH_SIZE = 40;
+const BACKEND_QUOTE_BATCH_SIZE = 50;
+
+interface BackendOfficialQuote {
+  symbol: string;
+  name: string;
+  price: number;
+  previousClose: number;
+  open: number;
+  high: number;
+  low: number;
+  volume: number;
+  change: number;
+  changePercent: number;
+  quoteTimestamp: string;
+  source: StockQuote["source"];
+  isRealtime: boolean;
+  bestBid?: number | null;
+  bestAsk?: number | null;
+}
 
 function number(value: unknown): number | null {
   const parsed = Number(String(value ?? "").replaceAll(",", "").trim());
@@ -144,8 +165,10 @@ export function parseMisStockQuote(
   const previousClose = number(row.y);
   const matchedPrice = number(row.z);
   const hasMatchedPrice = matchedPrice != null && matchedPrice > 0;
-  const bestAsk = number(String(row.a ?? "").split("_")[0]);
-  const bestBid = number(String(row.b ?? "").split("_")[0]);
+  const firstPositiveLevel = (value: unknown) => String(value ?? "").split("_")
+    .map(number).find((level): level is number => level != null && level > 0) ?? null;
+  const bestAsk = firstPositiveLevel(row.a);
+  const bestBid = firstPositiveLevel(row.b);
   const orderBookPrice = bestAsk && bestAsk > 0
     ? bestAsk
     : bestBid && bestBid > 0
@@ -203,7 +226,7 @@ async function fetchYahooQuote(meta: QuoteStockMeta): Promise<StockQuote | null>
   return parseYahooChartQuote(await response.json(), meta);
 }
 
-async function fetchMisRows(metas: QuoteStockMeta[]): Promise<Record<string, unknown>[]> {
+async function fetchMisRowBatch(metas: QuoteStockMeta[]): Promise<Record<string, unknown>[]> {
   const channels = metas.map((meta) =>
     `${meta.market === "上市" ? "tse" : "otc"}_${meta.symbol}.tw`,
   ).join("|");
@@ -228,6 +251,44 @@ async function fetchMisRows(metas: QuoteStockMeta[]): Promise<Record<string, unk
   return Array.isArray(payload.msgArray) ? payload.msgArray : [];
 }
 
+async function fetchMisRows(metas: QuoteStockMeta[]): Promise<Record<string, unknown>[]> {
+  const batches: QuoteStockMeta[][] = [];
+  for (let index = 0; index < metas.length; index += MIS_BATCH_SIZE) {
+    batches.push(metas.slice(index, index + MIS_BATCH_SIZE));
+  }
+  const rows: Record<string, unknown>[] = [];
+  const concurrency = 8;
+  for (let index = 0; index < batches.length; index += concurrency) {
+    const wave = await Promise.allSettled(
+      batches.slice(index, index + concurrency).map((batch) => fetchMisRowBatch(batch)),
+    );
+    rows.push(...wave.flatMap((result) => result.status === "fulfilled" ? result.value : []));
+  }
+  return rows;
+}
+
+/** One-pass market snapshot for broad market views such as industry breadth.
+ * Unlike getOfficialQuotes this does not retry inactive symbols, so a full-market
+ * request cannot multiply into hundreds of MIS calls. Missing symbols are left
+ * to the caller to count as unchanged or mark as unavailable.
+ */
+export async function getOfficialSnapshotQuotes(metas: QuoteStockMeta[]): Promise<Map<string, StockQuote>> {
+  const results = new Map<string, StockQuote>();
+  const metaBySymbol = new Map(metas.map((meta) => [meta.symbol, meta]));
+  const rows = await fetchMisRows(metas);
+  for (const row of rows) {
+    const symbol = String(row.c ?? "");
+    const meta = metaBySymbol.get(symbol);
+    if (!meta) continue;
+    const quote = parseMisStockQuote(row, meta, lastTradeCache.get(symbol));
+    if (!quote) continue;
+    results.set(symbol, quote);
+    const matchedPrice = number(row.z);
+    if (matchedPrice != null && matchedPrice > 0) lastTradeCache.set(symbol, quote);
+  }
+  return results;
+}
+
 async function fetchMisQuotes(metas: QuoteStockMeta[]): Promise<Map<string, StockQuote>> {
   const results = new Map<string, StockQuote>();
   const unresolved = new Map(metas.map((meta) => [meta.symbol, meta]));
@@ -249,6 +310,68 @@ async function fetchMisQuotes(metas: QuoteStockMeta[]): Promise<Map<string, Stoc
     }
     if (unresolved.size && attempt < attempts - 1) {
       await new Promise((resolve) => setTimeout(resolve, MIS_POLL_INTERVAL_MS));
+    }
+  }
+  return results;
+}
+
+export function parseBackendOfficialQuote(payload: BackendOfficialQuote): StockQuote | null {
+  const timestamp = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})/.exec(payload.quoteTimestamp);
+  if (
+    !timestamp
+    || !Number.isFinite(payload.price) || payload.price <= 0
+    || !Number.isFinite(payload.previousClose) || payload.previousClose <= 0
+    || !Number.isFinite(payload.open)
+    || !Number.isFinite(payload.high)
+    || !Number.isFinite(payload.low)
+    || !Number.isFinite(payload.volume)
+  ) return null;
+  return {
+    symbol: payload.symbol,
+    name: payload.name,
+    date: timestamp[1],
+    time: timestamp[2],
+    open: payload.open,
+    high: payload.high,
+    low: payload.low,
+    price: payload.price,
+    previousClose: payload.previousClose,
+    change: payload.change,
+    changePercent: payload.changePercent,
+    volume: payload.volume,
+    bestBid: payload.bestBid ?? undefined,
+    bestAsk: payload.bestAsk ?? undefined,
+    source: payload.source,
+    isRealtime: payload.isRealtime,
+  };
+}
+
+async function fetchBackendMisQuotes(metas: QuoteStockMeta[]): Promise<Map<string, StockQuote>> {
+  if (!metas.length) return new Map();
+  const batches: QuoteStockMeta[][] = [];
+  for (let index = 0; index < metas.length; index += BACKEND_QUOTE_BATCH_SIZE) {
+    batches.push(metas.slice(index, index + BACKEND_QUOTE_BATCH_SIZE));
+  }
+  const results = new Map<string, StockQuote>();
+  const concurrency = 4;
+  for (let index = 0; index < batches.length; index += concurrency) {
+    const payloads = await Promise.allSettled(batches.slice(index, index + concurrency).map((items) =>
+      backendJson<{ items: BackendOfficialQuote[] }>(
+        "/market-data/quotes",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ items }),
+        },
+        15_000,
+      ),
+    ));
+    for (const payload of payloads) {
+      if (payload.status !== "fulfilled") continue;
+      for (const item of payload.value.items) {
+        const quote = parseBackendOfficialQuote(item);
+        if (quote) results.set(quote.symbol, quote);
+      }
     }
   }
   return results;
@@ -303,6 +426,20 @@ export async function getOfficialQuotes(metas: QuoteStockMeta[]): Promise<Map<st
     }
   } catch {
     // A missing MIS response is handled below without disguising yesterday's close as a live price.
+  }
+  try {
+    const backendQuotes = await fetchBackendMisQuotes(
+      missing.filter((meta) => !result.has(meta.symbol)),
+    );
+    for (const [symbol, quote] of backendQuotes) {
+      quoteCache.set(symbol, {
+        value: quote,
+        expiresAt: Date.now() + (quote.isRealtime ? LIVE_QUOTE_CACHE_MS : 15_000),
+      });
+      result.set(symbol, quote);
+    }
+  } catch {
+    // The public official close remains the final fallback if the backend MIS relay is unavailable.
   }
   if (isMarketSession()) {
     await Promise.all(missing.filter((meta) => !result.has(meta.symbol)).map(async (meta) => {

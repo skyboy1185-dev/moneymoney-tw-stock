@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Clock3, Newspaper, Search, Sparkles } from "lucide-react";
+import { Clock3, Newspaper, Search } from "lucide-react";
 import type { NewsItem } from "@/services/content-service";
 
 const sentimentLabel = { positive: "偏正向", neutral: "中性", negative: "需留意" };
@@ -14,6 +14,7 @@ export function NewsPage({ onSelectStock }: { onSelectStock: (symbol: string) =>
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [updatedAt, setUpdatedAt] = useState("");
 
   const load = useCallback(async (nextCategory = category, nextKeyword = keyword) => {
     setLoading(true);
@@ -25,6 +26,7 @@ export function NewsPage({ onSelectStock }: { onSelectStock: (symbol: string) =>
       if (!response.ok) throw new Error(payload.error ?? "新聞載入失敗");
       setItems(payload.items ?? []);
       setCategories(payload.categories ?? []);
+      setUpdatedAt(payload.updatedAt ?? "");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "新聞載入失敗");
     } finally {
@@ -33,6 +35,10 @@ export function NewsPage({ onSelectStock }: { onSelectStock: (symbol: string) =>
   }, [category, keyword]);
 
   useEffect(() => { void load("", ""); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const timer = window.setInterval(() => void load(category, keyword), 10 * 60_000);
+    return () => window.clearInterval(timer);
+  }, [category, keyword, load]);
 
   const selectCategory = (value: string) => {
     setCategory(value);
@@ -47,8 +53,8 @@ export function NewsPage({ onSelectStock }: { onSelectStock: (symbol: string) =>
   return (
     <div className="content-page">
       <div className="content-page-heading">
-        <div><p className="section-kicker">MARKET STORIES</p><h1><Newspaper size={24} />市場新聞</h1><p>依產業與股票代號快速篩選；目前所有內容皆明確標示為展示新聞。</p></div>
-        <span className="demo-badge"><Sparkles size={14} />展示新聞／非即時</span>
+        <div><p className="section-kicker">MARKET STORIES</p><h1><Newspaper size={24} />市場新聞</h1><p>FinMind 彙整當日台股相關新聞，可依產業、標題或股票代號篩選。</p></div>
+        <span className="demo-badge">FinMind 當日新聞{updatedAt ? ` · ${new Date(updatedAt).toLocaleTimeString("zh-TW", { hour12: false })}` : ""}</span>
       </div>
       <div className="news-controls">
         <form className="content-search" onSubmit={submit}><Search size={15} /><input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="搜尋標題、關鍵字或股票代號" /><button>搜尋</button></form>
@@ -60,12 +66,12 @@ export function NewsPage({ onSelectStock }: { onSelectStock: (symbol: string) =>
           : <div className="news-list">{items.map((item) => (
             <article className="news-card" key={item.id}>
               <div className="news-meta"><span>{item.category}</span><span className={`sentiment-${item.sentiment}`}>{sentimentLabel[item.sentiment]}</span><small><Clock3 size={11} />{new Date(item.publishedAt).toLocaleString("zh-TW", { hour12: false })}</small></div>
-              <h2>{item.title}</h2>
+              <h2>{item.url ? <a href={item.url} target="_blank" rel="noopener noreferrer">{item.title}</a> : item.title}</h2>
               <p>{item.summary}</p>
               <div className="news-footer"><div>{item.symbols.map((symbol) => <button key={symbol} onClick={() => onSelectStock(symbol)}>{symbol} 查看分析</button>)}</div><span>{item.source}</span></div>
             </article>
           ))}</div>}
-      <p className="content-disclaimer">新聞內容為 MVP 展示資料，不代表真實事件、即時資訊或任何投資建議。</p>
+      <p className="content-disclaimer">新聞由 FinMind 彙整；標題與連結版權屬原新聞來源。系統不保證完整性，亦不構成投資建議。</p>
     </div>
   );
 }

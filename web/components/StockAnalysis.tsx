@@ -4,7 +4,10 @@ import { useMemo, useState } from "react";
 import { ArrowDownRight, ArrowUpRight, Clock3, RefreshCw } from "lucide-react";
 import { AnalysisSidebar } from "./AnalysisSidebar";
 import { LeaderPowerPanel } from "./LeaderPowerPanel";
+import { PowerTrendIndicator } from "./PowerTrendIndicator";
 import { StockChart } from "./StockChart";
+import { StockInstitutionalFlow } from "./StockInstitutionalFlow";
+import { VolumeProfilePanel } from "./VolumeProfilePanel";
 import { formatPercent, formatVolume, safeNumber, valueClass } from "@/lib/format";
 import { calculatePowerScore } from "@/lib/power-score";
 import type { StockPayload } from "@/lib/types";
@@ -74,7 +77,10 @@ export function StockAnalysis({
                   ? `${data.quote?.isRealtime ? "官方盤中" : "官方收盤"} · ${data.dataQuality?.quoteSource ?? data.quote?.source ?? "TWSE／TPEx"}`
                   : data.quote ? `${data.quote.isRealtime ? "官方準即時" : "官方收盤"} · ${data.quote.source}` : "展示資料"}
               </span>
-              <span className="power-mini-badge">馬力 {powerScore.powerValue}/17 · {powerScore.starLabel}</span>
+              <span className="power-mini-badge">
+                馬力 {powerScore.powerValue}/17 · {powerScore.starLabel}
+                <PowerTrendIndicator score={powerScore} />
+              </span>
             </div>
             <p>{data.meta.symbol} · {data.meta.industry}</p>
           </div>
@@ -137,6 +143,11 @@ export function StockAnalysis({
         </section>
         <AnalysisSidebar data={data} marketOpen={marketOpen} />
       </div>
+      <VolumeProfilePanel
+        prices={data.prices}
+        source={data.dataQuality?.historySource ?? "官方日 K 歷史資料"}
+      />
+      <StockInstitutionalFlow symbol={data.meta.symbol} />
     </div>
   );
 }

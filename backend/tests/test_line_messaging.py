@@ -7,9 +7,12 @@ from typing import Any
 import httpx
 
 from app.services.line_messaging import (
+    LINE_GROUP_DISCLAIMER,
+    PERSONAL_STRATEGY_SIMULATION_NOTE,
     LineMessagingClient,
     LineNotificationDispatcher,
     LineNotificationEvent,
+    format_personal_strategy_simulation,
     format_position_message,
     format_signal_message,
     mask_group_id,
@@ -35,6 +38,14 @@ def test_group_id_is_masked() -> None:
     assert "7890abcdef" not in masked
 
 
+def test_group_disclaimer_contains_required_non_advisory_warning() -> None:
+    assert LINE_GROUP_DISCLAIMER.startswith("⚠️ 免責聲明：")
+    assert "自動化數據產出" in LINE_GROUP_DISCLAIMER
+    assert "絕不構成" in LINE_GROUP_DISCLAIMER
+    assert "請勿依此進行真實市場跟單" in LINE_GROUP_DISCLAIMER
+    assert "自行判斷並自負盈虧" in LINE_GROUP_DISCLAIMER
+
+
 def test_signal_and_emergency_messages_follow_required_format() -> None:
     signal: dict[str, Any] = {
         "symbol": "2330", "stockName": "台積電", "price": 1000,
@@ -46,17 +57,18 @@ def test_signal_and_emergency_messages_follow_required_format() -> None:
         "direction": "long", "reasons": ["站上 VWAP"], "warnings": ["禁止追價"],
     }
     message = format_signal_message(signal)
-    assert "【AI當沖機器人｜做多訊號】" in message
-    assert "股票：2330 台積電" in message
-    assert "推薦原因：\n- 站上 VWAP" in message
-    assert "僅供研究參考，不構成投資建議。" in message
+    assert message.startswith("【個人策略模擬測試】")
+    assert "標的：台積電 2330" in message
+    assert "模擬進場點：995.00～1,000.00" in message
+    assert "模擬停損/停利：980.00 / 1,020.00、1,040.00" in message
+    assert message.endswith(PERSONAL_STRATEGY_SIMULATION_NOTE)
 
     demo_message = format_signal_message({
         **signal,
         "dataMode": "demo",
         "dataSource": "mock_opening_simulation",
     })
-    assert demo_message.startswith("【展示模式，非即時行情】")
+    assert demo_message.startswith("【個人策略模擬測試】")
 
     official_message = format_signal_message({
         **signal,
@@ -65,10 +77,8 @@ def test_signal_and_emergency_messages_follow_required_format() -> None:
         "quoteStatus": "最近有效行情／收盤",
         "quoteTimestamp": "2026-07-24T13:30:00+08:00",
     })
-    assert official_message.startswith("【官方市場報價｜策略展示模式】")
-    assert "行情來源：TWSE MIS" in official_message
-    assert "報價狀態：最近有效行情／收盤" in official_message
-    assert "行情時間：2026-07-24 13:30:00" in official_message
+    assert official_message.startswith("【個人策略模擬測試】")
+    assert "行情來源" not in official_message
 
     emergency = format_position_message({
         "level": "emergency", "action": "立即全部回補", "price": 101,
@@ -79,6 +89,25 @@ def test_signal_and_emergency_messages_follow_required_format() -> None:
     })
     assert "【AI當沖機器人｜緊急回補】" in emergency
     assert "指令：立即全部回補" in emergency
+    assert PERSONAL_STRATEGY_SIMULATION_NOTE in emergency
+
+
+def test_personal_strategy_template_keeps_name_before_symbol() -> None:
+    message = format_personal_strategy_simulation(
+        stock_name="台積電",
+        symbol="2330",
+        entry_min=1000,
+        entry_max=1000,
+        stop_loss=980,
+        target_1=1040,
+    )
+    assert message.splitlines() == [
+        "【個人策略模擬測試】",
+        "標的：台積電 2330",
+        "模擬進場點：1,000.00",
+        "模擬停損/停利：980.00 / 1,040.00",
+        f"說明：{PERSONAL_STRATEGY_SIMULATION_NOTE}",
+    ]
 
 
 def test_push_retries_at_most_three_times(monkeypatch: Any) -> None:
@@ -184,3 +213,132 @@ def test_line_recommendations_are_capped_at_five_per_batch(monkeypatch: Any) -> 
     sent = asyncio.run(dispatcher.send_recommendations(recommendations))
     assert sent == 5
     assert len(captured) == 5
+
+
+def test_same_stock_direction_uses_one_daily_formal_entry(monkeypatch: Any) -> None:
+    dispatcher = LineNotificationDispatcher()
+    captured: list[LineNotificationEvent] = []
+
+    async def fake_dispatch_many(events: list[LineNotificationEvent]) -> int:
+        captured.extend(events)
+        return len(events)
+
+    monkeypatch.setattr(dispatcher, "dispatch_many", fake_dispatch_many)
+    base = {
+        "symbol": "2317", "stockName": "鴻海", "direction": "long",
+        "action": "突破買進", "price": 250, "entryMin": 249, "entryMax": 251,
+        "stopLoss": 247, "target1": 255, "target2": 260,
+        "confidenceScore": 85, "healthScore": 82, "riskRewardRatio": 2,
+        "generatedAt": "2026-08-03T10:00:00+08:00",
+        "quoteTimestamp": "2026-08-03T10:00:00+08:00",
+        "expiresAt": "2026-08-03T10:05:00+08:00",
+        "reasons": ["正式突破"], "warnings": [],
+        "isOfficialRecommendation": True,
+    }
+
+    sent = asyncio.run(dispatcher.send_recommendations([
+        {**base, "id": "2317-window-1"},
+        {**base, "id": "2317-window-2", "quoteTimestamp": "2026-08-03T10:05:00+08:00"},
+    ]))
+
+    assert sent == 1
+    assert len(captured) == 1
+    assert captured[0].dedupe_key == "formal-entry:2026-08-03:2317:long"
+
+
+def test_non_formal_confidence_candidate_does_not_send_line(
+    monkeypatch: Any,
+) -> None:
+    dispatcher = LineNotificationDispatcher()
+    captured: list[LineNotificationEvent] = []
+
+    async def fake_dispatch_many(events: list[LineNotificationEvent]) -> int:
+        captured.extend(events)
+        return len(events)
+
+    monkeypatch.setattr(dispatcher, "dispatch_many", fake_dispatch_many)
+    candidate = {
+        "id": "candidate-1802",
+        "symbol": "1802",
+        "stockName": "台玻",
+        "direction": "short",
+        "action": "放空資格待確認",
+        "price": 48.6,
+        "confidenceScore": 75,
+        "healthScore": 90,
+        "dataMode": "warming_up",
+        "dataStatus": "normal",
+        "quoteIsRealtime": True,
+        "status": "temporary",
+        "dataSource": "TWSE MIS",
+        "quoteTimestamp": "2026-07-28T10:41:15+08:00",
+        "qualificationFailures": ["放空資格待確認"],
+        "warnings": ["請先向券商確認券源"],
+    }
+
+    sent = asyncio.run(dispatcher.send_confidence_candidates([
+        candidate,
+        {**candidate, "id": "candidate-low", "symbol": "2330", "confidenceScore": 74},
+        {
+            **candidate,
+            "id": "candidate-reference",
+            "symbol": "5340",
+            "dataSource": "TWSE MIS 五檔參考價",
+        },
+        {**candidate, "id": "candidate-stale", "symbol": "2408", "quoteIsRealtime": False},
+        {
+            **candidate,
+            "id": "candidate-chase-blocked",
+            "symbol": "2330",
+            "direction": "long",
+            "confidenceScore": 95,
+            "chaseBlocked": True,
+        },
+        {
+            **candidate,
+            "id": "formal-signal",
+            "symbol": "2317",
+            "confidenceScore": 90,
+            "isOfficialRecommendation": True,
+        },
+    ]))
+
+    assert sent == 0
+    assert captured == []
+
+
+def test_confidence_candidate_notifications_stay_disabled_for_many_rows(monkeypatch: Any) -> None:
+    dispatcher = LineNotificationDispatcher()
+    captured: list[LineNotificationEvent] = []
+
+    async def fake_dispatch_many(events: list[LineNotificationEvent]) -> int:
+        captured.extend(events)
+        return len(events)
+
+    monkeypatch.setattr(dispatcher, "dispatch_many", fake_dispatch_many)
+    candidates = [
+        {
+            "id": f"candidate-{index}",
+            "symbol": f"23{index:02d}",
+            "stockName": f"候選{index}",
+            "direction": "long",
+            "action": "突破觀察",
+            "price": 100,
+            "confidenceScore": 75 + index,
+            "healthScore": 80,
+            "dataMode": "official",
+            "dataStatus": "normal",
+            "quoteIsRealtime": True,
+            "status": "confirmed",
+            "dataSource": "TWSE MIS",
+            "quoteTimestamp": "2026-07-28T10:41:15+08:00",
+            "qualificationFailures": [],
+            "warnings": [],
+        }
+        for index in range(7)
+    ]
+
+    sent = asyncio.run(dispatcher.send_confidence_candidates(candidates))
+
+    assert sent == 0
+    assert captured == []

@@ -283,7 +283,7 @@ export function AIStockWorkflow({
           <td>{safeNumber(row.price)}<small className={valueClass(row.changePercent)}>{formatPercent(row.changePercent)}</small><small>{formatVolume(row.volume)}</small></td>
           <td><span className="strategy-tag">{row.strategyName}</span></td>
           <td>{row.secondaryStrategies.slice(0, 2).map((value) => <small key={value}>{value}</small>)}</td>
-          <td><div className={`score-pill score-${Math.floor(row.score / 10)}`}>{row.score}</div><small title={`趨勢 ${row.scoreBreakdown.trend}、動能 ${row.scoreBreakdown.momentum}、成交量 ${row.scoreBreakdown.volume}、策略 ${row.scoreBreakdown.strategy}、大盤 ${row.scoreBreakdown.market}、風險 ${row.scoreBreakdown.risk}`}>可追蹤評分明細</small></td>
+          <td><div className={`score-pill score-${Math.floor(row.score / 10)}`}>{row.score}</div><small title={`趨勢 ${row.scoreBreakdown.trend}、動能 ${row.scoreBreakdown.momentum}、成交量 ${row.scoreBreakdown.volume}、關鍵價 ${row.scoreBreakdown.keyPrice}、策略 ${row.scoreBreakdown.strategy}、大盤 ${row.scoreBreakdown.market}、風險 ${row.scoreBreakdown.risk}`}>可追蹤評分明細</small><small className={row.aboveKeyPrice ? "positive" : "muted"}>{row.keyPrice == null ? "關鍵價資料不足" : row.aboveKeyPrice ? `站上關鍵價 ${safeNumber(row.keyPrice)}` : `關鍵價 ${safeNumber(row.keyPrice)}（未站上）`}</small></td>
           <td>{row.strategyFit}%<small>大盤 {row.marketFit}%</small></td><td>{row.healthScore}</td>
           <td><ul>{row.reasons.slice(0, 3).map((reason) => <li key={reason}>{reason}</li>)}</ul></td>
           <td>{[...row.riskTags, ...row.hardRiskFailures].slice(0, 2).map((risk) => <span className="risk-tag" key={risk}>{risk}</span>)}</td>
@@ -324,7 +324,7 @@ function NumberSetting({ label, value, onChange }: { label: string; value: numbe
 function FeaturedCard({ row, onAnalyze }: { row: RankingRow; onAnalyze: (symbol: string) => void }) {
   return <article className="ai-featured-card">
     <div><span>AI 正式精選</span><strong>{row.symbol} {row.name}</strong><em>{row.strategyName}</em></div>
-    <dl><div><dt>條件符合分數</dt><dd>{row.score}</dd></div><div><dt>策略適配</dt><dd>{row.strategyFit}%</dd></div><div><dt>健康度</dt><dd>{row.healthScore}</dd></div><div><dt>風險報酬</dt><dd>1：{row.riskRewardRatio}</dd></div></dl>
+    <dl><div><dt>條件符合分數</dt><dd>{row.score}</dd></div><div><dt>關鍵價</dt><dd>{row.keyPrice == null ? "—" : safeNumber(row.keyPrice)}</dd></div><div><dt>是否站上</dt><dd>{row.aboveKeyPrice ? "是" : "否"}</dd></div><div><dt>策略適配</dt><dd>{row.strategyFit}%</dd></div><div><dt>健康度</dt><dd>{row.healthScore}</dd></div><div><dt>風險報酬</dt><dd>1：{row.riskRewardRatio}</dd></div></dl>
     <p>進場區 {safeNumber(row.entryMin)}～{safeNumber(row.entryMax)} · 停損 {safeNumber(row.stopLoss)}</p>
     <small>{row.priceSource} · {row.priceDate} {row.priceTime}</small>
     <button onClick={() => onAnalyze(row.symbol)}><Eye size={13} />查看分析</button>

@@ -1,14 +1,10 @@
 import json
-from typing import Any
+from typing import Any, cast
 
 try:
     from redis import Redis  # pyright: ignore[reportMissingImports]
-    from redis.exceptions import RedisError  # pyright: ignore[reportMissingImports]
 except ImportError:  # Redis is optional in local Mock-only development.
     Redis = None  # type: ignore[assignment,misc]
-
-    class RedisError(Exception):
-        pass
 
 from ..config import get_settings
 
@@ -31,7 +27,7 @@ class DayTradingCache:
             return False
         try:
             return bool(self._redis.ping())
-        except RedisError:
+        except Exception:
             return False
 
     def put(self, key: str, payload: Any, ttl: int = 120) -> None:
@@ -40,15 +36,17 @@ class DayTradingCache:
         if self._redis:
             try:
                 self._redis.setex(f"moneymoney:{key}", ttl, encoded)
-            except RedisError:
+            except Exception:
                 pass
 
     def get(self, key: str) -> Any | None:
         encoded = self._memory.get(key)
         if self._redis:
             try:
-                encoded = self._redis.get(f"moneymoney:{key}") or encoded
-            except RedisError:
+                cached = self._redis.get(f"moneymoney:{key}")
+                if cached:
+                    encoded = cast(str, cached)
+            except Exception:
                 pass
         return json.loads(encoded) if encoded else None
 
@@ -60,7 +58,7 @@ class DayTradingCache:
                 "moneymoney:day-trading",
                 json.dumps({"type": event_type, "data": payload}, ensure_ascii=False),
             )
-        except RedisError:
+        except Exception:
             pass
 
     def claim_once(self, key: str, ttl: int = 86_400) -> bool:
@@ -73,7 +71,7 @@ class DayTradingCache:
                 claimed = self._redis.set(f"moneymoney:{memory_key}", "1", ex=ttl, nx=True)
                 if not claimed:
                     return False
-            except RedisError:
+            except Exception:
                 pass
         self._memory[memory_key] = "1"
         return True

@@ -101,7 +101,7 @@ CREATE TABLE IF NOT EXISTS day_trading_settings (
   maximum_spread DOUBLE PRECISION NOT NULL DEFAULT 0.5,
   minimum_volume DOUBLE PRECISION NOT NULL DEFAULT 500000,
   minimum_turnover DOUBLE PRECISION NOT NULL DEFAULT 50000000,
-  latest_entry_time VARCHAR(5) NOT NULL DEFAULT '13:20',
+  latest_entry_time VARCHAR(5) NOT NULL DEFAULT '10:30',
   close_reminder_time VARCHAR(5) NOT NULL DEFAULT '13:25',
   notification_enabled BOOLEAN NOT NULL DEFAULT FALSE,
   sound_enabled BOOLEAN NOT NULL DEFAULT TRUE,

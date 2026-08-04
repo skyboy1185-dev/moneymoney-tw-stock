@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
-from datetime import UTC, datetime, time
+from datetime import UTC, date, datetime, time
 import logging
 from zoneinfo import ZoneInfo
 
@@ -18,6 +18,7 @@ from .ai_stock_line import (
     position_action_message,
     push_ai_stock_message,
 )
+from .ai_stock_market_scanner import AIStockMarketScanner, MarketScanResult
 from .ai_stock_service import (
     ACTIVE_MONITOR_STATUSES,
     ACTIVE_POSITION_STATUSES,
@@ -29,8 +30,10 @@ from .ai_stock_service import (
     position_payload,
     quote_is_fresh,
     suggest_add_on,
+    sync_recommendations,
     update_position_quote,
 )
+from .day_trading_schedule import is_twse_trading_day
 from .official_market_data import StockQuoteRequest, official_market_data_provider
 
 
@@ -40,7 +43,13 @@ TAIPEI = ZoneInfo("Asia/Taipei")
 
 def _market_session(now: datetime) -> str:
     local = now.astimezone(TAIPEI)
-    if local.weekday() >= 5:
+    holidays: set[date] = set()
+    for raw in get_settings().twse_holidays.split(","):
+        try:
+            holidays.add(date.fromisoformat(raw.strip()))
+        except ValueError:
+            continue
+    if not is_twse_trading_day(local.date(), holidays):
         return "closed"
     if time(9, 0) <= local.time() <= time(13, 30):
         return "open"
@@ -52,7 +61,22 @@ def _market_session(now: datetime) -> str:
 class AIStockAutomation:
     def __init__(self) -> None:
         self._task: asyncio.Task[None] | None = None
-        self._state = {"status": "stopped", "lastRunAt": None, "restoredPositions": 0}
+        self._state = self._initial_state("stopped", 0)
+
+    @staticmethod
+    def _initial_state(status: str, restored: int) -> dict:
+        return {
+            "status": status,
+            "lastRunAt": None,
+            "restoredPositions": restored,
+            "scanIntervalSeconds": max(10, get_settings().ai_stock_monitor_seconds),
+            "lastScanAt": None,
+            "lastScanStatus": "not_started",
+            "lastScanError": None,
+            "lastScanFeaturedCount": 0,
+            "lastScanCandidateCount": 0,
+            "lastSyncedCount": 0,
+        }
 
     async def start(self) -> None:
         if self._task and not self._task.done():
@@ -61,7 +85,7 @@ class AIStockAutomation:
             restored = len(db.scalars(select(AIStockPosition.id).where(
                 AIStockPosition.position_status.in_(ACTIVE_POSITION_STATUSES),
             )).all())
-        self._state = {"status": "running", "lastRunAt": None, "restoredPositions": restored}
+        self._state = self._initial_state("running", restored)
         self._task = asyncio.create_task(self._run(), name="ai-stock-cross-day-monitor")
 
     async def stop(self) -> None:
@@ -76,6 +100,33 @@ class AIStockAutomation:
     @property
     def state(self) -> dict:
         return dict(self._state)
+
+    async def _scan_market(self, current: datetime) -> MarketScanResult:
+        settings = get_settings()
+        scanner = AIStockMarketScanner(
+            settings.ai_stock_scanner_url,
+            timeout_seconds=settings.ai_stock_scanner_timeout_seconds,
+            service_token=settings.adaptive_electronic_scanner_token,
+        )
+        result = await scanner.scan(current)
+        synced_count = 0
+        if result.status == "success":
+            with SessionLocal() as db:
+                synced_count = len(sync_recommendations(
+                    db,
+                    settings.ai_stock_automation_user_id,
+                    list(result.items),
+                    now=current,
+                ))
+        self._state.update({
+            "lastScanAt": result.fetched_at.isoformat(),
+            "lastScanStatus": result.status,
+            "lastScanError": result.error,
+            "lastScanFeaturedCount": result.featured_count,
+            "lastScanCandidateCount": len(result.items),
+            "lastSyncedCount": synced_count,
+        })
+        return result
 
     async def _push_alert(
         self,
@@ -110,6 +161,17 @@ class AIStockAutomation:
     async def run_once(self, now: datetime | None = None) -> None:
         current = now or datetime.now(UTC)
         session = _market_session(current)
+        if session == "open":
+            await self._scan_market(current)
+        else:
+            self._state.update({
+                "lastScanAt": current.isoformat(),
+                "lastScanStatus": f"skipped_{session}",
+                "lastScanError": None,
+                "lastScanFeaturedCount": 0,
+                "lastScanCandidateCount": 0,
+                "lastSyncedCount": 0,
+            })
         with SessionLocal() as db:
             monitors = list(db.scalars(select(AIStockMonitor).where(
                 AIStockMonitor.monitor_status.in_(ACTIVE_MONITOR_STATUSES),

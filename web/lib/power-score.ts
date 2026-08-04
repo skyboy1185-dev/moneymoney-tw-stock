@@ -27,6 +27,9 @@ export interface PriceZone {
 export interface PowerScoreResult {
   healthScore: number;
   powerValue: number;
+  previousPowerValue: number | null;
+  powerChange: number | null;
+  powerTrend: "up" | "down" | "flat" | "unavailable";
   stars: number;
   starLabel: string;
   support: number | null;
@@ -66,10 +69,11 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
-export function calculatePowerScore(
+function calculatePowerScoreForPeriod(
   prices: DailyPrice[],
   indicators: TechnicalIndicator[],
   context: PowerScoreContext = {},
+  includePreviousComparison = true,
 ): PowerScoreResult {
   const latest = prices.at(-1);
   const previous = prices.at(-2);
@@ -78,6 +82,7 @@ export function calculatePowerScore(
   if (!latest || !previous || !current || prices.length < 120 || indicators.length !== prices.length) {
     return {
       healthScore: 0, powerValue: 0, stars: 1, starLabel: "★☆☆☆☆",
+      previousPowerValue: null, powerChange: null, powerTrend: "unavailable",
       support: null, resistance: null, suggestion: "資料不足，暫不提供操作結論。",
       buyPoint: null, addPoint: null, stopLoss: null, takeProfit: null,
       isBreakout: false, isBullAttack: false, canBuy: false, canAdd: false,
@@ -233,9 +238,21 @@ export function calculatePowerScore(
   else if (healthScore >= 50) suggestion = "具部分多方條件，但資料或確認條件不足，先觀察。";
   else if (healthScore < 35) suggestion = "馬力偏弱，避免進場並留意支撐失守風險。";
 
+  const previousResult = includePreviousComparison
+    ? calculatePowerScoreForPeriod(prices.slice(0, -1), indicators.slice(0, -1), context, false)
+    : null;
+  const previousPowerValue = previousResult?.dataCoverage ? previousResult.powerValue : null;
+  const powerChange = previousPowerValue == null ? null : powerValue - previousPowerValue;
+  const powerTrend = powerChange == null
+    ? "unavailable"
+    : powerChange > 0 ? "up" : powerChange < 0 ? "down" : "flat";
+
   return {
     healthScore,
     powerValue,
+    previousPowerValue,
+    powerChange,
+    powerTrend,
     stars,
     starLabel: `${"★".repeat(stars)}${"☆".repeat(5 - stars)}`,
     support: finite(support) ? round(support) : null,
@@ -257,4 +274,12 @@ export function calculatePowerScore(
     dataCoverage: Math.round(availablePoints),
     quoteDate: latest.date,
   };
+}
+
+export function calculatePowerScore(
+  prices: DailyPrice[],
+  indicators: TechnicalIndicator[],
+  context: PowerScoreContext = {},
+): PowerScoreResult {
+  return calculatePowerScoreForPeriod(prices, indicators, context);
 }

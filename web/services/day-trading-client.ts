@@ -22,8 +22,8 @@ export const dayTradingClient = {
   rankings: (userId: string) => request<{ items: unknown[] }>("rankings", userId),
   positions: (userId: string) => request<{ items: unknown[] }>("positions", userId),
   alerts: (userId: string) => request<{ items: unknown[]; unread: number }>("alerts", userId),
-  trades: (userId: string) => request<{ items: unknown[] }>("trades", userId),
-  performance: (userId: string) => request<unknown>("performance", userId),
+  trades: (userId: string, month = "") => request<{ period: string; items: unknown[] }>(`trades${month ? `?month=${encodeURIComponent(month)}` : ""}`, userId),
+  performance: (userId: string, month = "") => request<unknown>(`performance${month ? `?month=${encodeURIComponent(month)}` : ""}`, userId),
   settings: (userId: string) => request<DayTradingSettings>("settings", userId),
   saveSettings: (userId: string, settings: DayTradingSettings) => request<DayTradingSettings>("settings", userId, {
     method: "PUT",

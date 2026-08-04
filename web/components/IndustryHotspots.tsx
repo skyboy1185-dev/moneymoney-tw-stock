@@ -11,6 +11,9 @@ export function IndustryHotspots({ onSelectStock }: { onSelectStock: (symbol: st
   const [error, setError] = useState("");
   const [sort, setSort] = useState<"change" | "momentum" | "count">("change");
   const [updatedAt, setUpdatedAt] = useState("");
+  const [dataSource, setDataSource] = useState("");
+  const [quoteStatus, setQuoteStatus] = useState<"intraday" | "official_close">("official_close");
+  const [coverageRatio, setCoverageRatio] = useState<number | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -21,6 +24,9 @@ export function IndustryHotspots({ onSelectStock }: { onSelectStock: (symbol: st
       if (!response.ok) throw new Error(payload.error ?? "產業資料載入失敗");
       setItems(payload.items ?? []);
       setUpdatedAt(payload.updatedAt ?? new Date().toISOString());
+      setDataSource(payload.dataSource ?? "");
+      setQuoteStatus(payload.quoteStatus ?? "official_close");
+      setCoverageRatio(typeof payload.coverageRatio === "number" ? payload.coverageRatio : null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "產業資料載入失敗");
     } finally {
@@ -28,7 +34,11 @@ export function IndustryHotspots({ onSelectStock }: { onSelectStock: (symbol: st
     }
   };
 
-  useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    void load();
+    const timer = window.setInterval(() => void load(), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
   const sorted = useMemo(() => [...items].sort((a, b) =>
     sort === "momentum" ? b.momentum - a.momentum
       : sort === "count" ? b.stockCount - a.stockCount
@@ -38,7 +48,7 @@ export function IndustryHotspots({ onSelectStock }: { onSelectStock: (symbol: st
   return (
     <div className="content-page">
       <div className="content-page-heading">
-        <div><p className="section-kicker">SECTOR MOMENTUM</p><h1><Flame size={24} />產業熱點</h1><p>依族群平均漲跌與技術動能整理，展示資料僅供功能測試。</p></div>
+        <div><p className="section-kicker">SECTOR MOMENTUM</p><h1><Flame size={24} />產業熱點</h1><p>盤中依各產業高流動性代表股即時估算；收盤後使用 TWSE／TPEx 官方完整產業資料。</p></div>
         <button className="secondary-action" onClick={() => void load()} disabled={loading}><RefreshCw size={14} className={loading ? "spin-icon" : ""} />重新整理</button>
       </div>
       <div className="content-toolbar">
@@ -47,7 +57,7 @@ export function IndustryHotspots({ onSelectStock }: { onSelectStock: (symbol: st
           <button className={sort === "momentum" ? "active" : ""} onClick={() => setSort("momentum")}>動能分數</button>
           <button className={sort === "count" ? "active" : ""} onClick={() => setSort("count")}>成分數量</button>
         </div>
-        <span>{updatedAt ? `更新於 ${new Date(updatedAt).toLocaleString("zh-TW", { hour12: false })}` : "展示模式"}</span>
+        <span>{updatedAt ? `${quoteStatus === "intraday" ? "盤中即時" : "最近收盤"} ${new Date(updatedAt).toLocaleString("zh-TW", { hour12: false })}${quoteStatus === "intraday" && coverageRatio != null ? `・覆蓋 ${safeNumber(coverageRatio, 1)}%` : ""}` : "等待官方行情"}</span>
       </div>
       {error && <div className="error-banner">{error}</div>}
       {loading && !items.length ? <div className="page-loading"><span className="spinner" /><p>正在計算產業動能…</p></div>
@@ -64,7 +74,7 @@ export function IndustryHotspots({ onSelectStock }: { onSelectStock: (symbol: st
               </div>
             </article>
           ))}</div>}
-      <p className="content-disclaimer">產業排行為 Mock 個股資料彙整結果，不代表即時市場排行或投資建議。</p>
+      <p className="content-disclaimer">資料來源：{dataSource || "TWSE／TPEx 官方資料"}。產業排行僅供研究參考，不構成投資建議。</p>
     </div>
   );
 }

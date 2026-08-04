@@ -29,9 +29,21 @@ from ..services.day_trading import (
     evaluate_position,
     prioritize_events,
 )
+from ..services.chip_flow_alerts import (
+    electronic_chip_flow_alert_monitor,
+    enrich_day_trading_large_order_confirmation,
+)
+from ..services.chip_flow_repository import ChipFlowRepository
 from ..services.day_trading_cache import day_trading_cache
+from ..services.day_trading_restrictions import day_trading_restrictions
 from ..services.day_trading_automation import day_trading_automation
 from ..services.day_trading_schedule import (
+    DAY_TRADING_CLOSE_REMINDER,
+    DAY_TRADING_ENTRY_CUTOFF,
+    DAY_TRADING_SIGNAL_START,
+    DAY_TRADING_FORCED_EXIT,
+    MIN_DAY_TRADING_TURNOVER,
+    MIN_DAY_TRADING_VOLUME_SHARES,
     TradingScheduleConfig,
     stable_recommendation_selector,
     trading_session_state,
@@ -47,8 +59,74 @@ def _user_id(x_user_id: str | None = Header(default=None, min_length=8, max_leng
     return x_user_id or "demo-user"
 
 
+def _monthly_period(month: str = "") -> tuple[str, datetime, datetime]:
+    local_now = datetime.now(TAIPEI)
+    year, month_number = (
+        (int(month[:4]), int(month[5:7]))
+        if month
+        else (local_now.year, local_now.month)
+    )
+    start_local = datetime(year, month_number, 1, tzinfo=TAIPEI)
+    if month_number == 12:
+        end_local = datetime(year + 1, 1, 1, tzinfo=TAIPEI)
+    else:
+        end_local = datetime(year, month_number + 1, 1, tzinfo=TAIPEI)
+    return f"{year:04d}-{month_number:02d}", start_local.astimezone(UTC), end_local.astimezone(UTC)
+
+
+def _daily_period() -> tuple[str, datetime, datetime]:
+    local_today = datetime.now(TAIPEI).date()
+    start_local = datetime.combine(local_today, datetime.min.time(), tzinfo=TAIPEI)
+    end_local = start_local + timedelta(days=1)
+    return local_today.isoformat(), start_local.astimezone(UTC), end_local.astimezone(UTC)
+
+
+def _performance_summary(
+    items: list[DayTradingTrade],
+    open_positions: list[DayTradingPosition],
+) -> dict[str, Any]:
+    wins = [item for item in items if item.profit > 0]
+    losses = [item for item in items if item.profit < 0]
+    gross_wins = sum(item.profit for item in wins)
+    gross_losses = abs(sum(item.profit for item in losses))
+    realized_profit = round(sum(item.profit for item in items), 2)
+    unrealized_profit = 0.0
+    for position in open_positions:
+        direction_factor = 1 if position.direction == "long" else -1
+        unrealized_profit += (
+            position.current_price - position.entry_price
+        ) * position.quantity * 1000 * direction_factor
+    unrealized_profit = round(unrealized_profit, 2)
+    fee = round(sum(item.fee for item in items), 2)
+    tax = round(sum(item.tax for item in items), 2)
+    slippage = round(sum(item.slippage for item in items), 2)
+    consecutive_losses = 0
+    maximum_consecutive_losses = 0
+    for item in sorted(items, key=lambda trade: trade.exit_time):
+        consecutive_losses = consecutive_losses + 1 if item.profit < 0 else 0
+        maximum_consecutive_losses = max(maximum_consecutive_losses, consecutive_losses)
+    return {
+        "tradeCount": len(items), "winRate": round(len(wins) / len(items) * 100, 2) if items else 0,
+        "wins": len(wins), "losses": len(losses), "breakeven": len(items) - len(wins) - len(losses),
+        "totalProfit": realized_profit,
+        "realizedProfit": realized_profit, "unrealizedProfit": unrealized_profit,
+        "totalPnl": round(realized_profit + unrealized_profit, 2),
+        "grossProfit": round(realized_profit + fee + tax + slippage, 2),
+        "fee": fee, "tax": tax, "slippage": slippage,
+        "tradingCost": round(fee + tax + slippage, 2),
+        "openPositionCount": len(open_positions),
+        "averageProfit": round(realized_profit / len(items), 2) if items else 0,
+        "maxLoss": min([item.profit for item in items], default=0),
+        "maxConsecutiveLosses": maximum_consecutive_losses,
+        "longProfit": round(sum(item.profit for item in items if item.direction == "long"), 2),
+        "shortProfit": round(sum(item.profit for item in items if item.direction == "short"), 2),
+        "profitFactor": round(gross_wins / gross_losses, 2) if gross_losses else (gross_wins if gross_wins else 0),
+    }
+
+
 def _sync_signals(db: Session, signals: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-    signals = signals or day_trading_engine.signals()
+    signals = day_trading_engine.signals() if signals is None else signals
+    signals = day_trading_restrictions.filter_candidates(signals)
     for payload in signals:
         item = db.get(DayTradingSignal, payload["id"])
         if item is None:
@@ -86,6 +164,18 @@ def _settings(db: Session, user_id: str) -> DayTradingSettings:
         db.add(item)
         db.commit()
         db.refresh(item)
+    elif (
+        item.minimum_volume < MIN_DAY_TRADING_VOLUME_SHARES
+        or item.minimum_turnover < MIN_DAY_TRADING_TURNOVER
+        or item.latest_entry_time != DAY_TRADING_ENTRY_CUTOFF
+        or item.close_reminder_time != DAY_TRADING_CLOSE_REMINDER
+    ):
+        item.minimum_volume = max(item.minimum_volume, MIN_DAY_TRADING_VOLUME_SHARES)
+        item.minimum_turnover = max(item.minimum_turnover, MIN_DAY_TRADING_TURNOVER)
+        item.latest_entry_time = DAY_TRADING_ENTRY_CUTOFF
+        item.close_reminder_time = DAY_TRADING_CLOSE_REMINDER
+        db.commit()
+        db.refresh(item)
     return item
 
 
@@ -116,9 +206,10 @@ def _schedule_config(risk: DayTradingSettings, schedule: DayTradingScheduleSetti
         stock_pool_time=schedule.stock_pool_time,
         health_check_time=schedule.health_check_time,
         market_open_time=schedule.market_open_time,
-        latest_entry_time=risk.latest_entry_time,
-        close_reminder_time=risk.close_reminder_time,
-        market_close_time=schedule.market_close_time,
+        signal_start_time=DAY_TRADING_SIGNAL_START,
+        latest_entry_time=DAY_TRADING_ENTRY_CUTOFF,
+        close_reminder_time=DAY_TRADING_CLOSE_REMINDER,
+        market_close_time=DAY_TRADING_FORCED_EXIT,
         warmup_minutes=schedule.warmup_minutes,
         recommendation_refresh_seconds=schedule.recommendation_refresh_seconds,
         replacement_score_gap=schedule.replacement_score_gap,
@@ -126,8 +217,8 @@ def _schedule_config(risk: DayTradingSettings, schedule: DayTradingScheduleSetti
         minimum_live_samples=schedule.minimum_live_samples,
         minimum_risk_reward=risk.minimum_risk_reward,
         maximum_spread=risk.maximum_spread,
-        minimum_volume=risk.minimum_volume,
-        minimum_turnover=risk.minimum_turnover,
+        minimum_volume=max(risk.minimum_volume, MIN_DAY_TRADING_VOLUME_SHARES),
+        minimum_turnover=max(risk.minimum_turnover, MIN_DAY_TRADING_TURNOVER),
         maximum_stop_distance=schedule.maximum_stop_distance,
         holidays=_holiday_dates(),
     )
@@ -140,8 +231,9 @@ def _settings_payload(item: DayTradingSettings, schedule: DayTradingScheduleSett
         "maxPositionPercentage": item.max_position_percentage,
         "maxConsecutiveLosses": item.max_consecutive_losses,
         "minimumRiskReward": item.minimum_risk_reward, "maximumSpread": item.maximum_spread,
-        "minimumVolume": item.minimum_volume, "minimumTurnover": item.minimum_turnover,
-        "latestEntryTime": item.latest_entry_time, "closeReminderTime": item.close_reminder_time,
+        "minimumVolume": max(item.minimum_volume, MIN_DAY_TRADING_VOLUME_SHARES),
+        "minimumTurnover": max(item.minimum_turnover, MIN_DAY_TRADING_TURNOVER),
+        "latestEntryTime": DAY_TRADING_ENTRY_CUTOFF, "closeReminderTime": DAY_TRADING_CLOSE_REMINDER,
         "notificationEnabled": item.notification_enabled, "soundEnabled": item.sound_enabled,
         "entryNotification": item.entry_notification, "exitNotification": item.exit_notification,
         "stopNotification": item.stop_notification, "targetNotification": item.target_notification,
@@ -151,7 +243,8 @@ def _settings_payload(item: DayTradingSettings, schedule: DayTradingScheduleSett
         "notificationCooldown": item.notification_cooldown, "repeatCount": item.repeat_count,
         "timezone": schedule.timezone, "preheatTime": schedule.preheat_time,
         "stockPoolTime": schedule.stock_pool_time, "healthCheckTime": schedule.health_check_time,
-        "marketOpenTime": schedule.market_open_time, "marketCloseTime": schedule.market_close_time,
+        "marketOpenTime": schedule.market_open_time, "signalStartTime": DAY_TRADING_SIGNAL_START,
+        "marketCloseTime": DAY_TRADING_FORCED_EXIT,
         "warmupMinutes": schedule.warmup_minutes,
         "recommendationRefreshSeconds": schedule.recommendation_refresh_seconds,
         "replacementScoreGap": schedule.replacement_score_gap,
@@ -172,7 +265,12 @@ def _selection(
     schedule_settings = _schedule_settings(db, user_id)
     config = _schedule_config(risk, schedule_settings)
     regime = day_trading_engine.market_regime()
-    candidates = _sync_signals(db, raw_signals)
+    candidates = enrich_day_trading_large_order_confirmation(
+        _sync_signals(db, raw_signals),
+        ChipFlowRepository(db),
+        electronic_chip_flow_alert_monitor.rules,
+        as_of=now or datetime.now(UTC),
+    )
     infrastructure = {
         "quoteSource": "healthy" if regime["dataStatus"] == "normal" else "error",
         "redis": "healthy" if day_trading_cache.healthy else "unavailable",
@@ -192,7 +290,7 @@ def _selection(
         DayTradingPosition.status == "open",
         DayTradingPosition.signal_id.is_not(None),
     )).all())
-    official, ranked_candidates = stable_recommendation_selector.select(
+    official, _ranked_candidates = stable_recommendation_selector.select(
         user_id,
         candidates,
         config,
@@ -209,7 +307,9 @@ def _selection(
     )
     return {
         "recommended": official,
-        "candidates": ranked_candidates,
+        # Non-formal scan rows stay internal. Public day-trading responses expose
+        # formal recommendations only so a candidate cannot be mistaken for a signal.
+        "candidates": official,
         "totalRecommended": len(official),
         "maximumRecommendations": config.maximum_recommendations,
         "session": session,
@@ -489,35 +589,59 @@ def read_alert(alert_id: int, user_id: str = Depends(_user_id), db: Session = De
 
 
 @router.get("/trades")
-def get_trades(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -> dict[str, Any]:
+def get_trades(
+    month: str = Query(default="", pattern=r"^(|\d{4}-(0[1-9]|1[0-2]))$"),
+    user_id: str = Depends(_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    period, start, end = _monthly_period(month)
     items = db.scalars(
-        select(DayTradingTrade).where(DayTradingTrade.user_id == user_id)
-        .order_by(DayTradingTrade.exit_time.desc()).limit(200)
+        select(DayTradingTrade).where(
+            DayTradingTrade.user_id == user_id,
+            DayTradingTrade.exit_time >= start,
+            DayTradingTrade.exit_time < end,
+        ).order_by(DayTradingTrade.exit_time.desc()).limit(500)
     ).all()
-    return {"items": [_trade_payload(item) for item in items]}
+    return {"period": period, "items": [_trade_payload(item) for item in items]}
 
 
 @router.get("/performance")
-def get_performance(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -> dict[str, Any]:
-    items = db.scalars(select(DayTradingTrade).where(DayTradingTrade.user_id == user_id)).all()
-    wins = [item for item in items if item.profit > 0]
-    losses = [item for item in items if item.profit < 0]
-    gross_wins = sum(item.profit for item in wins)
-    gross_losses = abs(sum(item.profit for item in losses))
-    consecutive_losses = 0
-    maximum_consecutive_losses = 0
-    for item in sorted(items, key=lambda trade: trade.exit_time):
-        consecutive_losses = consecutive_losses + 1 if item.profit < 0 else 0
-        maximum_consecutive_losses = max(maximum_consecutive_losses, consecutive_losses)
+def get_performance(
+    month: str = Query(default="", pattern=r"^(|\d{4}-(0[1-9]|1[0-2]))$"),
+    user_id: str = Depends(_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    period, start, end = _monthly_period(month)
+    items = db.scalars(select(DayTradingTrade).where(
+        DayTradingTrade.user_id == user_id,
+        DayTradingTrade.exit_time >= start,
+        DayTradingTrade.exit_time < end,
+    )).all()
+    open_positions = db.scalars(select(DayTradingPosition).where(
+        DayTradingPosition.user_id == user_id,
+        DayTradingPosition.status == "open",
+        DayTradingPosition.opened_at >= start,
+        DayTradingPosition.opened_at < end,
+    )).all()
+    daily_date, daily_start, daily_end = _daily_period()
+    today_items = db.scalars(select(DayTradingTrade).where(
+        DayTradingTrade.user_id == user_id,
+        DayTradingTrade.exit_time >= daily_start,
+        DayTradingTrade.exit_time < daily_end,
+    )).all()
+    today_positions = db.scalars(select(DayTradingPosition).where(
+        DayTradingPosition.user_id == user_id,
+        DayTradingPosition.status == "open",
+        DayTradingPosition.opened_at >= daily_start,
+        DayTradingPosition.opened_at < daily_end,
+    )).all()
     return {
-        "tradeCount": len(items), "winRate": round(len(wins) / len(items) * 100, 2) if items else 0,
-        "totalProfit": round(sum(item.profit for item in items), 2),
-        "averageProfit": round(sum(item.profit for item in items) / len(items), 2) if items else 0,
-        "maxLoss": min([item.profit for item in items], default=0),
-        "maxConsecutiveLosses": maximum_consecutive_losses,
-        "longProfit": round(sum(item.profit for item in items if item.direction == "long"), 2),
-        "shortProfit": round(sum(item.profit for item in items if item.direction == "short"), 2),
-        "profitFactor": round(gross_wins / gross_losses, 2) if gross_losses else (gross_wins if gross_wins else 0),
+        "period": period,
+        **_performance_summary(list(items), list(open_positions)),
+        "today": {
+            "tradeDate": daily_date,
+            **_performance_summary(list(today_items), list(today_positions)),
+        },
     }
 
 
@@ -534,8 +658,8 @@ def update_settings(
 ) -> dict[str, Any]:
     ordered_times = [
         body.preheat_time, body.stock_pool_time, body.health_check_time,
-        body.market_open_time, body.latest_entry_time, body.close_reminder_time,
-        body.market_close_time,
+        body.market_open_time, DAY_TRADING_ENTRY_CUTOFF, DAY_TRADING_CLOSE_REMINDER,
+        DAY_TRADING_FORCED_EXIT,
     ]
     parsed_times = [datetime.strptime(value, "%H:%M").time() for value in ordered_times]
     if parsed_times != sorted(parsed_times) or len(set(parsed_times)) != len(parsed_times):
@@ -559,6 +683,10 @@ def update_settings(
         "notification_cooldown": "notification_cooldown", "repeat_count": "repeat_count",
     }.items():
         setattr(item, model_key, getattr(body, api_key))
+    item.minimum_volume = max(item.minimum_volume, MIN_DAY_TRADING_VOLUME_SHARES)
+    item.minimum_turnover = max(item.minimum_turnover, MIN_DAY_TRADING_TURNOVER)
+    item.latest_entry_time = DAY_TRADING_ENTRY_CUTOFF
+    item.close_reminder_time = DAY_TRADING_CLOSE_REMINDER
     for api_key, model_key in {
         "timezone": "timezone", "preheat_time": "preheat_time",
         "stock_pool_time": "stock_pool_time", "health_check_time": "health_check_time",
@@ -571,6 +699,7 @@ def update_settings(
         "maximum_stop_distance": "maximum_stop_distance",
     }.items():
         setattr(schedule, model_key, getattr(body, api_key))
+    schedule.market_close_time = DAY_TRADING_FORCED_EXIT
     db.commit()
     db.refresh(item)
     db.refresh(schedule)
@@ -613,7 +742,7 @@ async def trigger_scenario(
             infrastructure_ok=True,
         )
         nonce = uuid4().hex[:10]
-        candidates = day_trading_engine.signals()
+        candidates = day_trading_restrictions.filter_candidates(day_trading_engine.signals())
         for index, item in enumerate(candidates):
             item["id"] = f"simulation-friday-{nonce}-{item['symbol']}"
             item["generatedAt"] = (simulated_at - timedelta(seconds=20 + index * 8)).isoformat()
@@ -633,7 +762,7 @@ async def trigger_scenario(
         candidates[0]["confidenceScore"] = 92
         candidates[1]["action"] = "反彈放空"
         candidates[1]["confidenceScore"] = 88
-        official, ranked = stable_recommendation_selector.select(
+        official, _ranked = stable_recommendation_selector.select(
             f"{user_id}:friday-open:{nonce}",
             candidates,
             config,
@@ -666,7 +795,7 @@ async def trigger_scenario(
             "robotStatus": session["robotStatus"],
             "formalSignalsAllowed": session["formalSignalsAllowed"],
             "recommended": official,
-            "candidates": ranked,
+            "candidates": official,
             "maximumRecommendations": config.maximum_recommendations,
             "lineMessagesSent": opening_sent + recommendation_sent,
         }

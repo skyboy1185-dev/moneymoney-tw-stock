@@ -1,4 +1,5 @@
 import { calculateSMA } from "./indicators";
+import { calculateSupportResistance } from "./support-resistance";
 import type { DailyPrice, TechnicalIndicator } from "./types";
 
 export type TrendLabel = "強勢多頭" | "多頭整理" | "盤整" | "空頭反彈" | "弱勢空頭";
@@ -315,10 +316,9 @@ export function analyzeTechnicalData(
   const latestVolume = volume.at(-1);
   const latestMacd = macd.at(-1);
   const divergence = detectDivergence(prices, indicators);
-  const lowPivots = localPivots(prices.slice(-120), "low").map((index) => index + Math.max(0, prices.length - 120));
-  const highPivots = localPivots(prices.slice(-120), "high").map((index) => index + Math.max(0, prices.length - 120));
-  const support = lowPivots.length ? prices[lowPivots.at(-1)!].low : prices.length ? Math.min(...prices.slice(-20).map((price) => price.low)) : null;
-  const resistance = highPivots.length ? prices[highPivots.at(-1)!].high : prices.length ? Math.max(...prices.slice(-20).map((price) => price.high)) : null;
+  const levels = calculateSupportResistance(prices);
+  const support = levels.support1;
+  const resistance = levels.resistance1;
 
   if (!dataSufficient || !latest || !previous || !current || !latestVolume || !latestMacd) {
     return {

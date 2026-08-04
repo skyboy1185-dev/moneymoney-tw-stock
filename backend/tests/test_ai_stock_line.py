@@ -20,10 +20,12 @@ def test_initial_entry_line_message_states_confirmation_not_execution() -> None:
         "firstAddOnPercentage": 6, "secondAddOnPercentage": 6,
         "reasons": ["MACD 翻紅", "站上 MA20", "成交量增加"], "warnings": ["不可追價"],
     })
-    assert "初始買進確認" in message
-    assert "建議數量：80 股" in message
-    assert "請自行確認即時行情、資金與交易條件" in message
-    assert "不構成投資建議" in message
+    assert message.startswith("【個人策略模擬測試】")
+    assert "標的：台積電 2330" in message
+    assert "模擬進場點：990.00～1,000.00" in message
+    assert "模擬停損/停利：950.00 / 1,075.00、1,125.00" in message
+    assert "非真實交易" in message
+    assert "請勿跟單，盈虧自負" in message
 
 
 def test_stop_message_is_explicit_but_does_not_claim_execution() -> None:

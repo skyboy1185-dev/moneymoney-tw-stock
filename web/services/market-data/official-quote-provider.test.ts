@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isQuoteRealtime,
   mergeOfficialQuote,
+  parseBackendOfficialQuote,
   parseMisStockQuote,
   parseYahooChartQuote,
 } from "./official-quote-provider";
@@ -93,6 +94,40 @@ describe("parseMisStockQuote", () => {
       volume: 16_523_000,
       time: "11:06:35",
       isRealtime: true,
+    });
+  });
+});
+
+describe("parseBackendOfficialQuote", () => {
+  it("keeps the latest MIS close returned by the backend relay", () => {
+    const quote = parseBackendOfficialQuote({
+      symbol: "2317",
+      name: "鴻海",
+      price: 238,
+      previousClose: 253,
+      open: 246,
+      high: 247,
+      low: 238,
+      volume: 50_774_000,
+      change: -15,
+      changePercent: -5.9288537549,
+      quoteTimestamp: "2026-07-28T13:30:00+08:00",
+      source: "TWSE MIS",
+      isRealtime: false,
+      bestBid: 238,
+      bestAsk: 238.5,
+    });
+
+    expect(quote).toMatchObject({
+      symbol: "2317",
+      date: "2026-07-28",
+      time: "13:30:00",
+      price: 238,
+      previousClose: 253,
+      change: -15,
+      volume: 50_774_000,
+      source: "TWSE MIS",
+      isRealtime: false,
     });
   });
 });

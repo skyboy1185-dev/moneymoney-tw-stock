@@ -20,6 +20,7 @@ export interface TradingAutomationState {
     stockPoolTime: string;
     healthCheckTime: string;
     marketOpenTime: string;
+    signalStartTime: string;
     latestEntryTime: string;
     closeReminderTime: string;
     marketCloseTime: string;
@@ -81,6 +82,15 @@ export interface DayTradingSignal {
   vwapStatus: string;
   volumeStatus: string;
   largeOrderForce: number;
+  largeOrderDataAvailable?: boolean;
+  largeOrderContinuousBuy?: boolean;
+  largeOrderStatus?: string;
+  largeOrderNetLots?: number;
+  largeOrderRecentNetLots?: number;
+  largeOrderBuySellRatio?: number | null;
+  largeOrderPositiveSteps?: number;
+  largeOrderUpdatedAt?: string | null;
+  largeOrderIsEstimate?: boolean;
   industryStrength: string;
   reasons: string[];
   warnings: string[];
@@ -171,16 +181,37 @@ export interface DayTradingTrade {
   followedSignal: boolean;
 }
 
-export interface DayTradingPerformance {
+export interface DayTradingPerformanceSummary {
   tradeCount: number;
+  wins: number;
+  losses: number;
+  breakeven: number;
   winRate: number;
   totalProfit: number;
+  realizedProfit: number;
+  unrealizedProfit: number;
+  totalPnl: number;
+  grossProfit: number;
+  fee: number;
+  tax: number;
+  slippage: number;
+  tradingCost: number;
+  openPositionCount: number;
   averageProfit: number;
   maxLoss: number;
   maxConsecutiveLosses: number;
   longProfit: number;
   shortProfit: number;
   profitFactor: number;
+}
+
+export interface DayTradingDailyPerformance extends DayTradingPerformanceSummary {
+  tradeDate: string;
+}
+
+export interface DayTradingPerformance extends DayTradingPerformanceSummary {
+  period: string;
+  today: DayTradingDailyPerformance;
 }
 
 export interface DayTradingSettings {
@@ -212,6 +243,7 @@ export interface DayTradingSettings {
   stockPoolTime: string;
   healthCheckTime: string;
   marketOpenTime: string;
+  signalStartTime: string;
   marketCloseTime: string;
   warmupMinutes: 0 | 1 | 3 | 5 | 10;
   recommendationRefreshSeconds: 5 | 10 | 15 | 30;

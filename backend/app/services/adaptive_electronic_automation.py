@@ -1,0 +1,236 @@
+from __future__ import annotations
+
+import asyncio
+from contextlib import suppress
+from datetime import UTC, date, datetime, time
+import json
+import logging
+from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
+
+import httpx
+from sqlalchemy import select
+
+from ..adaptive_schemas import AdaptiveScanPayload
+from ..config import get_settings
+from ..database import SessionLocal
+from ..models import AdaptiveSignal, AdaptiveStockCandidate, MarketRegime
+from .adaptive_electronic_service import STRATEGY_NAMES, process_adaptive_scan
+from .adaptive_entry_window import adaptive_entry_window_open
+from .adaptive_parameters import load_parameters
+from .ai_stock_line import push_ai_stock_message
+from .day_trading_schedule import is_twse_trading_day
+from .line_messaging import (
+    PERSONAL_STRATEGY_SIMULATION_NOTE,
+    format_personal_strategy_simulation,
+)
+
+
+logger = logging.getLogger(__name__)
+TAIPEI = ZoneInfo("Asia/Taipei")
+
+
+def _session(now: datetime) -> str:
+    local = now.astimezone(TAIPEI)
+    holidays: set[date] = set()
+    for raw in get_settings().twse_holidays.split(","):
+        try:
+            holidays.add(date.fromisoformat(raw.strip()))
+        except ValueError:
+            continue
+    if not is_twse_trading_day(local.date(), holidays):
+        return "closed"
+    if time(9, 0) <= local.time() <= time(13, 30):
+        return "open"
+    if local.time() > time(13, 30):
+        return "after_close"
+    return "pre_open"
+
+
+def _list(value: str) -> list[str]:
+    try:
+        parsed = json.loads(value)
+        return [str(item) for item in parsed] if isinstance(parsed, list) else []
+    except ValueError:
+        return []
+
+
+class AdaptiveElectronicAutomation:
+    def __init__(self) -> None:
+        self._task: asyncio.Task[None] | None = None
+        self._state = {
+            "status": "stopped", "lastRunAt": None, "lastSuccessAt": None,
+            "lastResult": None, "lastError": None, "nextScanSeconds": 180,
+        }
+        self._last_close_scan_date: date | None = None
+
+    @property
+    def state(self) -> dict:
+        return dict(self._state)
+
+    async def start(self) -> None:
+        if self._task and not self._task.done():
+            return
+        self._state["status"] = "running"
+        self._task = asyncio.create_task(self._run(), name="adaptive-electronic-market-scanner")
+
+    async def stop(self) -> None:
+        if not self._task:
+            return
+        self._task.cancel()
+        with suppress(asyncio.CancelledError):
+            await self._task
+        self._task = None
+        self._state["status"] = "stopped"
+
+    async def _fetch_payload(self) -> AdaptiveScanPayload:
+        settings = get_settings()
+        url = settings.adaptive_electronic_scanner_url.strip()
+        if not url or urlparse(url).scheme not in {"http", "https"}:
+            raise RuntimeError("ADAPTIVE_ELECTRONIC_SCANNER_URL 尚未正確設定")
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "TWSE-Adaptive-Electronic-Automation/1.0",
+        }
+        if settings.adaptive_electronic_scanner_token:
+            headers["X-Adaptive-Scanner-Token"] = settings.adaptive_electronic_scanner_token
+        async with httpx.AsyncClient(
+            timeout=settings.adaptive_electronic_scanner_timeout_seconds,
+            follow_redirects=True,
+        ) as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            return AdaptiveScanPayload.model_validate(response.json())
+
+    async def run_once(
+        self,
+        now: datetime | None = None,
+        *,
+        force: bool = False,
+        send_notifications: bool = True,
+    ) -> dict:
+        current = now or datetime.now(UTC)
+        self._state["status"] = "running"
+        self._state["lastRunAt"] = current.isoformat()
+        if not get_settings().adaptive_electronic_enabled:
+            result = {"status": "disabled"}
+            self._state["lastResult"] = result
+            return result
+        session = _session(current)
+        local_date = current.astimezone(TAIPEI).date()
+        should_close_scan = session == "after_close" and self._last_close_scan_date != local_date
+        if not force and session != "open" and not should_close_scan:
+            result = {"status": f"skipped_{session}"}
+            self._state.update({"lastResult": result, "lastError": None})
+            return result
+        payload = await self._fetch_payload()
+        with SessionLocal() as db:
+            result = process_adaptive_scan(db, payload)
+        if session == "after_close":
+            self._last_close_scan_date = local_date
+        if send_notifications:
+            await self._send_pending_signals(result.get("signalIds", []))
+        self._state.update({
+            "status": "running",
+            "lastSuccessAt": datetime.now(UTC).isoformat(),
+            "lastResult": {key: value for key, value in result.items() if key != "signalIds"},
+            "lastError": None,
+        })
+        return result
+
+    async def _send_pending_signals(self, signal_keys: list[str]) -> None:
+        for signal_key in signal_keys:
+            with SessionLocal() as db:
+                signal = db.scalar(select(AdaptiveSignal).where(AdaptiveSignal.signal_key == signal_key))
+                if signal is None or signal.line_push_status != "pending":
+                    continue
+                candidate = None
+                if signal.stock_code:
+                    candidate = db.scalar(select(AdaptiveStockCandidate).where(
+                        AdaptiveStockCandidate.stock_code == signal.stock_code,
+                    ).order_by(AdaptiveStockCandidate.trade_date.desc()).limit(1))
+                regime = db.scalar(select(MarketRegime).where(MarketRegime.is_current.is_(True)).limit(1))
+                reasons = _list(signal.reasons_json)
+                if signal.signal_type == "entry_confirmed" and not adaptive_entry_window_open(
+                    datetime.now(UTC), True,
+                ):
+                    signal.line_push_status = "expired_after_entry_cutoff"
+                    db.commit()
+                    continue
+                if signal.signal_type == "exit_triggered" and signal.stock_code:
+                    message = (
+                        "【AI選股機器人｜模擬賣出】\n\n"
+                        f"股票：{signal.stock_code} {signal.stock_name or ''}\n"
+                        f"模擬賣出價：{float(signal.price or 0):,.2f} 元\n"
+                        f"動作：{signal.action}\n\n"
+                        "原因：\n- " + "\n- ".join(reasons[:5])
+                        + f"\n\n{PERSONAL_STRATEGY_SIMULATION_NOTE}"
+                    )
+                    symbol = signal.stock_code
+                elif candidate and signal.signal_type == "entry_confirmed":
+                    message = format_personal_strategy_simulation(
+                        stock_name=candidate.stock_name,
+                        symbol=candidate.stock_code,
+                        entry_min=candidate.entry_price_low,
+                        entry_max=candidate.entry_price_high,
+                        stop_loss=candidate.stop_loss_price,
+                        target_1=candidate.target_price_1,
+                        target_2=candidate.target_price_2,
+                    )
+                    symbol = candidate.stock_code
+                elif candidate:
+                    if signal.signal_type == "next_day_watch":
+                        message = (
+                            "【AI選股機器人｜隔日觀察】\n\n"
+                            f"股票：{candidate.stock_code} {candidate.stock_name}\n"
+                            f"狀態：{signal.action}\n"
+                            f"健康度：{float(candidate.health_score):.1f} 分\n\n"
+                            "13:20 後禁止建立新部位，本訊息不是買進訊號。"
+                            "下一交易日開盤後會依最新價格、量價與風控條件重新確認。"
+                        )
+                    else:
+                        message = (
+                            "【AI選股機器人｜候選監控】\n\n"
+                            f"股票：{candidate.stock_code} {candidate.stock_name}\n"
+                            f"狀態：{signal.action}\n"
+                            f"健康度：{float(candidate.health_score):.1f} 分\n\n"
+                            "目前尚未形成正式進場訊號，本訊息不是買進建議。"
+                        )
+                    symbol = candidate.stock_code
+                else:
+                    message = (
+                        "【AI選股機器人｜市場狀態切換】\n\n"
+                        f"目前狀態：{STRATEGY_NAMES.get(signal.strategy_type or '', signal.strategy_type or 'UNCERTAIN')}\n"
+                        "觸發原因：\n- " + "\n- ".join(reasons[:8])
+                        + "\n\n若為崩盤防守模式，系統不會發出直接買進訊號。"
+                    )
+                    symbol = "MARKET"
+            sent = await push_ai_stock_message(
+                event_type="adaptive_market" if signal.stock_code is None else "adaptive_stock",
+                action=signal.action, message=message, signal_id=signal.signal_key,
+                symbol=symbol, priority=0 if signal.strategy_type == "CRASH" else 6,
+            )
+            with SessionLocal() as db:
+                stored = db.scalar(select(AdaptiveSignal).where(AdaptiveSignal.signal_key == signal_key))
+                if stored:
+                    stored.line_push_status = "sent" if sent else "deduplicated_or_disabled"
+                    stored.sent_at = datetime.now(UTC) if sent else None
+                    db.commit()
+
+    async def _run(self) -> None:
+        while True:
+            interval = 180
+            try:
+                with SessionLocal() as db:
+                    interval = max(60, int(load_parameters(db)["automation.scan_interval_seconds"]))
+                self._state["nextScanSeconds"] = interval
+                await self.run_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                logger.exception("Adaptive electronic automation cycle failed")
+                self._state.update({"status": "error", "lastError": str(error)[:500]})
+            await asyncio.sleep(interval)
+
+
+adaptive_electronic_automation = AdaptiveElectronicAutomation()

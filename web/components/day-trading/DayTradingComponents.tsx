@@ -21,6 +21,21 @@ const compact = (value: number) => value >= 100_000_000
 const time = (value?: string) => value
   ? new Date(value).toLocaleTimeString("zh-TW", { hour12: false })
   : "—";
+const taipeiDate = (value: string | Date) => new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit",
+}).format(typeof value === "string" ? new Date(value) : value);
+
+function downloadCsv(filename: string, lines: unknown[][]) {
+  const csvCell = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+  const blob = new Blob([
+    `\uFEFF${lines.map((line) => line.map(csvCell).join(",")).join("\r\n")}`,
+  ], { type: "text/csv;charset=utf-8" });
+  const anchor = document.createElement("a");
+  anchor.href = URL.createObjectURL(blob);
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(anchor.href);
+}
 
 export function StreamConnectionStatus({ status }: { status: StreamConnection }) {
   const label = {
@@ -203,7 +218,10 @@ export function DayTradingRankingTable({
       <td><span className={`recommendation-tag ${item.isOfficialRecommendation ? "official" : "candidate"}`}>{item.recommendationLabel}</span><strong>{item.isOfficialRecommendation ? item.action : item.action === "放空資格待確認" ? item.action : `候選觀察：${item.action}`}</strong><small>{item.qualificationFailures?.slice(0, 2).join(" · ") || time(item.generatedAt)}</small></td>
       <td><span>{item.confidenceScore}／{item.healthScore}</span><small>R:R 1:{number(item.riskRewardRatio, 1)}</small></td>
       <td>{item.vwapStatus}<small>{item.volumeStatus}</small></td>
-      <td className={item.largeOrderForce >= 0 ? "text-up" : "text-down"}>{item.largeOrderForce}<small>{item.industryStrength}</small></td>
+      <td className={item.largeOrderContinuousBuy ? "text-up" : ""}>
+        {item.largeOrderStatus ?? item.largeOrderForce}
+        <small>{item.largeOrderContinuousBuy ? `近 5 分鐘 +${number(item.largeOrderRecentNetLots ?? 0)} 張・連增 ${item.largeOrderPositiveSteps ?? 0} 次` : item.industryStrength}</small>
+      </td>
       <td><SignalCountdown expiresAt={item.expiresAt} serverNow={item.serverNow} /></td>
       <td><div className="table-actions"><button title="查看分析" onClick={() => onAnalyze(item.symbol)}><Eye /></button><button title="加入監控" onClick={() => onMonitor(item)}><Bell /></button><button title={`模擬${item.directionLabel}`} onClick={() => onSimulate(item)}><Play /></button><button title="忽略訊號" onClick={() => setIgnored((current) => [...current, item.id])}><X /></button></div></td>
     </tr>)}</tbody></table></div>
@@ -300,10 +318,10 @@ export function RiskControlPanel({
         ["maxDailyLoss", "單日最大虧損", "%"], ["maxDailyTrades", "每日最多交易", "筆"],
         ["maxPositionPercentage", "單檔最大部位", "%"], ["maxConsecutiveLosses", "連續虧損停止", "筆"],
         ["minimumRiskReward", "最低風險報酬比", ""], ["maximumSpread", "最大允許價差", "%"],
-        ["minimumVolume", "最低成交量", "股"], ["minimumTurnover", "最低成交金額", "元"],
+        ["minimumVolume", "預估全日最低成交量", "股"], ["minimumTurnover", "預估全日最低成交金額", "元"],
       ].map(([key, label, unit]) => <label key={key}><span>{label}</span><div><input type="number" value={String(draft[key as keyof DayTradingSettings])} onChange={(event) => setNumber(key as keyof DayTradingSettings, event.target.value)} /><em>{unit}</em></div></label>)}
-      <label><span>最晚進場時間</span><input type="time" value={draft.latestEntryTime} onChange={(event) => setDraft({ ...draft, latestEntryTime: event.target.value })} /></label>
-      <label><span>收盤前提醒</span><input type="time" value={draft.closeReminderTime} onChange={(event) => setDraft({ ...draft, closeReminderTime: event.target.value })} /></label>
+      <label><span>最晚進場（策略固定）</span><input type="time" value={draft.latestEntryTime} disabled readOnly /></label>
+      <label><span>強制平倉開始（策略固定）</span><input type="time" value={draft.closeReminderTime} disabled readOnly /></label>
     </div>
     <div className="schedule-settings">
       <div className="schedule-settings-title"><Clock3 /><div><strong>開盤自動啟動排程</strong><span>Asia/Taipei；後端會依設定自動切換階段，不需每天手動啟動</span></div></div>
@@ -311,8 +329,9 @@ export function RiskControlPanel({
         {[
           ["preheatTime", "系統預熱"], ["stockPoolTime", "載入股票池"],
           ["healthCheckTime", "健康檢查"], ["marketOpenTime", "台股開盤"],
-          ["marketCloseTime", "停止與摘要"],
         ].map(([key, label]) => <label key={key}><span>{label}</span><input type="time" value={String(draft[key as keyof DayTradingSettings])} onChange={(event) => setDraft({ ...draft, [key]: event.target.value })} /></label>)}
+        <label><span>正式訊號啟動（策略固定）</span><input type="time" value={draft.signalStartTime} disabled readOnly /></label>
+        <label><span>最晚出場（策略固定）</span><input type="time" value={draft.marketCloseTime} disabled readOnly /></label>
         <label><span>開盤暖機</span><select value={draft.warmupMinutes} onChange={(event) => setDraft({ ...draft, warmupMinutes: Number(event.target.value) as DayTradingSettings["warmupMinutes"] })}><option value={0}>0 分鐘</option><option value={1}>1 分鐘</option><option value={3}>3 分鐘</option><option value={5}>5 分鐘</option><option value={10}>10 分鐘</option></select></label>
         <label><span>推薦重算頻率</span><select value={draft.recommendationRefreshSeconds} onChange={(event) => setDraft({ ...draft, recommendationRefreshSeconds: Number(event.target.value) as DayTradingSettings["recommendationRefreshSeconds"] })}><option value={5}>5 秒</option><option value={10}>10 秒</option><option value={15}>15 秒</option><option value={30}>30 秒</option></select></label>
         <label><span>替換分數門檻</span><div><input type="number" min={0} max={30} value={draft.replacementScoreGap} onChange={(event) => setNumber("replacementScoreGap", event.target.value)} /><em>分</em></div></label>
@@ -341,8 +360,8 @@ export function RiskControlPanel({
 }
 
 export function TradeTimeline({
-  signals, trades, performance,
-}: { signals: DayTradingSignal[]; trades: DayTradingTrade[]; performance: DayTradingPerformance | null }) {
+  signals, trades,
+}: { signals: DayTradingSignal[]; trades: DayTradingTrade[] }) {
   const [query, setQuery] = useState("");
   const [direction, setDirection] = useState("all");
   const [dateFilter, setDateFilter] = useState("");
@@ -353,26 +372,120 @@ export function TradeTimeline({
     && (!dateFilter || item.generatedAt.slice(0, 10) === dateFilter)
     && (actionFilter === "all" || item.action.includes(actionFilter)),
   );
-  const exportCsv = () => {
-    const lines = [["訊號時間", "代號", "名稱", "方向", "指令", "價格", "進場區", "停損", "目標", "信心", "健康度"],
-      ...rows.map((item) => [item.generatedAt, item.symbol, item.stockName, item.directionLabel, item.action, item.price, `${item.entryMin}-${item.entryMax}`, item.stopLoss, item.target2, item.confidenceScore, item.healthScore])];
-    const blob = new Blob([`\uFEFF${lines.map((line) => line.join(",")).join("\n")}`], { type: "text/csv;charset=utf-8" });
-    const anchor = document.createElement("a"); anchor.href = URL.createObjectURL(blob); anchor.download = "day-trading-signals.csv"; anchor.click(); URL.revokeObjectURL(anchor.href);
-  };
   return <section className="dt-card trade-timeline">
-    <div className="dt-section-heading"><div><span className="eyebrow">HISTORY & PERFORMANCE</span><h2>訊號與模擬交易紀錄</h2></div><button onClick={exportCsv}><Download size={14} />匯出 CSV</button></div>
-    <div className="performance-grid">
-      {[
-        ["今日交易", performance?.tradeCount ?? 0], ["勝率", `${number(performance?.winRate ?? 0)}%`],
-        ["總損益", number(performance?.totalProfit ?? 0, 0)], ["平均單筆", number(performance?.averageProfit ?? 0, 0)],
-        ["最大虧損", number(performance?.maxLoss ?? 0, 0)], ["最大連續虧損", performance?.maxConsecutiveLosses ?? 0],
-        ["做多績效", number(performance?.longProfit ?? 0, 0)],
-        ["放空績效", number(performance?.shortProfit ?? 0, 0)], ["Profit Factor", number(performance?.profitFactor ?? 0)],
-      ].map(([label, value]) => <div key={String(label)}><span>{label}</span><strong>{value}</strong></div>)}
-    </div>
+    <div className="dt-section-heading"><div><span className="eyebrow">SIGNAL & TRADE HISTORY</span><h2>訊號與完成交易紀錄</h2><p>可依日期、方向與指令篩選；上方績效卡提供今日與本月匯出。</p></div></div>
     <div className="timeline-filters"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜尋股票代號或名稱" /><input type="date" value={dateFilter} onChange={(event) => setDateFilter(event.target.value)} /><select value={direction} onChange={(event) => setDirection(event.target.value)}><option value="all">多空全部</option><option value="long">做多</option><option value="short">放空</option></select><select value={actionFilter} onChange={(event) => setActionFilter(event.target.value)}><option value="all">全部指令</option><option value="等待">等待進場</option><option value="買進">買進</option><option value="放空">放空</option><option value="出">出場</option><option value="回補">回補</option></select></div>
     <div className="timeline-list">{rows.map((item) => <div key={item.id} className={`timeline-item ${item.direction}`}><i /><time>{time(item.generatedAt)}</time><div><strong>{item.symbol} {item.stockName}</strong><span>{item.action}</span><small>{item.reasons.slice(0, 3).join(" · ")}</small></div><em>{number(item.price)}</em></div>)}</div>
     {!!trades.length && <div className="simulation-trades"><h3>已完成模擬交易</h3>{trades.map((trade) => <div key={trade.id}><span>{trade.symbol} {trade.stockName}</span><strong className={trade.profit >= 0 ? "text-up" : "text-down"}>{number(trade.profit, 0)}</strong><small>{trade.exitReason}</small></div>)}</div>}
+  </section>;
+}
+
+export function DayTradingPerformancePanel({
+  performance, positions, trades,
+}: {
+  performance: DayTradingPerformance | null;
+  positions: DayTradingPosition[];
+  trades: DayTradingTrade[];
+}) {
+  const tradeDate = performance?.today?.tradeDate ?? taipeiDate(new Date());
+  const month = performance?.period ?? tradeDate.slice(0, 7);
+  const todayTrades = trades.filter((trade) => taipeiDate(trade.entryTime) === tradeDate);
+  const todayPositions = positions.filter((position) => taipeiDate(position.openedAt) === tradeDate);
+  const monthPositions = positions.filter((position) => taipeiDate(position.openedAt).startsWith(month));
+  const liveTodayUnrealized = todayPositions.reduce((sum, item) => sum + item.unrealizedProfit, 0);
+  const liveMonthUnrealized = monthPositions.reduce((sum, item) => sum + item.unrealizedProfit, 0);
+  const todayRealized = performance?.today?.realizedProfit ?? 0;
+  const monthRealized = performance?.realizedProfit ?? 0;
+  const todayTotal = todayRealized + liveTodayUnrealized;
+  const monthTotal = monthRealized + liveMonthUnrealized;
+  const reportTime = new Date().toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" });
+  const pnlClass = (value: number) => value >= 0 ? "text-up" : "text-down";
+
+  const exportToday = () => downloadCsv(
+    `AI當沖多空機器人_今日明細_${tradeDate}.csv`,
+    [
+      ["AI 當沖多空機器人今日模擬績效"],
+      ["交易日", tradeDate, "報表產生時間", reportTime],
+      ["已完成交易", performance?.today?.tradeCount ?? 0, "未平倉", todayPositions.length, "勝率", `${performance?.today?.winRate ?? 0}%`],
+      ["已實現損益", todayRealized, "未實現損益", liveTodayUnrealized, "今日總盈虧", todayTotal],
+      ["手續費", performance?.today?.fee ?? 0, "交易稅", performance?.today?.tax ?? 0, "滑價", performance?.today?.slippage ?? 0, "交易成本", performance?.today?.tradingCost ?? 0],
+      [],
+      ["代號", "名稱", "方向", "狀態", "進場時間", "進場點位", "出場／現價", "數量（張）", "盈虧", "報酬率", "進場原因", "出場原因"],
+      ...todayPositions.map((item) => [
+        item.symbol, item.stockName, item.direction === "long" ? "做多" : "放空", "持倉中",
+        new Date(item.openedAt).toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" }),
+        item.entryPrice, item.currentPrice, item.quantity, item.unrealizedProfit,
+        `${item.returnPercentage}%`, item.latestAction, "",
+      ]),
+      ...todayTrades.map((item) => [
+        item.symbol, item.stockName, item.direction === "long" ? "做多" : "放空", "已出場",
+        new Date(item.entryTime).toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" }),
+        item.entryPrice, item.exitPrice, item.quantity, item.profit,
+        `${item.returnPercentage}%`, item.entryReason, item.exitReason,
+      ]),
+    ],
+  );
+
+  const exportMonth = () => downloadCsv(
+    `AI當沖多空機器人_本月績效_${month}.csv`,
+    [
+      ["AI 當沖多空機器人本月模擬績效"],
+      ["月份", month, "報表產生時間", reportTime],
+      ["已完成交易", performance?.tradeCount ?? 0, "獲利", performance?.wins ?? 0, "虧損", performance?.losses ?? 0, "勝率", `${performance?.winRate ?? 0}%`],
+      ["已實現損益", monthRealized, "未實現損益", liveMonthUnrealized, "本月總盈虧", monthTotal],
+      ["手續費", performance?.fee ?? 0, "交易稅", performance?.tax ?? 0, "滑價", performance?.slippage ?? 0, "交易成本", performance?.tradingCost ?? 0],
+      [],
+      ["代號", "名稱", "方向", "狀態", "進場時間", "進場點位", "出場時間", "出場／現價", "數量（張）", "手續費", "交易稅", "滑價", "盈虧", "報酬率", "進場原因", "出場原因", "策略"],
+      ...monthPositions.map((item) => [
+        item.symbol, item.stockName, item.direction === "long" ? "做多" : "放空", "持倉中",
+        new Date(item.openedAt).toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" }), item.entryPrice,
+        "", item.currentPrice, item.quantity, "", "", "", item.unrealizedProfit,
+        `${item.returnPercentage}%`, item.latestAction, "", "",
+      ]),
+      ...trades.map((item) => [
+        item.symbol, item.stockName, item.direction === "long" ? "做多" : "放空", "已出場",
+        new Date(item.entryTime).toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" }), item.entryPrice,
+        new Date(item.exitTime).toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" }), item.exitPrice,
+        item.quantity, item.fee, item.tax, item.slippage, item.profit,
+        `${item.returnPercentage}%`, item.entryReason, item.exitReason, item.strategyName,
+      ]),
+    ],
+  );
+
+  const entryRows = [
+    ...todayPositions.map((item) => ({
+      key: `position-${item.id}`, symbol: item.symbol, name: item.stockName, direction: item.direction,
+      time: item.openedAt, entry: item.entryPrice, latest: item.currentPrice,
+      pnl: item.unrealizedProfit, returnPercentage: item.returnPercentage, status: "持倉中",
+    })),
+    ...todayTrades.map((item) => ({
+      key: `trade-${item.id}`, symbol: item.symbol, name: item.stockName, direction: item.direction,
+      time: item.entryTime, entry: item.entryPrice, latest: item.exitPrice,
+      pnl: item.profit, returnPercentage: item.returnPercentage, status: "已出場",
+    })),
+  ].sort((left, right) => right.time.localeCompare(left.time));
+
+  return <section className="dt-card dt-performance-card">
+    <div className="dt-section-heading"><div><span className="eyebrow">DAILY & MONTHLY PAPER PERFORMANCE</span><h2>今日盈虧與本月績效</h2><p>模擬損益；已完成交易已扣除手續費、交易稅與滑價，未實現損益隨持倉行情更新。</p></div><div className="performance-actions"><button onClick={exportToday}><Download size={14} />匯出今日明細</button><button onClick={exportMonth}><Download size={14} />匯出本月績效</button></div></div>
+    <div className="dt-performance-columns">
+      <div className="dt-performance-block today"><h3>{tradeDate} 今日</h3><div className="performance-summary-grid">{[
+        ["完成交易", performance?.today?.tradeCount ?? 0, ""],
+        ["持倉中", todayPositions.length, ""],
+        ["今日已實現", number(todayRealized, 0), pnlClass(todayRealized)],
+        ["今日未實現", number(liveTodayUnrealized, 0), pnlClass(liveTodayUnrealized)],
+        ["今日總盈虧", number(todayTotal, 0), pnlClass(todayTotal)],
+        ["今日交易成本", number(performance?.today?.tradingCost ?? 0, 0), ""],
+      ].map(([label, value, className]) => <div key={String(label)}><span>{label}</span><strong className={String(className)}>{value}</strong></div>)}</div></div>
+      <div className="dt-performance-block month"><h3>{month} 本月</h3><div className="performance-summary-grid">{[
+        ["完成交易", performance?.tradeCount ?? 0, ""],
+        ["本月勝率", `${number(performance?.winRate ?? 0)}%`, ""],
+        ["本月已實現", number(monthRealized, 0), pnlClass(monthRealized)],
+        ["本月未實現", number(liveMonthUnrealized, 0), pnlClass(liveMonthUnrealized)],
+        ["本月總盈虧", number(monthTotal, 0), pnlClass(monthTotal)],
+        ["本月交易成本", number(performance?.tradingCost ?? 0, 0), ""],
+      ].map(([label, value, className]) => <div key={String(label)}><span>{label}</span><strong className={String(className)}>{value}</strong></div>)}</div></div>
+    </div>
+    <div className="today-entry-table"><h3>今日進場資訊與點位</h3>{entryRows.length ? <div className="adaptive-table-wrap"><table><thead><tr><th>股票</th><th>方向</th><th>進場時間</th><th>進場點位</th><th>出場／現價</th><th>盈虧</th><th>報酬率</th><th>狀態</th></tr></thead><tbody>{entryRows.map((item) => <tr key={item.key}><td><b>{item.symbol}</b><span>{item.name}</span></td><td className={item.direction === "long" ? "text-up" : "text-down"}>{item.direction === "long" ? "做多" : "放空"}</td><td>{new Date(item.time).toLocaleTimeString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" })}</td><td>{number(item.entry)}</td><td>{number(item.latest)}</td><td className={pnlClass(item.pnl)}>{number(item.pnl, 0)}</td><td className={pnlClass(item.returnPercentage)}>{number(item.returnPercentage)}%</td><td>{item.status}</td></tr>)}</tbody></table></div> : <div className="dt-empty compact"><Clock3 /><p>今天尚無模擬進場紀錄。</p></div>}</div>
   </section>;
 }
 

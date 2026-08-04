@@ -17,6 +17,9 @@ function priority(a: RankingRow, b: RankingRow) {
 
 export function formalQualification(row: RankingRow, market: MarketContext): string[] {
   const failures = [...row.hardRiskFailures];
+  if (!row.themes?.some((theme) => theme === "AI" || theme === "低軌衛星")) {
+    failures.push("不屬於 AI 或低軌衛星主題股票池");
+  }
   if (row.score < 75) failures.push("條件符合分數低於 75");
   if (row.strategyFit < 75) failures.push("策略適配度低於 75%");
   if (row.marketFit < 55) failures.push("大盤適配度不足");

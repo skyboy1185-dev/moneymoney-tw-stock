@@ -1,4 +1,4 @@
-import type { DailyPrice, Market, MacdSignalType, StockPayload } from "./types";
+import type { DailyPrice, Market, MacdSignalType, StockPayload, StockTheme } from "./types";
 
 export type Timeframe = "day" | "week" | "month";
 export type MarketDirection = "strong_bull" | "bull" | "sideways" | "bear" | "strong_bear" | "transition";
@@ -130,6 +130,7 @@ export interface RankingRow {
   name: string;
   market: Market;
   industry: string;
+  themes: StockTheme[];
   price: number;
   changePercent: number;
   volume: number;
@@ -140,6 +141,7 @@ export interface RankingRow {
     trend: number;
     momentum: number;
     volume: number;
+    keyPrice: number;
     strategy: number;
     market: number;
     risk: number;
@@ -157,6 +159,9 @@ export interface RankingRow {
   turnover: number;
   spreadPercentage: number | null;
   distanceMa20: number;
+  keyPrice: number | null;
+  aboveKeyPrice: boolean;
+  keyPriceDistancePct: number | null;
   rsi: number | null;
   volumeQualified: boolean;
   liquidityQualified: boolean;

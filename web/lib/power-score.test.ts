@@ -23,6 +23,27 @@ describe("AI leader power score", () => {
     expect(result.healthScore).toBeLessThanOrEqual(100);
   });
 
+  it("compares today's power value with the previous trading day", () => {
+    const prices = series("up");
+    const indicators = calculateIndicators(prices);
+    const today = calculatePowerScore(prices, indicators);
+    const yesterday = calculatePowerScore(prices.slice(0, -1), indicators.slice(0, -1));
+    const expectedChange = today.powerValue - yesterday.powerValue;
+
+    expect(today.previousPowerValue).toBe(yesterday.powerValue);
+    expect(today.powerChange).toBe(expectedChange);
+    expect(today.powerTrend).toBe(expectedChange > 0 ? "up" : expectedChange < 0 ? "down" : "flat");
+  });
+
+  it("marks the comparison unavailable when yesterday lacks enough history", () => {
+    const prices = series("up").slice(-120);
+    const result = calculatePowerScore(prices, calculateIndicators(prices));
+
+    expect(result.previousPowerValue).toBeNull();
+    expect(result.powerChange).toBeNull();
+    expect(result.powerTrend).toBe("unavailable");
+  });
+
   it("gives a stronger score to an uptrend than a downtrend", () => {
     const up = series("up");
     const down = series("down");

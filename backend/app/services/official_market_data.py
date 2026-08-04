@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -10,6 +11,8 @@ import httpx
 
 
 TAIPEI = ZoneInfo("Asia/Taipei")
+logger = logging.getLogger(__name__)
+LIVE_QUOTE_CACHE_SECONDS = 5
 MIS_ENDPOINT = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
 
 
@@ -198,23 +201,31 @@ class TwseMisMarketDataProvider:
             )
             try:
                 async with httpx.AsyncClient(timeout=8.0) as client:
+                    request_params = {
+                        "ex_ch": channels,
+                        "json": "1",
+                        "delay": "0",
+                        "_": str(round(datetime.now(UTC).timestamp() * 1000)),
+                    }
+                    request_headers = {
+                        "Accept": "application/json",
+                        "Referer": "https://mis.twse.com.tw/stock/fibest.jsp",
+                        "User-Agent": "Mozilla/5.0 Moneymoney-TWSE-Dashboard",
+                        "Cache-Control": "no-cache",
+                    }
                     response = await client.get(
-                        MIS_ENDPOINT,
-                        params={
-                            "ex_ch": channels,
-                            "json": "1",
-                            "delay": "0",
-                            "_": str(round(now.timestamp() * 1000)),
-                        },
-                        headers={
-                            "Accept": "application/json",
-                            "Referer": "https://mis.twse.com.tw/stock/fibest.jsp",
-                            "User-Agent": "Mozilla/5.0 Moneymoney-TWSE-Dashboard",
-                        },
+                        MIS_ENDPOINT, params=request_params, headers=request_headers,
                     )
+                    if response.status_code == 429:
+                        await asyncio.sleep(0.5)
+                        request_params["_"] = str(round(datetime.now(UTC).timestamp() * 1000))
+                        response = await client.get(
+                            MIS_ENDPOINT, params=request_params, headers=request_headers,
+                        )
                     response.raise_for_status()
                 rows = response.json().get("msgArray", [])
-            except (httpx.HTTPError, ValueError, TypeError):
+            except (httpx.HTTPError, ValueError, TypeError) as error:
+                logger.warning("TWSE MIS quote request failed; retaining verified cache: %s", error)
                 return cached
             requests = {stock.symbol: stock for stock in missing}
             for row in rows:
@@ -233,7 +244,7 @@ class TwseMisMarketDataProvider:
                 last_trade = _number(row.get("z"))
                 if last_trade is not None and last_trade > 0:
                     self._last_trades[symbol] = quote
-                ttl_seconds = 2 if quote.is_realtime else 15
+                ttl_seconds = LIVE_QUOTE_CACHE_SECONDS if quote.is_realtime else 15
                 self._cache[symbol] = (
                     quote,
                     datetime.fromtimestamp(now.timestamp() + ttl_seconds, UTC),

@@ -7,7 +7,7 @@ import hashlib
 import hmac
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -30,6 +30,17 @@ logger = logging.getLogger(__name__)
 TAIPEI = ZoneInfo("Asia/Taipei")
 OFFICIAL_ACCOUNT_NAME = "AI當沖機器人"
 LINE_API_BASE = "https://api.line.me/v2/bot/message"
+LINE_GROUP_DISCLAIMER = (
+    "⚠️ 免責聲明：\n"
+    "本訊息為演算法內部測試之【自動化數據產出】，僅供技術研究與程式調校之用。"
+    "本站及發訊系統非屬投顧事業，本訊息「絕不構成」任何個股之買賣推介、操作勸誘或專業投資建議。"
+    "金融市場具極高風險，群內成員請勿依此進行真實市場跟單。"
+    "任何依此資訊所為之投資行為，均須【自行判斷並自負盈虧】，開發者不承擔任何直接或間接之法律責任。"
+)
+PERSONAL_STRATEGY_SIMULATION_NOTE = (
+    "此為個人看盤策略的模擬練習紀錄，非真實交易，不構成投資建議。"
+    "請勿跟單，盈虧自負。"
+)
 
 
 def verify_line_signature(raw_body: bytes, signature: str, channel_secret: str) -> bool:
@@ -63,59 +74,40 @@ def _time(value: Any) -> str:
         return "—"
 
 
-def format_signal_message(signal: dict[str, Any]) -> str:
-    reasons = "\n".join(f"- {item}" for item in signal.get("reasons", [])[:5]) or "- 暫無"
-    warnings = "\n".join(f"- {item}" for item in signal.get("warnings", [])[:5]) or "- 暫無"
-    source = str(signal.get("dataSource", "未提供"))
-    if signal.get("dataMode") == "official_quote_demo_strategy":
-        mode_notice = "【官方市場報價｜策略展示模式】\n\n"
-    elif signal.get("dataMode") == "demo" or source.startswith("mock"):
-        mode_notice = "【展示模式，非即時行情】\n\n"
-    else:
-        mode_notice = ""
-    quote_details = (
-        f"行情來源：{source}\n"
-        f"報價狀態：{signal.get('quoteStatus', '未提供')}\n"
-        f"行情時間：{_time(signal.get('quoteTimestamp'))}\n"
-    )
-    common = (
-        f"股票：{signal['symbol']} {signal['stockName']}\n"
-        f"目前價格：{_number(signal.get('price'))}\n"
-        f"指令：{signal.get('action', '—')}\n"
-    )
-    scores = (
-        f"信心分數：{_number(signal.get('confidenceScore'), 0)}\n"
-        f"健康度：{_number(signal.get('healthScore'), 0)}\n"
-        f"風險報酬比：1：{_number(signal.get('riskRewardRatio'), 1)}\n"
-        f"訊號有效期限：{_time(signal.get('expiresAt'))}\n"
-        f"訊號時間：{_time(signal.get('generatedAt'))}\n"
-        f"{quote_details}"
-    )
-    if signal.get("direction") == "short":
-        return (
-            f"{mode_notice}"
-            "【AI當沖機器人｜放空訊號】\n\n"
-            f"{common}"
-            f"建議放空區：{_number(signal.get('entryMin'))}～{_number(signal.get('entryMax'))}\n"
-            f"停損回補：{_number(signal.get('stopLoss'))}\n"
-            f"第一回補：{_number(signal.get('target1'))}\n"
-            f"第二回補：{_number(signal.get('target2'))}\n"
-            f"{scores}\n"
-            "請先確認可放空資格、券源與交易限制。\n"
-            "僅供研究參考，不構成投資建議。"
-        )
+def format_personal_strategy_simulation(
+    *,
+    stock_name: Any,
+    symbol: Any,
+    entry_min: Any,
+    entry_max: Any | None,
+    stop_loss: Any,
+    target_1: Any,
+    target_2: Any | None = None,
+) -> str:
+    entry = _number(entry_min)
+    if entry_max is not None and _number(entry_max) != entry:
+        entry = f"{entry}～{_number(entry_max)}"
+    targets = _number(target_1)
+    if target_2 is not None and _number(target_2) != targets:
+        targets = f"{targets}、{_number(target_2)}"
     return (
-        f"{mode_notice}"
-        "【AI當沖機器人｜做多訊號】\n\n"
-        f"{common}"
-        f"建議進場區：{_number(signal.get('entryMin'))}～{_number(signal.get('entryMax'))}\n"
-        f"停損價：{_number(signal.get('stopLoss'))}\n"
-        f"第一停利：{_number(signal.get('target1'))}\n"
-        f"第二停利：{_number(signal.get('target2'))}\n"
-        f"{scores}\n"
-        f"推薦原因：\n{reasons}\n\n"
-        f"風險提醒：\n{warnings}\n\n"
-        "僅供研究參考，不構成投資建議。"
+        "【個人策略模擬測試】\n"
+        f"標的：{str(stock_name).strip()} {str(symbol).strip()}\n"
+        f"模擬進場點：{entry}\n"
+        f"模擬停損/停利：{_number(stop_loss)} / {targets}\n"
+        f"說明：{PERSONAL_STRATEGY_SIMULATION_NOTE}"
+    )
+
+
+def format_signal_message(signal: dict[str, Any]) -> str:
+    return format_personal_strategy_simulation(
+        stock_name=signal.get("stockName", "—"),
+        symbol=signal.get("symbol", "—"),
+        entry_min=signal.get("entryMin"),
+        entry_max=signal.get("entryMax"),
+        stop_loss=signal.get("stopLoss"),
+        target_1=signal.get("target1"),
+        target_2=signal.get("target2"),
     )
 
 
@@ -136,7 +128,7 @@ def format_position_message(event: dict[str, Any]) -> str:
         f"停損價：{_number(position.get('stopLoss'))}\n"
         f"原因：{event.get('reason', '—')}\n"
         f"通知時間：{_time(event.get('createdAt') or datetime.now(UTC).isoformat())}\n\n"
-        "僅供研究參考，不構成投資建議。"
+        f"{PERSONAL_STRATEGY_SIMULATION_NOTE}"
     )
 
 
@@ -346,11 +338,12 @@ class LineNotificationDispatcher:
         for group_id in group_ids:
             with SessionLocal() as db:
                 if event.cooldown_entry and event.symbol:
-                    cutoff = datetime.now(UTC) - timedelta(minutes=3)
+                    local_now = datetime.now(UTC).astimezone(TAIPEI)
+                    cutoff = datetime.combine(local_now.date(), time.min, TAIPEI).astimezone(UTC)
                     recent = db.scalar(select(LineDeliveryLog.id).where(
                         LineDeliveryLog.group_id == group_id,
                         LineDeliveryLog.symbol == event.symbol,
-                        LineDeliveryLog.event_type.in_(["long_entry", "short_entry", "ai_initial_entry"]),
+                        LineDeliveryLog.event_type == event.event_type,
                         LineDeliveryLog.status.in_(["pending", "sent"]),
                         LineDeliveryLog.created_at >= cutoff,
                     ).limit(1))
@@ -398,6 +391,7 @@ class LineNotificationDispatcher:
 
     async def send_recommendations(self, recommendations: list[dict[str, Any]]) -> int:
         events: list[LineNotificationEvent] = []
+        seen_entries: set[tuple[str, str, str]] = set()
         for signal in recommendations[:5]:
             if not signal.get("isOfficialRecommendation"):
                 continue
@@ -411,17 +405,40 @@ class LineNotificationDispatcher:
                 continue
             event_type = "long_entry" if direction == "long" else "short_entry"
             signal_id = str(signal["id"])
+            timestamp = str(signal.get("quoteTimestamp") or signal.get("generatedAt") or "")
+            try:
+                parsed_at = datetime.fromisoformat(timestamp)
+                if parsed_at.tzinfo is None:
+                    parsed_at = parsed_at.replace(tzinfo=UTC)
+                trading_date = parsed_at.astimezone(TAIPEI).date().isoformat()
+            except ValueError:
+                trading_date = datetime.now(UTC).astimezone(TAIPEI).date().isoformat()
+            symbol = str(signal["symbol"])
+            entry_key = (symbol, direction, trading_date)
+            if entry_key in seen_entries:
+                continue
+            seen_entries.add(entry_key)
             events.append(LineNotificationEvent(
                 event_type=event_type,
                 action=action,
                 message=format_signal_message(signal),
-                dedupe_key=f"signal:{signal_id}:{action}",
+                dedupe_key=f"formal-entry:{trading_date}:{symbol}:{direction}",
                 priority=6,
                 signal_id=signal_id,
-                symbol=str(signal["symbol"]),
+                symbol=symbol,
                 cooldown_entry=True,
             ))
         return await self.dispatch_many(events)
+
+    async def send_confidence_candidates(
+        self,
+        candidates: list[dict[str, Any]],
+        minimum_confidence: float = 75,
+    ) -> int:
+        # Candidate notifications are intentionally disabled. Only formal entry
+        # recommendations and position risk/exit events may be pushed to LINE.
+        del candidates, minimum_confidence
+        return 0
 
     async def send_position_event(self, event: dict[str, Any]) -> int:
         position = event.get("position") or {}
@@ -454,7 +471,7 @@ class LineNotificationDispatcher:
             f"【AI當沖機器人｜{title}】\n\n"
             f"{details}\n"
             f"通知時間：{_time(datetime.now(UTC).isoformat())}\n\n"
-            "僅供研究參考，不構成投資建議。"
+            f"{PERSONAL_STRATEGY_SIMULATION_NOTE}"
         )
         return await self.dispatch_many([LineNotificationEvent(
             event_type=event_type,

@@ -31,8 +31,9 @@
 - Redis 最新行情快取與 Pub/Sub；未設定 Redis 時安全退回記憶體
 - Asia/Taipei 開盤排程、0～10 分鐘暖機、盤中重啟恢復與非交易時段保護
 - AI 正式推薦每小時合計最多 5 檔；硬性風控、3 分鐘保留與 5 分替換門檻
+- AI選股的自適應掃描池涵蓋官方上市／上櫃電子產業與低軌衛星、玻纖布、廠務工程指定題材；AI當沖另共用擴充後的供應鏈題材池，非允許股票即使分數合格也不得升級為正式推薦
 - 正式推薦與市場掃描候選分流，候選股票不會誤標為正式買進／放空建議
-- 大戶持股增加榜：TDCC 400張以上與千張以上週增排行榜、12週趨勢、AI觀察與LINE設定
+- 大戶持股變化榜：TDCC 400～600張級距與千張以上的週比率、持股張數增減、12週趨勢、AI觀察與LINE設定
 
 ## 一鍵啟動
 
@@ -196,6 +197,40 @@ LINE_NOTIFICATIONS_ENABLED=true
 PUBLIC_WEB_URL=https://moneymoney-tw-stock-production.up.railway.app
 ```
 
+## 盤中大小單籌碼
+
+前端「盤中籌碼」分頁及個股走勢下方提供「即時大單買賣超」、
+「即時小單買賣超」與估算散戶成交占比。後端 API：
+
+```text
+GET /api/v1/stocks/{stockId}/chip-flow/intraday
+```
+
+門檻可透過環境變數設定：
+
+```dotenv
+CHIP_FLOW_LARGE_ORDER_AMOUNT=2000000
+CHIP_FLOW_SMALL_ORDER_AMOUNT=500000
+CHIP_FLOW_DYNAMIC_LARGE_ORDER_ENABLED=true
+CHIP_FLOW_DYNAMIC_LARGE_ORDER_PERCENTILE=0.99
+CHIP_FLOW_DYNAMIC_LARGE_ORDER_MIN_SAMPLES=100
+FUGLE_MARKETDATA_API_KEY=
+```
+
+大單預設採當日 09:00～13:30 前連續交易整股成交金額的 P99，
+並以 `CHIP_FLOW_LARGE_ORDER_AMOUNT` 作為最低門檻；整股樣本少於 100 筆時
+回退固定最低門檻。13:30 集合競價會獨立統計但不納入方向，
+13:30 後盤後成交也不納入盤中累積。
+
+資料庫保存每分鐘累積快照，唯一鍵為
+`trade_date + stock_id + snapshot_time`。正式環境不會使用測試 Mock。
+未設定 Fugle 金鑰時，TWSE MIS 因缺少可回補且具唯一成交 ID 的完整逐筆資料，
+API 會回傳 `awaiting_provider`，畫面顯示「等待串接逐筆成交行情」，不會產生
+推測或隨機數字。設定 Fugle 金鑰後，後端會回補當日整股與盤中零股成交明細，
+以 Fugle `serial` 去重，並從成交價、買一、賣一及 Tick Rule 推估成交方向。
+真實金鑰只能放在 Railway Variables 等加密環境變數，且公開展示行情或衍生資訊
+前，須先確認資料供應商與交易所授權範圍。
+
 請將真實 Token 與 Secret 直接貼到 Railway Variables，不要寫入 `.env.example`、程式碼、GitHub Commit、Build Log 或對話訊息。`LINE_TARGET_GROUP_ID` 是選用的單一預設群組；一般建議將官方帳號加入群組後輸入「綁定當沖機器人」，由已驗證的 Webhook 自動保存 `groupId`。
 
 LINE Developers Console 設定：
@@ -251,7 +286,7 @@ Mock 資料集中於：
 https://openapi.tdcc.com.tw/v1/opendata/1-5
 ```
 
-同步後會保存原始持股級距、週摘要與週增減到 PostgreSQL。400張以上嚴格加總 TDCC 持股分級 12、13、14、15；千張以上加總所有千張以上級距（目前格式為分級15），不會誤取單一400～600張級距。系統每6小時檢查一次最新官方週資料，資料日期已存在時不重複寫入：
+同步後會保存原始持股級距、週摘要與週增減到 PostgreSQL。TDCC 沒有獨立的 400～499 張級距，因此第一榜採官方持股分級 12（400,001～600,000 股，約 400～600 張）；第二榜採分級 15（1,000,001 股以上）。兩榜均列出本期、上期的比率與持股張數增減。系統每6小時檢查一次最新官方週資料，資料日期已存在時不重複寫入：
 
 ```env
 LARGE_HOLDER_AUTO_SYNC_ENABLED=true

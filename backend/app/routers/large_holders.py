@@ -97,8 +97,8 @@ async def sync_tdcc(db: Session = Depends(get_db)) -> dict:
         raise HTTPException(status_code=422, detail=str(error)) from error
     return {
         **result,
-        "source": "臺灣集中保管結算所 OpenAPI",
-        "sourceUrl": "https://openapi.tdcc.com.tw/v1/opendata/1-5",
+        "source": "臺灣集中保管結算所官方 CSV",
+        "sourceUrl": "https://smart.tdcc.com.tw/opendata/getOD.ashx?id=1-5",
         "updatedAt": datetime.now(UTC).isoformat(),
     }
 

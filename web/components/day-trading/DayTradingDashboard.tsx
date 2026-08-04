@@ -10,8 +10,8 @@ import type {
 import { dayTradingClient } from "@/services/day-trading-client";
 import { useDayTradingStore } from "@/stores/day-trading-store";
 import {
-  AlertCenter, DayTradingDisclaimer, DayTradingRankingTable, EmergencyExitModal,
-  LiveSignalCard, MarketDataDelayBadge, MarketRegimeCard, PositionMonitorCard,
+  AlertCenter, DayTradingDisclaimer, EmergencyExitModal,
+  DayTradingPerformancePanel, LiveSignalCard, MarketDataDelayBadge, MarketRegimeCard, PositionMonitorCard,
   RiskControlPanel, SimulationControls, StreamConnectionStatus, TradeTimeline,
 } from "./DayTradingComponents";
 import { LineNotificationPanel } from "./LineNotificationPanel";
@@ -30,9 +30,18 @@ function getUserId() {
   return id;
 }
 
+function currentTaipeiMonth() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Taipei", year: "numeric", month: "2-digit",
+  }).formatToParts(new Date());
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  return `${year}-${month}`;
+}
+
 export function DayTradingDashboard() {
   const {
-    regime, signals, candidates, positions, alerts, trades, performance, settings, connection, emergency,
+    regime, signals, positions, alerts, trades, performance, settings, connection, emergency,
     setInitial, setConnection, handleEvent, dismissEmergency,
   } = useDayTradingStore();
   const [userId, setUserId] = useState("");
@@ -40,25 +49,26 @@ export function DayTradingDashboard() {
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
   const [monitored, setMonitored] = useState<string[]>([]);
+  const [performanceMonth] = useState(currentTaipeiMonth);
   const reconnectAttempt = useRef(0);
 
   const refresh = useCallback(async (id: string) => {
     const [regimeData, signalData, positionData, alertData, tradeData, performanceData, settingsData] = await Promise.all([
       dayTradingClient.regime(id), dayTradingClient.signals(id), dayTradingClient.positions(id),
-      dayTradingClient.alerts(id), dayTradingClient.trades(id), dayTradingClient.performance(id),
+      dayTradingClient.alerts(id), dayTradingClient.trades(id, performanceMonth), dayTradingClient.performance(id, performanceMonth),
       dayTradingClient.settings(id),
     ]);
     setInitial({
       regime: regimeData as MarketRegime,
       signals: signalData.items as DayTradingSignal[],
-      candidates: signalData.candidates as DayTradingSignal[],
+      candidates: [],
       positions: positionData.items as DayTradingPosition[],
       alerts: alertData.items as DayTradingAlert[],
       trades: tradeData.items as DayTradingTrade[],
       performance: performanceData as DayTradingPerformance,
       settings: settingsData,
     });
-  }, [setInitial]);
+  }, [performanceMonth, setInitial]);
 
   useEffect(() => {
     const id = getUserId();
@@ -109,11 +119,11 @@ export function DayTradingDashboard() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  const loadPortfolio = async () => {
+  const loadPortfolio = useCallback(async () => {
     if (!userId) return;
     const [positionData, alertData, tradeData, performanceData] = await Promise.all([
       dayTradingClient.positions(userId), dayTradingClient.alerts(userId),
-      dayTradingClient.trades(userId), dayTradingClient.performance(userId),
+      dayTradingClient.trades(userId, performanceMonth), dayTradingClient.performance(userId, performanceMonth),
     ]);
     setInitial({
       positions: positionData.items as DayTradingPosition[],
@@ -121,7 +131,17 @@ export function DayTradingDashboard() {
       trades: tradeData.items as DayTradingTrade[],
       performance: performanceData as DayTradingPerformance,
     });
-  };
+  }, [performanceMonth, setInitial, userId]);
+
+  useEffect(() => {
+    if (!userId) return;
+    const timer = window.setInterval(() => {
+      void loadPortfolio().catch((reason) => {
+        setError(reason instanceof Error ? reason.message : "績效更新失敗");
+      });
+    }, 30_000);
+    return () => window.clearInterval(timer);
+  }, [loadPortfolio, userId]);
 
   const monitor = (signal: DayTradingSignal) => {
     if (monitored.includes(signal.id)) {
@@ -172,7 +192,7 @@ export function DayTradingDashboard() {
     <EmergencyExitModal event={emergency} onDismiss={dismissEmergency} />
 
     <section className="dt-hero">
-      <div><span className="eyebrow"><Radio size={13} /> {regime.mode === "official" ? "MARKET DATA · SIGNALS ONLY" : regime.mode === "warming_up" ? "MARKET DATA WARMING UP" : "MOCK STREAMING · SIGNALS ONLY"}</span><h1>AI 當沖多空機器人</h1><p>即時掃描台股，判斷做多、放空與出場時機</p></div>
+      <div><span className="eyebrow"><Radio size={13} /> {regime.mode === "official" ? "MARKET DATA · SIGNALS ONLY" : regime.mode === "warming_up" ? "MARKET DATA WARMING UP" : "MOCK STREAMING · SIGNALS ONLY"}</span><h1>AI 當沖多空機器人</h1><p>掃描 AI 供應鏈、低軌衛星、玻纖布與廠務工程族群</p></div>
       <div className="dt-hero-status"><StreamConnectionStatus status={connection} /><MarketDataDelayBadge seconds={regime.dataDelaySeconds} status={regime.dataStatus} /></div>
     </section>
 
@@ -202,6 +222,8 @@ export function DayTradingDashboard() {
       <div><span>最後更新</span><strong>{new Date(regime.updatedAt).toLocaleTimeString("zh-TW", { hour12: false })}</strong></div>
     </section>
 
+    <DayTradingPerformancePanel performance={performance} positions={positions} trades={trades} />
+
     <div className="dt-dashboard-grid">
       <MarketRegimeCard regime={regime} />
       <SimulationControls onTrigger={(scenario) => void trigger(scenario)} />
@@ -214,11 +236,9 @@ export function DayTradingDashboard() {
         : <div className="dt-empty official-empty"><Bot /><h3>本小時 AI 當沖精選：0／{regime.maximumRecommendations} 檔</h3><p>{regime.automation.phase === "scanning" ? "目前沒有符合風控標準的交易機會，建議觀望。" : regime.automation.statusMessage}</p></div>}
     </section>
 
-    <DayTradingRankingTable signals={candidates} monitored={monitored} onMonitor={monitor} onSimulate={(item) => void simulate(item)} onAnalyze={(symbol) => { window.location.href = `/?symbol=${symbol}&view=analysis`; }} />
-
     <section className="positions-section">
       <div className="dt-section-heading"><div><span className="eyebrow">POSITION FIRST</span><h2>我的當沖監控</h2><p>每次行情更新都先檢查停損與出場，再掃描新進場機會</p></div><strong>{positions.length} 筆未平倉模擬部位</strong></div>
-      <div className="position-grid-list">{positions.length ? positions.map((position) => <PositionMonitorCard key={position.id} position={position} onClose={(item, percentage) => void closePosition(item, percentage)} onUpdate={(item, body) => void updatePosition(item, body)} />) : <div className="dt-empty large"><Clock3 /><h3>尚無模擬持倉</h3><p>可從即時訊號卡或排行榜建立模擬多單／空單。</p></div>}</div>
+      <div className="position-grid-list">{positions.length ? positions.map((position) => <PositionMonitorCard key={position.id} position={position} onClose={(item, percentage) => void closePosition(item, percentage)} onUpdate={(item, body) => void updatePosition(item, body)} />) : <div className="dt-empty large"><Clock3 /><h3>尚無模擬持倉</h3><p>有正式訊號時，可從即時訊號卡建立模擬多單／空單。</p></div>}</div>
     </section>
 
     <div className="dt-bottom-grid">
@@ -227,7 +247,7 @@ export function DayTradingDashboard() {
     </div>
 
     <LineNotificationPanel />
-    <TradeTimeline signals={signals} trades={trades} performance={performance} />
+    <TradeTimeline signals={signals} trades={trades} />
     <DayTradingDisclaimer mode={regime.mode} notice={regime.dataNotice} />
   </div>;
 }

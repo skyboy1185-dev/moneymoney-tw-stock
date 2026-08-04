@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
-from app.models import LargeHolderWeeklyChange, LargeHolderWeeklySummary
+from app.models import LargeHolderWeeklyChange, LargeHolderWeeklySummary, ShareholderDistributionWeekly
 from app.routers import large_holders
 from app.services.large_holders import (
     DistributionRow,
@@ -45,14 +45,14 @@ def summary(report_date: date, over400: str, over1000: str, shares: int = 100_00
     )
 
 
-def test_400_lots_aggregates_all_levels_12_through_15() -> None:
+def test_400_to_600_lot_bucket_uses_only_official_level_12() -> None:
     result = aggregate_distribution([
         row(11, "9"), row(12, "1.1"), row(13, "2.2"), row(14, "3.3"), row(15, "4.4"),
         row(16, "99"), row(17, "100"),
     ])[0]
-    assert result.ratio_over_400 == Decimal("11.0")
-    assert result.holders_over_400_count == 40
-    assert result.shares_over_400 == 4000
+    assert result.ratio_over_400 == Decimal("1.1")
+    assert result.holders_over_400_count == 10
+    assert result.shares_over_400 == 1000
 
 
 def test_1000_lots_uses_every_1000_plus_level_without_total_or_adjustment() -> None:
@@ -142,6 +142,20 @@ def test_two_official_periods_publish_official_tdcc_ranking() -> None:
                 ratio_over_1000=ratio / 2, total_shareholders=1_000,
                 total_shares=100_000, updated_at=datetime(2026, 7, 24),
             ))
+            session.add_all([
+                ShareholderDistributionWeekly(
+                    stock_code="2330", report_date=report_date, holding_level=12,
+                    holder_count=100 if report_date == previous else 105,
+                    share_count=60_000 if report_date == previous else 66_000,
+                    holding_ratio=ratio, updated_at=datetime(2026, 7, 24),
+                ),
+                ShareholderDistributionWeekly(
+                    stock_code="2330", report_date=report_date, holding_level=15,
+                    holder_count=20 if report_date == previous else 22,
+                    share_count=25_000 if report_date == previous else 30_000,
+                    holding_ratio=ratio / 2, updated_at=datetime(2026, 7, 24),
+                ),
+            ])
         session.add(LargeHolderWeeklyChange(
             stock_code="2330", current_report_date=now, previous_report_date=previous,
             current_ratio_over_400=Decimal("23"), previous_ratio_over_400=Decimal("20"),
@@ -156,3 +170,6 @@ def test_two_official_periods_publish_official_tdcc_ranking() -> None:
     assert response["dataMode"] == "official_tdcc"
     assert response["items"][0]["stockCode"] == "2330"
     assert response["items"][0]["changePercentagePoint"] == 3
+    assert response["items"][0]["currentLotCount"] == 66
+    assert response["items"][0]["previousLotCount"] == 60
+    assert response["items"][0]["lotCountChange"] == 6

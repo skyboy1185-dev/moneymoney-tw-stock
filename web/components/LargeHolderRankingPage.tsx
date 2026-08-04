@@ -48,6 +48,20 @@ function pp(value: number) {
   return `${value > 0 ? "+" : ""}${safeNumber(value)} 個百分點`;
 }
 
+function lots(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return "暫無資料";
+  return `${value.toLocaleString("zh-TW", { maximumFractionDigits: 3 })} 張`;
+}
+
+function lotChange(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return "暫無資料";
+  return `${value > 0 ? "+" : ""}${lots(value)}`;
+}
+
+function movement(value: number) {
+  return value > 0 ? "增加" : value < 0 ? "減少" : "持平";
+}
+
 function healthClass(score: number) {
   return score >= 80 ? "strong" : score >= 65 ? "bull" : score >= 50 ? "neutral" : score >= 35 ? "weak" : "bear";
 }
@@ -117,7 +131,7 @@ function RankingTable({
   onDetail: (item: LargeHolderRankingItem) => void;
   onMessage: (message: string, error?: boolean) => void;
 }) {
-  const label = type === "over400" ? "400張以上" : "1,000張以上";
+  const label = type === "over400" ? "400～600張級距" : "1,000張以上";
   if (!response.items.length) {
     return <div className="lh-empty"><UsersRound size={28} /><h3>目前沒有符合條件的股票</h3><p>請調整產業、市場或最低成交金額條件。</p></div>;
   }
@@ -127,8 +141,9 @@ function RankingTable({
         <table className="lh-table">
           <thead><tr>
             <th>排名</th><th>股票</th><th>市場／產業</th><th>最新股價</th><th>本週漲跌</th>
-            <th>本週{label}比例</th><th>上週比例</th><th>增加百分點</th><th>增加幅度</th>
-            <th>大戶人數／週增減</th><th>外資5日</th><th>投信5日</th><th>主力5日</th>
+            <th>本週{label}比例</th><th>上週比例</th><th>比率方向／增減</th><th>變動幅度</th>
+            <th>持股張數（本週／上週）</th><th>張數增減</th><th>大戶人數／週增減</th>
+            <th>外資5日</th><th>投信5日</th><th>主力5日</th>
             <th>5日量變化</th><th>技術面</th><th>健康度</th><th>AI判讀</th><th>操作</th>
           </tr></thead>
           <tbody>{response.items.map((item) => (
@@ -140,8 +155,10 @@ function RankingTable({
               <td className={valueClass(item.weeklyChangePct ?? 0)}>{formatPercent(item.weeklyChangePct)}</td>
               <td><b>{safeNumber(item.currentLargeHolderRatio)}%</b></td>
               <td>{safeNumber(item.previousLargeHolderRatio)}%</td>
-              <td className={valueClass(item.changePercentagePoint)}><b>{pp(item.changePercentagePoint)}</b></td>
+              <td className={valueClass(item.changePercentagePoint)}><b>{movement(item.changePercentagePoint)}</b><small>{pp(item.changePercentagePoint)}</small></td>
               <td className={valueClass(item.changePercentage ?? 0)}>{formatPercent(item.changePercentage)}</td>
+              <td><b>{lots(item.currentLotCount)}</b><small>上週 {lots(item.previousLotCount)}</small></td>
+              <td className={valueClass(item.lotCountChange ?? 0)}><b>{lotChange(item.lotCountChange)}</b></td>
               <td><b>{item.currentHolderCount.toLocaleString("zh-TW")}</b><small className={valueClass(item.holderCountChange)}>{item.holderCountChange > 0 ? "+" : ""}{item.holderCountChange}</small></td>
               <td className={valueClass(item.foreignNetBuy5d ?? 0)}>{compactNumber(item.foreignNetBuy5d)}</td>
               <td className={valueClass(item.investmentTrustNetBuy5d ?? 0)}>{compactNumber(item.investmentTrustNetBuy5d)}</td>
@@ -167,9 +184,10 @@ function RankingTable({
           </header>
           <div className="lh-mobile-metrics">
             <span>現價<b>{safeNumber(item.latestPrice)}</b></span>
-            <span>本週比例<b>{safeNumber(item.currentLargeHolderRatio)}%</b></span>
-            <span>增加百分點<b className={valueClass(item.changePercentagePoint)}>{pp(item.changePercentagePoint)}</b></span>
-            <span>增加幅度<b className={valueClass(item.changePercentage ?? 0)}>{formatPercent(item.changePercentage)}</b></span>
+            <span>{label}比例<b>{safeNumber(item.currentLargeHolderRatio)}%</b></span>
+            <span>比率方向<b className={valueClass(item.changePercentagePoint)}>{movement(item.changePercentagePoint)} · {pp(item.changePercentagePoint)}</b></span>
+            <span>本週持股張數<b>{lots(item.currentLotCount)}</b></span>
+            <span>張數增減<b className={valueClass(item.lotCountChange ?? 0)}>{lotChange(item.lotCountChange)}</b></span>
           </div>
           <LargeHolderAiSignalBadge signal={item.aiSignal} />
           {item.warnings.map((warning) => <p className="lh-card-warning" key={warning}><TriangleAlert size={11} />{warning}</p>)}
@@ -256,16 +274,22 @@ function LargeHolderDetailModal({
       </header>
       {loading || !history ? <div className="lh-detail-loading"><span className="spinner" />正在整理最近 12 週資料…</div> : (
         <div className="lh-chart-grid">
-          <article><h3>400張與千張以上持股趨勢</h3><div className="lh-chart-legend"><span className="purple">400張以上</span><span className="red">千張以上</span></div>
+          <article><h3>400～600張與千張以上持股比例趨勢</h3><div className="lh-chart-legend"><span className="purple">400～600張</span><span className="red">千張以上</span></div>
             <MiniLineChart items={history.items} series={[
-              { key: "ratioOver400", label: "400張以上比例", color: "#8d80ff", suffix: "%" },
+              { key: "ratioOver400", label: "400～600張比例", color: "#8d80ff", suffix: "%" },
               { key: "ratioOver1000", label: "千張以上比例", color: "#ff6f75", suffix: "%" },
             ]} />
           </article>
-          <article><h3>大戶人數變化</h3><div className="lh-chart-legend"><span className="blue">400張以上人數</span><span className="green">千張以上人數</span></div>
+          <article><h3>大戶人數變化</h3><div className="lh-chart-legend"><span className="blue">400～600張人數</span><span className="green">千張以上人數</span></div>
             <MiniLineChart items={history.items} series={[
-              { key: "holdersOver400", label: "400張以上人數", color: "#58a6ff" },
+              { key: "holdersOver400", label: "400～600張人數", color: "#58a6ff" },
               { key: "holdersOver1000", label: "千張以上人數", color: "#34d399" },
+            ]} />
+          </article>
+          <article><h3>持股張數變化</h3><div className="lh-chart-legend"><span className="purple">400～600張級距</span><span className="red">千張以上</span></div>
+            <MiniLineChart items={history.items} series={[
+              { key: "lotsOver400", label: "400～600張級距持股", color: "#8d80ff", suffix: " 張" },
+              { key: "lotsOver1000", label: "千張以上持股", color: "#ff6f75", suffix: " 張" },
             ]} />
           </article>
           <article><h3>最近12週股價走勢</h3>
@@ -376,8 +400,8 @@ export function LargeHolderRankingPage({
       <section className="lh-hero">
         <div>
           <span className="section-kicker">TDCC SHAREHOLDER DISTRIBUTION</span>
-          <h1><UsersRound />大戶持股增加榜</h1>
-          <p>追蹤本週400張以上與千張以上大戶持股比例增加最多的股票</p>
+          <h1><UsersRound />大戶持股變化榜</h1>
+          <p>追蹤本週400～600張級距與千張以上持股的比率方向及實際張數增減</p>
         </div>
         <dl>
           <div><dt>本期資料</dt><dd>{data?.currentReportDate ?? "—"}</dd></div>
@@ -402,23 +426,23 @@ export function LargeHolderRankingPage({
       </form>
 
       <div className="lh-mobile-tabs">
-        <button className={activeMobileTab === "over400" ? "active" : ""} onClick={() => setActiveMobileTab("over400")}>400張以上榜</button>
+        <button className={activeMobileTab === "over400" ? "active" : ""} onClick={() => setActiveMobileTab("over400")}>400～600張榜</button>
         <button className={activeMobileTab === "over1000" ? "active" : ""} onClick={() => setActiveMobileTab("over1000")}>千張以上榜</button>
       </div>
 
       {loading && !over400 ? <div className="page-loading"><span className="spinner" /><p>正在計算大戶持股週增排名…</p></div> : (
         <div className="lh-ranking-grid">
           {over400 && <section className={`lh-ranking-panel ${activeMobileTab !== "over400" ? "mobile-hidden" : ""}`}>
-            <header><div><span>OVER 400 LOTS</span><h2>400張以上大戶增加前20名</h2><p>加總持股級距12～15，依增加百分點排序</p></div><strong>{over400.items.length}<small>／20</small></strong></header>
+            <header><div><span>TDCC LEVEL 12</span><h2>400～600張級距變化前20名</h2><p>官方第12級（400,001～600,000股），依比率增減百分點排序</p></div><strong>{over400.items.length}<small>／20</small></strong></header>
             <RankingTable type="over400" response={over400} userId={userId} onSelectStock={onSelectStock} onDetail={(item) => void openDetail(item)} onMessage={(text, isError = false) => setMessage({ text, error: isError })} />
           </section>}
           {over1000 && <section className={`lh-ranking-panel ${activeMobileTab !== "over1000" ? "mobile-hidden" : ""}`}>
-            <header><div><span>OVER 1,000 LOTS</span><h2>千張以上大戶增加前20名</h2><p>加總所有千張以上級距，依增加百分點排序</p></div><strong>{over1000.items.length}<small>／20</small></strong></header>
+            <header><div><span>OVER 1,000 LOTS</span><h2>千張以上大戶變化前20名</h2><p>官方第15級（1,000,001股以上），列出比率與持股張數增減</p></div><strong>{over1000.items.length}<small>／20</small></strong></header>
             <RankingTable type="over1000" response={over1000} userId={userId} onSelectStock={onSelectStock} onDetail={(item) => void openDetail(item)} onMessage={(text, isError = false) => setMessage({ text, error: isError })} />
           </section>}
         </div>
       )}
-      <p className="lh-disclaimer"><ShieldAlert size={13} />增加百分點與增加幅度為不同概念；集保資料為週資料。本頁僅供研究參考，不構成投資建議。</p>
+      <p className="lh-disclaimer"><ShieldAlert size={13} />比率增減百分點與持股張數增減是不同概念；集保資料為週資料。本頁僅供研究參考，不構成投資建議。</p>
       {selected && <LargeHolderDetailModal item={selected} history={history} loading={historyLoading} onClose={() => setSelected(null)} />}
     </div>
   );

@@ -22,6 +22,8 @@ const statusLabel = {
   disabled: "通知已停用",
 } as const;
 
+const GROUP_DISCLAIMER = "⚠️ 免責聲明：\n本訊息為演算法內部測試之【自動化數據產出】，僅供技術研究與程式調校之用。本站及發訊系統非屬投顧事業，本訊息「絕不構成」任何個股之買賣推介、操作勸誘或專業投資建議。金融市場具極高風險，群內成員請勿依此進行真實市場跟單。任何依此資訊所為之投資行為，均須【自行判斷並自負盈虧】，開發者不承擔任何直接或間接之法律責任。";
+
 export function LineNotificationPanel() {
   const [status, setStatus] = useState<LineIntegrationStatus | null>(null);
   const [draft, setDraft] = useState<LineNotificationSettings | null>(null);
@@ -78,7 +80,7 @@ export function LineNotificationPanel() {
 
   return <section className="dt-card line-panel">
     <div className="dt-section-heading">
-      <div><span className="eyebrow">LINE MESSAGING API</span><h2>LINE 通知設定</h2><p>正式推薦最多通知三檔；候選清單不會推送，出場與停損優先</p></div>
+      <div><span className="eyebrow">LINE MESSAGING API</span><h2>LINE 通知設定</h2><p>只發送正式進場訊號，以及持倉的出場、停利與停損通知</p></div>
       <span className={`line-status ${status.connectionStatus}`}>
         {status.connectionStatus === "connected" ? <CheckCircle2 /> : <TriangleAlert />}
         {statusLabel[status.connectionStatus]}
@@ -129,7 +131,14 @@ export function LineNotificationPanel() {
     <div className="line-commands">
       <span><code>綁定當沖機器人</code> 綁定目前群組</span>
       <span><code>測試當沖通知</code> 測試 Reply API</span>
+      <span><code>發送免責聲明</code> 讓機器人回覆置頂用文字</span>
       <span><code>解除當沖通知</code> 解除目前群組</span>
+    </div>
+
+    <div className="line-pin-disclaimer">
+      <div><ShieldCheck /><span><strong>群組置頂免責聲明</strong><small>請在 LINE 群組輸入「發送免責聲明」，收到機器人回覆後長按該訊息並設為公告。</small></span></div>
+      <p>{GROUP_DISCLAIMER}</p>
+      <button onClick={() => void navigator.clipboard.writeText(GROUP_DISCLAIMER).then(() => setMessage("免責聲明已複製，貼到 LINE 後即可手動置頂"))}><Copy />複製文字</button>
     </div>
 
     {message && <div className="line-feedback success"><CheckCircle2 />{message}</div>}

@@ -7,6 +7,7 @@ import type {
   StockPayload,
   TechnicalIndicator,
 } from "@/lib/types";
+import { targetThemeStocks, themesForSymbol } from "@/services/theme-stock-universe";
 
 export interface StockDataProvider {
   search(query: string): Promise<StockMeta | null>;
@@ -15,19 +16,42 @@ export interface StockDataProvider {
 }
 
 const STOCKS: StockMeta[] = [
-  { symbol: "2330", name: "台積電", industry: "半導體", market: "上市", peRatio: 24.8, dividendYield: 1.72, priceToBook: 7.2, eps: 46.3, marketCap: 28.9e12 },
-  { symbol: "2317", name: "鴻海", industry: "電子零組件", market: "上市", peRatio: 13.2, dividendYield: 3.1, priceToBook: 1.55, eps: 12.4, marketCap: 2.54e12 },
-  { symbol: "2454", name: "聯發科", industry: "半導體", market: "上市", peRatio: 21.5, dividendYield: 3.55, priceToBook: 5.1, eps: 68.2, marketCap: 2.31e12 },
-  { symbol: "2308", name: "台達電", industry: "電子零組件", market: "上市", peRatio: 31.7, dividendYield: 1.62, priceToBook: 6.3, eps: 15.8, marketCap: 1.24e12 },
+  { symbol: "2330", name: "台積電", industry: "半導體", market: "上市", peRatio: 24.8, dividendYield: 1.72, priceToBook: 7.2, eps: 46.3, marketCap: 28.9e12, themes: themesForSymbol("2330") },
+  { symbol: "2317", name: "鴻海", industry: "電子零組件", market: "上市", peRatio: 13.2, dividendYield: 3.1, priceToBook: 1.55, eps: 12.4, marketCap: 2.54e12, themes: themesForSymbol("2317") },
+  { symbol: "2454", name: "聯發科", industry: "半導體", market: "上市", peRatio: 21.5, dividendYield: 3.55, priceToBook: 5.1, eps: 68.2, marketCap: 2.31e12, themes: themesForSymbol("2454") },
+  { symbol: "2308", name: "台達電", industry: "電子零組件", market: "上市", peRatio: 31.7, dividendYield: 1.62, priceToBook: 6.3, eps: 15.8, marketCap: 1.24e12, themes: themesForSymbol("2308") },
   { symbol: "2881", name: "富邦金", industry: "金融保險", market: "上市", peRatio: 11.3, dividendYield: 4.18, priceToBook: 1.31, eps: 8.5, marketCap: 1.18e12 },
   { symbol: "2882", name: "國泰金", industry: "金融保險", market: "上市", peRatio: 10.8, dividendYield: 3.82, priceToBook: 1.22, eps: 6.1, marketCap: 9.4e11 },
   { symbol: "0050", name: "元大台灣50", industry: "ETF", market: "上市", peRatio: null, dividendYield: 2.9, priceToBook: null, eps: null, marketCap: 5.2e11 },
-  { symbol: "2382", name: "廣達", industry: "電腦及週邊", market: "上市", peRatio: 19.6, dividendYield: 4.02, priceToBook: 4.8, eps: 16.7, marketCap: 1.13e12 },
+  { symbol: "2382", name: "廣達", industry: "電腦及週邊", market: "上市", peRatio: 19.6, dividendYield: 4.02, priceToBook: 4.8, eps: 16.7, marketCap: 1.13e12, themes: themesForSymbol("2382") },
   { symbol: "3008", name: "大立光", industry: "光電", market: "上市", peRatio: 16.4, dividendYield: 3.2, priceToBook: 3.1, eps: 182.5, marketCap: 3.4e11 },
   { symbol: "5274", name: "信驊", industry: "半導體", market: "上櫃", peRatio: 49.2, dividendYield: 0.91, priceToBook: 17.4, eps: 91.8, marketCap: 2.15e11 },
   { symbol: "6488", name: "環球晶", industry: "半導體", market: "上櫃", peRatio: 18.9, dividendYield: 3.65, priceToBook: 2.7, eps: 26.4, marketCap: 2.06e11 },
   { symbol: "8069", name: "元太", industry: "光電", market: "上櫃", peRatio: 29.7, dividendYield: 1.83, priceToBook: 5.2, eps: 8.6, marketCap: 2.82e11 },
-  { symbol: "6669", name: "緯穎", industry: "電腦及週邊", market: "上市", peRatio: 22.3, dividendYield: 2.31, priceToBook: 7.8, eps: 118.6, marketCap: 4.95e11 },
+  { symbol: "6669", name: "緯穎", industry: "電腦及週邊", market: "上市", peRatio: 22.3, dividendYield: 2.31, priceToBook: 7.8, eps: 118.6, marketCap: 4.95e11, themes: themesForSymbol("6669") },
+  { symbol: "2313", name: "華通", industry: "電子零組件", market: "上市", peRatio: null, dividendYield: null, priceToBook: null, eps: null, marketCap: null, themes: themesForSymbol("2313") },
+  { symbol: "2314", name: "台揚", industry: "通信網路", market: "上市", peRatio: null, dividendYield: null, priceToBook: null, eps: null, marketCap: null, themes: themesForSymbol("2314") },
+  { symbol: "3491", name: "昇達科", industry: "通信網路", market: "上櫃", peRatio: null, dividendYield: null, priceToBook: null, eps: null, marketCap: null, themes: themesForSymbol("3491") },
+  { symbol: "6285", name: "啓碁", industry: "通信網路", market: "上市", peRatio: null, dividendYield: null, priceToBook: null, eps: null, marketCap: null, themes: themesForSymbol("6285") },
+  { symbol: "2368", name: "金像電", industry: "電子零組件", market: "上市", peRatio: null, dividendYield: null, priceToBook: null, eps: null, marketCap: null, themes: themesForSymbol("2368") },
+  { symbol: "3037", name: "欣興", industry: "電子零組件", market: "上市", peRatio: null, dividendYield: null, priceToBook: null, eps: null, marketCap: null, themes: themesForSymbol("3037") },
+  { symbol: "3189", name: "景碩", industry: "半導體", market: "上市", peRatio: null, dividendYield: null, priceToBook: null, eps: null, marketCap: null, themes: themesForSymbol("3189") },
+  { symbol: "8046", name: "南電", industry: "電子零組件", market: "上市", peRatio: null, dividendYield: null, priceToBook: null, eps: null, marketCap: null, themes: themesForSymbol("8046") },
+  { symbol: "2327", name: "國巨", industry: "電子零組件", market: "上市", peRatio: null, dividendYield: null, priceToBook: null, eps: null, marketCap: null, themes: themesForSymbol("2327") },
+  { symbol: "2492", name: "華新科", industry: "電子零組件", market: "上市", peRatio: null, dividendYield: null, priceToBook: null, eps: null, marketCap: null, themes: themesForSymbol("2492") },
+  { symbol: "3026", name: "禾伸堂", industry: "電子零組件", market: "上市", peRatio: null, dividendYield: null, priceToBook: null, eps: null, marketCap: null, themes: themesForSymbol("3026") },
+  { symbol: "2337", name: "旺宏", industry: "半導體", market: "上市", peRatio: null, dividendYield: null, priceToBook: null, eps: null, marketCap: null, themes: themesForSymbol("2337") },
+  { symbol: "2344", name: "華邦電", industry: "半導體", market: "上市", peRatio: null, dividendYield: null, priceToBook: null, eps: null, marketCap: null, themes: themesForSymbol("2344") },
+  { symbol: "2408", name: "南亞科", industry: "半導體", market: "上市", peRatio: null, dividendYield: null, priceToBook: null, eps: null, marketCap: null, themes: themesForSymbol("2408") },
+  { symbol: "8299", name: "群聯", industry: "半導體", market: "上櫃", peRatio: null, dividendYield: null, priceToBook: null, eps: null, marketCap: null, themes: themesForSymbol("8299") },
+  { symbol: "1802", name: "台玻", industry: "玻璃陶瓷", market: "上市", peRatio: null, dividendYield: null, priceToBook: null, eps: null, marketCap: null, themes: themesForSymbol("1802") },
+  { symbol: "1815", name: "富喬", industry: "電子零組件", market: "上櫃", peRatio: null, dividendYield: null, priceToBook: null, eps: null, marketCap: null, themes: themesForSymbol("1815") },
+  { symbol: "5340", name: "建榮", industry: "電子零組件", market: "上櫃", peRatio: null, dividendYield: null, priceToBook: null, eps: null, marketCap: null, themes: themesForSymbol("5340") },
+  { symbol: "2379", name: "瑞昱", industry: "半導體", market: "上市", peRatio: null, dividendYield: null, priceToBook: null, eps: null, marketCap: null, themes: themesForSymbol("2379") },
+  { symbol: "3034", name: "聯詠", industry: "半導體", market: "上市", peRatio: null, dividendYield: null, priceToBook: null, eps: null, marketCap: null, themes: themesForSymbol("3034") },
+  { symbol: "3443", name: "創意", industry: "半導體", market: "上市", peRatio: null, dividendYield: null, priceToBook: null, eps: null, marketCap: null, themes: themesForSymbol("3443") },
+  { symbol: "3661", name: "世芯-KY", industry: "半導體", market: "上市", peRatio: null, dividendYield: null, priceToBook: null, eps: null, marketCap: null, themes: themesForSymbol("3661") },
+  { symbol: "5269", name: "祥碩", industry: "半導體", market: "上市", peRatio: null, dividendYield: null, priceToBook: null, eps: null, marketCap: null, themes: themesForSymbol("5269") },
   { symbol: "1301", name: "台塑", industry: "塑膠工業", market: "上市", peRatio: 38.1, dividendYield: 2.52, priceToBook: 1.08, eps: 1.2, marketCap: 3.1e11 },
   { symbol: "2603", name: "長榮", industry: "航運業", market: "上市", peRatio: 6.8, dividendYield: 8.44, priceToBook: 1.42, eps: 32.8, marketCap: 4.2e11 }
 ];
@@ -36,6 +60,12 @@ const BASE_PRICES: Record<string, number> = {
   "2330": 1125, "2317": 181, "2454": 1430, "2308": 468, "2881": 91.6,
   "2882": 68.5, "0050": 58.4, "2382": 292, "3008": 2510, "5274": 5220,
   "6488": 437, "8069": 246, "6669": 2830, "1301": 48.6, "2603": 196,
+  "2313": 199.5, "2314": 12.5, "3491": 1155, "6285": 249.5,
+  "2368": 895, "3037": 848, "3189": 710, "8046": 1075,
+  "2327": 625, "2492": 272, "3026": 585,
+  "2337": 125.5, "2344": 160, "2408": 436, "8299": 1820,
+  "1802": 52.5, "1815": 75.2, "5340": 68.9,
+  "2379": 762, "3034": 518, "3443": 4050, "3661": 3460, "5269": 1385,
 };
 
 function hashCode(text: string): number {
@@ -228,3 +258,4 @@ export class MockStockDataProvider implements StockDataProvider {
 
 export const stockService: StockDataProvider = new MockStockDataProvider();
 export const stockCatalog: StockMeta[] = STOCKS.map((stock) => ({ ...stock }));
+export const thematicStockCatalog: StockMeta[] = targetThemeStocks(stockCatalog);

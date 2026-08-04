@@ -7,12 +7,16 @@ from zoneinfo import ZoneInfo
 
 from .day_trading_cache import day_trading_cache
 from .ai_stock_line_messaging import ai_stock_line_dispatcher
-from .line_messaging import LineNotificationEvent
+from .line_messaging import (
+    PERSONAL_STRATEGY_SIMULATION_NOTE,
+    LineNotificationEvent,
+    format_personal_strategy_simulation,
+)
 from .mock_market import stock_payload
 
 
 TAIPEI = ZoneInfo("Asia/Taipei")
-DISCLAIMER = "僅供研究參考，不構成投資建議。"
+DISCLAIMER = PERSONAL_STRATEGY_SIMULATION_NOTE
 
 
 def _money(value: Any) -> str:
@@ -40,36 +44,14 @@ def _time(value: Any) -> str:
 
 
 def initial_entry_message(monitor: dict[str, Any]) -> str:
-    reasons = "\n".join(f"- {reason}" for reason in monitor["reasons"][:5])
-    warnings = "\n".join(f"- {warning}" for warning in monitor["warnings"][:5]) or "- 無"
-    quantity = int(monitor["suggestedInitialQuantity"])
-    return (
-        "【AI選股機器人｜初始買進確認】\n\n"
-        f"股票：{monitor['symbol']} {monitor['stockName']}\n"
-        f"策略：{monitor['strategyName']}\n"
-        f"目前價格：{_price(monitor['currentPrice'])}\n"
-        f"建議進場區：{_price(monitor['entryMin'])}～{_price(monitor['entryMax'])}\n\n"
-        "資金配置：\n"
-        f"- 建議最終部位：總資金 {monitor['targetAllocationPercentage']}%\n"
-        f"- 初始建倉：總資金 {monitor['initialAllocationPercentage']}%\n"
-        f"- 建議投入：新台幣 {_money(monitor['suggestedInitialAmount'])}\n"
-        f"- 建議數量：{quantity:,} 股／{Decimal(quantity) / Decimal(1000):.3f} 張\n"
-        f"- 單筆預估最大損失：新台幣 {_money(monitor['estimatedRiskAmount'])}\n\n"
-        f"停損參考：{_price(monitor['stopLoss'])}\n"
-        f"第一目標：{_price(monitor['target1'])}\n"
-        f"第二目標：{_price(monitor['target2'])}\n"
-        f"條件符合分數：{monitor['totalScore']}\n"
-        f"策略適配度：{monitor['strategyFit']}%\n"
-        f"健康度：{monitor['healthScore']}\n"
-        f"風險報酬比：1：{monitor['riskRewardRatio']}\n"
-        f"訊號時間：{_time(monitor['updatedAt'])}\n"
-        f"有效期限：{_time(monitor['expiredAt'])}\n\n"
-        "後續加碼計畫：\n"
-        f"- 第一次加碼：總資金 {monitor['firstAddOnPercentage']}%\n"
-        f"- 第二次加碼：總資金 {monitor['secondAddOnPercentage']}%\n\n"
-        f"買進理由：\n{reasons}\n\n風險提醒：\n{warnings}\n\n"
-        "請自行確認即時行情、資金與交易條件。\n"
-        f"{DISCLAIMER}"
+    return format_personal_strategy_simulation(
+        stock_name=monitor["stockName"],
+        symbol=monitor["symbol"],
+        entry_min=monitor["entryMin"],
+        entry_max=monitor["entryMax"],
+        stop_loss=monitor["stopLoss"],
+        target_1=monitor["target1"],
+        target_2=monitor.get("target2"),
     )
 
 

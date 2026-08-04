@@ -256,15 +256,30 @@ def test_recommendation_replacement_expires_old_waiting_item_immediately() -> No
         sync_recommendations(
             db,
             "replace-user",
-            [_recommendation("signal-old-2301", "2301")],
+            [_recommendation("signal-old-2330", "2330")],
             now,
         )
         active = sync_recommendations(
             db,
             "replace-user",
-            [_recommendation("signal-new-2302", "2302")],
+            [_recommendation("signal-new-2317", "2317")],
             now,
         )
-        assert [item.symbol for item in active] == ["2302"]
-        old = db.query(AIStockMonitor).filter_by(signal_id="signal-old-2301").one()
+        assert [item.symbol for item in active] == ["2317"]
+        old = db.query(AIStockMonitor).filter_by(signal_id="signal-old-2330").one()
         assert old.monitor_status == "expired"
+
+
+def test_ai_monitor_sync_rejects_non_theme_symbols() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 7, 27, 10, 0, 30, tzinfo=TAIPEI)
+    with Session(engine) as db:
+        active = sync_recommendations(
+            db,
+            "theme-user",
+            [_recommendation("signal-unrelated-2603", "2603")],
+            now,
+        )
+        assert active == []
+        assert db.query(AIStockMonitor).count() == 0

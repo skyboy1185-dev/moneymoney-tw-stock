@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { clientKey, rateLimit } from "@/lib/server-utils";
 import { getOfficialQuote } from "@/services/market-data/official-quote-provider";
 import { buildOfficialStockPayload } from "@/services/market-data/official-history-provider";
+import { enrichOfficialStockMeta } from "@/services/market-data/official-fundamentals-provider";
 import { resolveOfficialStock } from "@/services/market-data/stock-directory";
 
 export const dynamic = "force-dynamic";
@@ -20,7 +21,8 @@ export async function GET(request: NextRequest) {
   }
   try {
     const officialQuote = await getOfficialQuote(meta);
-    const payload = await buildOfficialStockPayload(meta, officialQuote);
+    const enrichedMeta = await enrichOfficialStockMeta(meta, officialQuote?.price);
+    const payload = await buildOfficialStockPayload(enrichedMeta, officialQuote);
     return NextResponse.json(payload);
   } catch (error) {
     return NextResponse.json({

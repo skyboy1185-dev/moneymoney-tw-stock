@@ -67,7 +67,7 @@ export function Screener({ onSelectStock }: { onSelectStock: (symbol: string) =>
     <div className="screener-page">
       <div className="page-heading">
         <div><p className="section-kicker">MANUAL STRATEGY SCREENER</p><h1>策略選股器</h1><p>一次選擇一個固定策略，所有條件由後端以相同指標規則計算。</p></div>
-        <div className="demo-badge"><Database size={14} />展示模式／模擬資料</div>
+        <div className="demo-badge"><Database size={14} />官方歷史行情／盤中報價</div>
       </div>
 
       <section className="strategy-selector-panel">
@@ -81,7 +81,7 @@ export function Screener({ onSelectStock }: { onSelectStock: (symbol: string) =>
           ))}
         </div>
         <div className="strategy-definition">
-          <strong>策略判斷：</strong>MACD 前一根 Histogram &lt; 0、當前 Histogram ≥ 0；KD 金叉為前 K ≤ D、當前 K &gt; D，且 K 或 D 至少一個低於 30。
+          <strong>策略判斷：</strong>MACD 前一根 Histogram &lt; 0、當前 Histogram &gt; 0；KD 金叉為前 K &lt; D、當前 K &gt; D，且當前 K &lt; 50。所有成交量門檻均採當日成交量。
         </div>
       </section>
 

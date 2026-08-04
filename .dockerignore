@@ -1,0 +1,15 @@
+.git
+.idea
+.artifacts
+**/.env
+**/.env.*
+!**/.env.example
+**/.next
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+**/*.pyc
+backend/data
+web/tsconfig.tsbuildinfo
+400
+k.toUpperCase().includes('FINMIND')))

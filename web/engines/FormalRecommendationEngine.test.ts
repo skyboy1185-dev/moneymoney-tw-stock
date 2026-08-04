@@ -14,15 +14,16 @@ const market: MarketContext = {
 
 function row(symbol: string, score = 80, overrides: Partial<RankingRow> = {}): RankingRow {
   return {
-    rank: 0, symbol, name: symbol, market: "上市", industry: "半導體",
+    rank: 0, symbol, name: symbol, market: "上市", industry: "半導體", themes: ["AI"],
     price: 100, changePercent: 1, volume: 2_000_000,
     strategyId: "trend-start", strategyName: "波段起漲 Bot",
     score, scoreBreakdown: {
-      trend: 20, momentum: 16, volume: 12, strategy: 16, market: 8, risk: 8,
+      trend: 20, momentum: 16, volume: 12, keyPrice: 8, strategy: 16, market: 8, risk: 8,
     }, strategyFit: 82, secondaryStrategies: ["多頭回檔 Bot"],
     marketFit: 80, healthScore: 80, riskRewardRatio: 2,
     entryMin: 99, entryMax: 101, stopLoss: 95, target1: 108, target2: 110,
-    turnover: 200_000_000, spreadPercentage: .2, distanceMa20: 3, rsi: 60,
+    turnover: 200_000_000, spreadPercentage: .2, distanceMa20: 3,
+    keyPrice: 98, aboveKeyPrice: true, keyPriceDistancePct: 2.04, rsi: 60,
     volumeQualified: true, liquidityQualified: true, quoteFresh: true,
     hardRiskFailures: [], isFeatured: false, signalId: `ai-2026-07-27-${symbol}`,
     marketDirection: "bull", macdState: "今日翻紅", signalStatus: "confirmed",
@@ -55,5 +56,11 @@ describe("FormalRecommendationEngine", () => {
     const candidate = row("2330", 90, { secondaryStrategies: ["A", "B"] });
     expect(candidate.secondaryStrategies).toHaveLength(2);
     expect(new FormalRecommendationEngine().select([candidate], { ...market, marketOpen: false })).toHaveLength(0);
+  });
+
+  it("非 AI 或低軌衛星主題不得進入正式推薦", () => {
+    const candidate = row("2603", 90, { themes: [] });
+    expect(formalQualification(candidate, market)).toContain("不屬於 AI 或低軌衛星主題股票池");
+    expect(new FormalRecommendationEngine().select([candidate], market)).toHaveLength(0);
   });
 });
