@@ -185,13 +185,13 @@ export function DayTradingDashboard() {
 
   if (loading || !regime) return <div className="dt-loading"><span className="spinner" /><h2>正在啟動 AI 當沖多空機器人</h2><p>連接市場行情、風控設定與持倉資料…</p></div>;
 
-  return <div className="day-trading-page">
+  return <div className="adaptive-page day-trading-page day-trading-adaptive">
     <DayTradingDisclaimer mode={regime.mode} notice={regime.dataNotice} />
     {error && <div className="dt-error"><AlertTriangleIcon />{error}<button onClick={() => { setError(""); void refresh(userId); }}><RefreshCw />重試</button></div>}
     {toast && <div className="dt-toast" role="status"><Activity />{toast}</div>}
     <EmergencyExitModal event={emergency} onDismiss={dismissEmergency} />
 
-    <section className="dt-hero">
+    <section className="adaptive-heading dt-hero">
       <div><span className="eyebrow"><Radio size={13} /> {regime.mode === "official" ? "MARKET DATA · SIGNALS ONLY" : regime.mode === "warming_up" ? "MARKET DATA WARMING UP" : "MOCK STREAMING · SIGNALS ONLY"}</span><h1>AI 當沖多空機器人</h1><p>掃描 AI 供應鏈、低軌衛星、玻纖布與廠務工程族群</p></div>
       <div className="dt-hero-status"><StreamConnectionStatus status={connection} /><MarketDataDelayBadge seconds={regime.dataDelaySeconds} status={regime.dataStatus} /></div>
     </section>
@@ -229,14 +229,14 @@ export function DayTradingDashboard() {
       <SimulationControls onTrigger={(scenario) => void trigger(scenario)} />
     </div>
 
-    <section className="live-signal-section">
+    <section className="adaptive-table-card live-signal-section">
       <div className="dt-section-heading"><div><span className="eyebrow">AI OFFICIAL PICKS</span><h2>本小時 AI 當沖精選：{signals.length}／{regime.maximumRecommendations} 檔</h2><p>每小時最多 5 檔；出場與停損通知永遠優先，且不會為湊滿名額降低風控門檻</p></div><span className="signals-only"><Gauge size={15} />只提供訊號，不自動下單</span></div>
       {signals.length
         ? <div className="live-signal-grid">{signals.map((signal) => <LiveSignalCard key={signal.id} signal={signal} onMonitor={monitor} onSimulate={(item) => void simulate(item)} onAnalyze={(symbol) => { window.location.href = `/?symbol=${symbol}&view=analysis`; }} />)}</div>
         : <div className="dt-empty official-empty"><Bot /><h3>本小時 AI 當沖精選：0／{regime.maximumRecommendations} 檔</h3><p>{regime.automation.phase === "scanning" ? "目前沒有符合風控標準的交易機會，建議觀望。" : regime.automation.statusMessage}</p></div>}
     </section>
 
-    <section className="positions-section">
+    <section className="adaptive-table-card positions-section">
       <div className="dt-section-heading"><div><span className="eyebrow">POSITION FIRST</span><h2>我的當沖監控</h2><p>每次行情更新都先檢查停損與出場，再掃描新進場機會</p></div><strong>{positions.length} 筆未平倉模擬部位</strong></div>
       <div className="position-grid-list">{positions.length ? positions.map((position) => <PositionMonitorCard key={position.id} position={position} onClose={(item, percentage) => void closePosition(item, percentage)} onUpdate={(item, body) => void updatePosition(item, body)} />) : <div className="dt-empty large"><Clock3 /><h3>尚無模擬持倉</h3><p>有正式訊號時，可從即時訊號卡建立模擬多單／空單。</p></div>}</div>
     </section>

@@ -465,7 +465,7 @@ export function DayTradingPerformancePanel({
     })),
   ].sort((left, right) => right.time.localeCompare(left.time));
 
-  return <section className="dt-card dt-performance-card">
+  return <section className="adaptive-performance-card dt-card dt-performance-card">
     <div className="dt-section-heading"><div><span className="eyebrow">DAILY & MONTHLY PAPER PERFORMANCE</span><h2>今日盈虧與本月績效</h2><p>模擬損益；已完成交易已扣除手續費、交易稅與滑價，未實現損益隨持倉行情更新。</p></div><div className="performance-actions"><button onClick={exportToday}><Download size={14} />匯出今日明細</button><button onClick={exportMonth}><Download size={14} />匯出本月績效</button></div></div>
     <div className="dt-performance-columns">
       <div className="dt-performance-block today"><h3>{tradeDate} 今日</h3><div className="performance-summary-grid">{[
