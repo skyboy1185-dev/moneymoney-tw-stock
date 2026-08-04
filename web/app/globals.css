@@ -1011,6 +1011,10 @@ footer span { color: #566177; }
 .risk-actions button, .trade-timeline .dt-section-heading button { min-height: 34px; padding: 0 10px; display: flex; align-items: center; gap: 6px; color: white; background: var(--purple); border: 0; border-radius: 6px; cursor: pointer; font-size: 9px; }
 .risk-actions p { margin: 0; color: #7c879c; font-size: 8px; }
 .line-panel { padding: 20px; overflow: hidden; }
+.line-panel.collapsed { padding-top: 14px; padding-bottom: 14px; }
+.line-panel-heading-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.line-panel-toggle { min-height: 32px; padding: 0 10px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; color: #cbd5e3; background: #17243b; border: 1px solid #3b4b67; border-radius: 7px; cursor: pointer; font-size: 9px; white-space: nowrap; }
+.line-panel-toggle svg { width: 14px; height: 14px; }
 .line-loading { min-height: 120px; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--muted); }
 .line-status { padding: 7px 10px; display: inline-flex; align-items: center; gap: 6px; border-radius: 18px; font-size: 9px; font-weight: 800; }
 .line-status svg { width: 14px; height: 14px; }
@@ -1258,6 +1262,8 @@ footer span { color: #566177; }
   .line-group-item { grid-template-columns: 1fr 1fr; }
 }
 @media (max-width: 700px) {
+  .line-panel .dt-section-heading { align-items: flex-start; flex-direction: column; }
+  .line-panel-heading-actions { width: 100%; justify-content: space-between; }
   .leader-power-section { margin: 12px 0; }
   .weighted-board-heading { padding: 8px 12px; align-items: flex-start; flex-wrap: wrap; }
   .power-board-pagination { width: 100%; justify-content: flex-end; }

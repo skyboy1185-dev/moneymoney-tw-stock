@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
-  BellRing, CheckCircle2, Copy, Link2, LoaderCircle, MessageCircle,
+  BellRing, CheckCircle2, ChevronDown, ChevronUp, Copy, Link2, LoaderCircle, MessageCircle,
   RefreshCw, Save, Send, ShieldCheck, Trash2, TriangleAlert,
 } from "lucide-react";
 import type {
@@ -31,6 +31,7 @@ export function LineNotificationPanel() {
   const [working, setWorking] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [expanded, setExpanded] = useState(false);
 
   const refresh = useCallback(async () => {
     const next = await lineNotificationClient.status();
@@ -59,8 +60,25 @@ export function LineNotificationPanel() {
     }
   };
 
-  if (loading || !status || !draft) return <section className="dt-card line-panel line-loading">
-    <LoaderCircle className="spin" /><span>正在載入 LINE 群組通知設定…</span>
+  if (!expanded) return <section className="dt-card line-panel collapsed">
+    <div className="dt-section-heading">
+      <div><span className="eyebrow">LINE MESSAGING API</span><h2>LINE 通知設定</h2><p>設定內容已隱藏，需要時可再展開。</p></div>
+      <div className="line-panel-heading-actions">
+        {status && <span className={`line-status ${status.connectionStatus}`}>
+          {status.connectionStatus === "connected" ? <CheckCircle2 /> : <TriangleAlert />}
+          {statusLabel[status.connectionStatus]}
+        </span>}
+        <button className="line-panel-toggle" type="button" aria-expanded="false" onClick={() => setExpanded(true)}><ChevronDown />展開設定</button>
+      </div>
+    </div>
+  </section>;
+
+  if (loading || !status || !draft) return <section className="dt-card line-panel">
+    <div className="dt-section-heading">
+      <div><span className="eyebrow">LINE MESSAGING API</span><h2>LINE 通知設定</h2></div>
+      <button className="line-panel-toggle" type="button" aria-expanded="true" onClick={() => setExpanded(false)}><ChevronUp />隱藏設定</button>
+    </div>
+    <div className="line-loading"><LoaderCircle className="spin" /><span>正在載入 LINE 群組通知設定…</span></div>
   </section>;
 
   const toggle = (key: keyof LineNotificationSettings) => {
@@ -81,10 +99,13 @@ export function LineNotificationPanel() {
   return <section className="dt-card line-panel">
     <div className="dt-section-heading">
       <div><span className="eyebrow">LINE MESSAGING API</span><h2>LINE 通知設定</h2><p>只發送正式進場訊號，以及持倉的出場、停利與停損通知</p></div>
-      <span className={`line-status ${status.connectionStatus}`}>
-        {status.connectionStatus === "connected" ? <CheckCircle2 /> : <TriangleAlert />}
-        {statusLabel[status.connectionStatus]}
-      </span>
+      <div className="line-panel-heading-actions">
+        <span className={`line-status ${status.connectionStatus}`}>
+          {status.connectionStatus === "connected" ? <CheckCircle2 /> : <TriangleAlert />}
+          {statusLabel[status.connectionStatus]}
+        </span>
+        <button className="line-panel-toggle" type="button" aria-expanded="true" onClick={() => setExpanded(false)}><ChevronUp />隱藏設定</button>
+      </div>
     </div>
 
     <div className="line-overview">
