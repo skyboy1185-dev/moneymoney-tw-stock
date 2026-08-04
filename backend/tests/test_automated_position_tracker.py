@@ -104,7 +104,7 @@ def test_delivered_formal_entry_creates_one_persisted_virtual_position() -> None
         assert position.symbol == "2330"
         assert position.entry_price == 2255
         assert position.stop_loss == 2236.96
-        assert position.quantity == 1
+        assert position.quantity == 2
 
 
 def test_entry_without_successful_line_delivery_is_not_auto_tracked() -> None:
@@ -146,6 +146,8 @@ def test_background_stop_event_closes_position_and_records_trade() -> None:
 def test_partial_target_is_not_repeated_and_position_stays_open() -> None:
     with _session() as db:
         position = _automatic_position(db)
+        position.quantity = 2
+        db.commit()
         events = pending_automatic_position_events(
             db,
             lambda _: 2282.06,
@@ -165,7 +167,39 @@ def test_partial_target_is_not_repeated_and_position_stays_open() -> None:
 
         db.refresh(position)
         assert position.status == "open"
+        assert position.quantity == 1
+        trade = db.scalar(select(DayTradingTrade))
+        assert trade is not None
+        assert trade.exit_price == 2282.06
+        assert trade.quantity == 1
         assert repeated == []
+
+
+def test_second_target_after_partial_closes_only_remaining_quantity() -> None:
+    with _session() as db:
+        position = _automatic_position(db)
+        position.quantity = 2
+        db.commit()
+
+        first = pending_automatic_position_events(
+            db, lambda _: 2282.06, data_status="normal",
+        )[0]
+        finalize_automatic_position_event(db, first)
+        db.commit()
+
+        second = pending_automatic_position_events(
+            db, lambda _: 2300.10, data_status="normal",
+        )[0]
+        finalize_automatic_position_event(db, second)
+        db.commit()
+
+        db.refresh(position)
+        trades = db.scalars(select(DayTradingTrade).order_by(DayTradingTrade.exit_time)).all()
+        assert position.status == "closed"
+        assert position.quantity == 1
+        assert position.realized_profit == round(sum(item.profit for item in trades), 2)
+        assert len(trades) == 2
+        assert [item.quantity for item in trades] == [1, 1]
 
 
 def test_closing_phase_forces_intraday_position_exit() -> None:

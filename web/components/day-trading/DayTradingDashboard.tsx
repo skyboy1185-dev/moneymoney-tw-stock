@@ -20,6 +20,7 @@ const EVENT_TYPES = [
   "market_update", "quote_update", "new_signal", "signal_update", "signal_expired",
   "position_update", "exit_warning", "emergency_exit", "data_delay", "data_disconnected",
 ];
+const AUTOMATION_PERFORMANCE_USER_ID = "system-automation";
 
 function getUserId() {
   let id = localStorage.getItem("moneymoney-user-id");
@@ -56,17 +57,21 @@ export function DayTradingDashboard() {
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
   const [monitored, setMonitored] = useState<string[]>([]);
+  const [performancePositions, setPerformancePositions] = useState<DayTradingPosition[]>([]);
   const [selectedSignalId, setSelectedSignalId] = useState<string | null>(null);
   const [selectedPositionId, setSelectedPositionId] = useState<number | null>(null);
   const [performanceMonth] = useState(currentTaipeiMonth);
   const reconnectAttempt = useRef(0);
 
   const refresh = useCallback(async (id: string) => {
-    const [regimeData, signalData, positionData, alertData, tradeData, performanceData, settingsData] = await Promise.all([
+    const [regimeData, signalData, positionData, alertData, performancePositionData, tradeData, performanceData, settingsData] = await Promise.all([
       dayTradingClient.regime(id), dayTradingClient.signals(id), dayTradingClient.positions(id),
-      dayTradingClient.alerts(id), dayTradingClient.trades(id, performanceMonth), dayTradingClient.performance(id, performanceMonth),
+      dayTradingClient.alerts(id), dayTradingClient.positions(AUTOMATION_PERFORMANCE_USER_ID),
+      dayTradingClient.trades(AUTOMATION_PERFORMANCE_USER_ID, performanceMonth),
+      dayTradingClient.performance(AUTOMATION_PERFORMANCE_USER_ID, performanceMonth),
       dayTradingClient.settings(id),
     ]);
+    setPerformancePositions(performancePositionData.items as DayTradingPosition[]);
     setInitial({
       regime: regimeData as MarketRegime,
       signals: signalData.items as DayTradingSignal[],
@@ -130,10 +135,13 @@ export function DayTradingDashboard() {
 
   const loadPortfolio = useCallback(async () => {
     if (!userId) return;
-    const [positionData, alertData, tradeData, performanceData] = await Promise.all([
+    const [positionData, alertData, performancePositionData, tradeData, performanceData] = await Promise.all([
       dayTradingClient.positions(userId), dayTradingClient.alerts(userId),
-      dayTradingClient.trades(userId, performanceMonth), dayTradingClient.performance(userId, performanceMonth),
+      dayTradingClient.positions(AUTOMATION_PERFORMANCE_USER_ID),
+      dayTradingClient.trades(AUTOMATION_PERFORMANCE_USER_ID, performanceMonth),
+      dayTradingClient.performance(AUTOMATION_PERFORMANCE_USER_ID, performanceMonth),
     ]);
+    setPerformancePositions(performancePositionData.items as DayTradingPosition[]);
     setInitial({
       positions: positionData.items as DayTradingPosition[],
       alerts: alertData.items as DayTradingAlert[],
@@ -226,7 +234,7 @@ export function DayTradingDashboard() {
       <SimulationControls onTrigger={(scenario) => void trigger(scenario)} />
     </div>
 
-    <DayTradingPerformancePanel performance={performance} positions={positions} trades={trades} />
+    <DayTradingPerformancePanel performance={performance} positions={performancePositions} trades={trades} />
 
     <section className="adaptive-table-card positions-section">
       <div className="table-title"><div><h2>我的當沖監控</h2><p>每次行情更新都先檢查停損與出場，再掃描新進場機會。</p></div><span>{positions.length} 筆</span></div>

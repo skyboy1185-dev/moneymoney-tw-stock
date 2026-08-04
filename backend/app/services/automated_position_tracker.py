@@ -17,7 +17,7 @@ from .day_trading import evaluate_position
 
 
 AUTOMATION_USER_ID = "system-automation"
-AUTOMATION_QUANTITY_LOTS = 1.0
+AUTOMATION_QUANTITY_LOTS = 2.0
 
 
 def _as_datetime(value: Any, fallback: datetime) -> datetime:
@@ -251,34 +251,39 @@ def finalize_automatic_position_event(
         )
         .limit(1)
     )
-    if existing_alert is None:
-        db.add(DayTradingAlert(
-            user_id=AUTOMATION_USER_ID,
-            position_id=position.id,
-            signal_id=position.signal_id,
-            alert_level=str(event["level"]),
-            alert_type=str(event["type"]),
-            title="自動持倉出場通知",
-            message=f"{position.symbol} {position.stock_name}：{event['action']}",
-            action=str(event["action"]),
-            reason=str(event["reason"]),
-            price=float(event["price"]),
-            created_at=now or datetime.now(UTC),
-        ))
-    if not event.get("_terminal") or position.status != "open":
+    if existing_alert is not None or position.status != "open":
         return position
     exit_time = now or datetime.now(UTC)
     exit_price = float(event["price"])
+    db.add(DayTradingAlert(
+        user_id=AUTOMATION_USER_ID,
+        position_id=position.id,
+        signal_id=position.signal_id,
+        alert_level=str(event["level"]),
+        alert_type=str(event["type"]),
+        title="自動持倉出場通知",
+        message=f"{position.symbol} {position.stock_name}：{event['action']}",
+        action=str(event["action"]),
+        reason=str(event["reason"]),
+        price=exit_price,
+        created_at=exit_time,
+    ))
+    terminal = bool(event.get("_terminal"))
+    close_quantity = position.quantity if terminal else position.quantity * 0.5
     factor = 1 if position.direction == "long" else -1
     gross = (
         exit_price - position.entry_price
-    ) * position.quantity * 1000 * factor
-    turnover = (exit_price + position.entry_price) * position.quantity * 1000
+    ) * close_quantity * 1000 * factor
+    turnover = (exit_price + position.entry_price) * close_quantity * 1000
     fee = round(turnover * 0.001425 * 0.6, 2)
-    tax = round(exit_price * position.quantity * 1000 * 0.0015, 2)
-    slippage = round(exit_price * position.quantity * 1000 * 0.0002, 2)
+    tax = round(exit_price * close_quantity * 1000 * 0.0015, 2)
+    slippage = round(exit_price * close_quantity * 1000 * 0.0002, 2)
     profit = round(gross - fee - tax - slippage, 2)
-    capital = position.entry_price * position.quantity * 1000
+    capital = position.entry_price * close_quantity * 1000
+    unrealized_share = (
+        position.unrealized_profit * close_quantity / position.quantity
+        if position.quantity else 0
+    )
     db.add(DayTradingTrade(
         user_id=AUTOMATION_USER_ID,
         symbol=position.symbol,
@@ -288,22 +293,26 @@ def finalize_automatic_position_event(
         entry_price=position.entry_price,
         exit_time=exit_time,
         exit_price=exit_price,
-        quantity=position.quantity,
+        quantity=close_quantity,
         fee=fee,
         tax=tax,
         slippage=slippage,
         profit=profit,
         return_percentage=round(profit / capital * 100, 2) if capital else 0,
-        max_profit=max(0, position.unrealized_profit),
-        max_loss=min(0, position.unrealized_profit),
+        max_profit=max(0, unrealized_share),
+        max_loss=min(0, unrealized_share),
         entry_reason="LINE 正式訊號自動建立虛擬追蹤持倉",
         exit_reason=str(event["reason"]),
         strategy_name="AI 當沖機器人自動追蹤",
         followed_signal=True,
     ))
-    position.status = "closed"
-    position.closed_at = exit_time
-    position.exit_price = exit_price
-    position.realized_profit = profit
+    position.realized_profit = round((position.realized_profit or 0) + profit, 2)
     position.latest_action = str(event["action"])
+    if terminal:
+        position.status = "closed"
+        position.closed_at = exit_time
+        position.exit_price = exit_price
+    else:
+        position.quantity = round(position.quantity - close_quantity, 4)
+        position.unrealized_profit = round(position.unrealized_profit - unrealized_share, 2)
     return position
