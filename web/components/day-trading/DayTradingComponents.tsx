@@ -160,7 +160,7 @@ export function LiveSignalCard({
       <div><span>{long ? "第二停利" : "第二回補"}</span><strong>{number(signal.target2)}</strong></div>
     </div>
     {signal.threeGate && <div className="signal-three-gate">
-      <div><span>三關價方向 · {signal.threeGate.sourceDate}</span><strong className={long ? "text-up" : "text-down"}>{signal.threeGateStatus}</strong></div>
+      <div><span>三關價進場計畫 · {signal.threeGate.sourceDate}</span><strong className={long ? "text-up" : "text-down"}>{signal.threeGateEntryStatus ?? signal.threeGateStatus}</strong></div>
       <div><span>上關</span><strong>{number(signal.threeGate.upper)}</strong></div>
       <div><span>中關</span><strong>{number(signal.threeGate.middle)}</strong></div>
       <div><span>下關</span><strong>{number(signal.threeGate.lower)}</strong></div>

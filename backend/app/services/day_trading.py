@@ -7,7 +7,11 @@ from zoneinfo import ZoneInfo
 from .official_market_data import OfficialStockQuote
 from .day_trading_schedule import MAX_LONG_CHASE_CHANGE_PERCENT
 from .popular_stock_universe import merge_momentum_stocks
-from .three_gate_price import ThreeGatePrice, evaluate_three_gate_direction
+from .three_gate_price import (
+    ThreeGatePrice,
+    evaluate_opening_three_gate_retest,
+    evaluate_three_gate_direction,
+)
 from .theme_stock_universe import (
     ThemeStock,
 )
@@ -537,13 +541,35 @@ class MockDayTradingEngine:
                 else "short"
             )
             three_gate = three_gate_prices.get(quote.symbol)
-            previous_price = history[-2].price if len(history) >= 2 else quote.previous_close
+            previous_intraday_price = history[-2].price if len(history) >= 2 else None
+            previous_price = previous_intraday_price or quote.previous_close
             three_gate_decision = (
                 evaluate_three_gate_direction(price, previous_price, three_gate)
                 if three_gate is not None
                 else None
             )
-            direction = three_gate_decision.direction if three_gate_decision else technical_direction
+            opening_retest = (
+                evaluate_opening_three_gate_retest(
+                    open_price=quote.open,
+                    previous_close=quote.previous_close,
+                    current_price=price,
+                    previous_intraday_price=previous_intraday_price,
+                    session_high=quote.high,
+                    session_low=quote.low,
+                    three_gate=three_gate,
+                )
+                if three_gate is not None
+                else None
+            )
+            direction = (
+                "long"
+                if opening_retest is not None and opening_retest.pattern == "open-above-middle"
+                else "short"
+                if opening_retest is not None and opening_retest.pattern == "open-below-lower"
+                else three_gate_decision.direction
+                if three_gate_decision is not None
+                else technical_direction
+            )
             market_score = float(regime["score"])
             market_alignment = round(max(0, min(
                 100,
@@ -559,7 +585,11 @@ class MockDayTradingEngine:
                 "short_trend": trend_1m > 0 and trend_5m >= 0,
                 "market_fit": market_alignment >= 55,
                 "industry_fit": False,
-                "above_open": metrics["aboveOpen"],
+                "above_open": bool(metrics["aboveOpen"]) or bool(
+                    opening_retest is not None
+                    and opening_retest.pattern == "open-above-middle"
+                    and opening_retest.ready
+                ),
                 "five_minute_structure": metrics["fiveMinuteHigherLows"],
                 "five_minute_ma": metrics["fiveMinuteMaRising"],
                 "bollinger_retest": metrics["fiveMinuteBollingerRetest"],
@@ -573,7 +603,11 @@ class MockDayTradingEngine:
                 "short_trend": trend_1m < 0 and trend_5m <= 0,
                 "market_fit": market_alignment >= 55,
                 "industry_fit": False,
-                "below_open": metrics["belowOpen"],
+                "below_open": bool(metrics["belowOpen"]) or bool(
+                    opening_retest is not None
+                    and opening_retest.pattern == "open-below-lower"
+                    and opening_retest.ready
+                ),
                 "five_minute_structure": metrics["fiveMinuteLowerHighs"],
                 "five_minute_ma": metrics["fiveMinuteMaFalling"],
             }
@@ -601,19 +635,39 @@ class MockDayTradingEngine:
             vwap_chase_blocked = bool(timing["vwapRetestRequired"] and not retest_confirmed)
             daily_chase_blocked = bool(timing["dailyExtremeBlocked"])
             chase_blocked = bool(timing["blocked"])
+            if opening_retest is not None and opening_retest.pattern == "open-above-middle":
+                directional_setup = (
+                    bool(metrics["fiveMinuteReady"])
+                    and float(metrics["fiveMinuteMaFast"]) > float(metrics["fiveMinuteMaSlow"])
+                    and bool(metrics["fiveMinuteMaRising"])
+                    and trend_1m >= 0
+                )
+            elif opening_retest is not None and opening_retest.pattern == "open-below-lower":
+                directional_setup = (
+                    bool(metrics["fiveMinuteReady"])
+                    and float(metrics["fiveMinuteMaFast"]) < float(metrics["fiveMinuteMaSlow"])
+                    and bool(metrics["fiveMinuteMaFalling"])
+                    and trend_1m <= 0
+                )
+            else:
+                directional_setup = bool(
+                    metrics["fiveMinuteLongSetup"]
+                    if direction == "long"
+                    else metrics["fiveMinuteShortSetup"]
+                )
             confirmed = (
                 three_gate_decision is not None
+                and opening_retest is not None
+                and opening_retest.ready
                 and bool(metrics["qualified"])
-                and (
-                    bool(metrics["fiveMinuteLongSetup"])
-                    if direction == "long"
-                    else bool(metrics["fiveMinuteShortSetup"])
-                )
+                and directional_setup
                 and confidence >= 75
                 and not chase_blocked
             )
             if three_gate_decision is None:
                 action = "等待三關價載入"
+            elif opening_retest is not None and opening_retest.required and not opening_retest.ready:
+                action = opening_retest.status
             elif chase_blocked:
                 action = (
                     "禁止追多，等待完整 5 分 K 拉回確認"
@@ -622,7 +676,9 @@ class MockDayTradingEngine:
                 )
             elif direction == "long":
                 action = (
-                    "5 分 K 突破買進"
+                    "回撤中關價確認買進"
+                    if confirmed and opening_retest is not None and opening_retest.pattern == "open-above-middle"
+                    else "5 分 K 突破買進"
                     if confirmed and metrics["fiveMinuteBreakout"]
                     else "5 分 K 布林回測買進"
                     if confirmed and metrics["fiveMinuteBollingerRetest"]
@@ -632,7 +688,9 @@ class MockDayTradingEngine:
                 )
             else:
                 action = (
-                    "5 分 K 跌破放空"
+                    "回測下關價確認放空"
+                    if confirmed and opening_retest is not None and opening_retest.pattern == "open-below-lower"
+                    else "5 分 K 跌破放空"
                     if confirmed and metrics["fiveMinuteBreakdown"]
                     else "5 分 K 順勢放空"
                     if confirmed
@@ -640,11 +698,22 @@ class MockDayTradingEngine:
                 )
             day_range = max(quote.high - quote.low, price * .008)
             risk_distance = min(price * .025, max(price * .008, day_range * .18))
-            entry_min = price * (.998 if direction == "long" else .997)
-            entry_max = price * (1.002 if direction == "long" else 1.001)
-            stop_loss = price - risk_distance if direction == "long" else price + risk_distance
-            target_1 = price + risk_distance * 1.5 if direction == "long" else price - risk_distance * 1.5
-            target_2 = price + risk_distance * 2.5 if direction == "long" else price - risk_distance * 2.5
+            planned_entry = (
+                three_gate.middle
+                if three_gate is not None
+                and opening_retest is not None
+                and opening_retest.pattern == "open-above-middle"
+                else three_gate.lower
+                if three_gate is not None
+                and opening_retest is not None
+                and opening_retest.pattern == "open-below-lower"
+                else price
+            )
+            entry_min = planned_entry * (.998 if direction == "long" else .997)
+            entry_max = planned_entry * (1.002 if direction == "long" else 1.001)
+            stop_loss = planned_entry - risk_distance if direction == "long" else planned_entry + risk_distance
+            target_1 = planned_entry + risk_distance * 1.5 if direction == "long" else planned_entry - risk_distance * 1.5
+            target_2 = planned_entry + risk_distance * 2.5 if direction == "long" else planned_entry - risk_distance * 2.5
             spread_percentage = (
                 (quote.best_ask - quote.best_bid) / price * 100
                 if quote.best_ask is not None and quote.best_bid is not None and price
@@ -660,19 +729,22 @@ class MockDayTradingEngine:
             warnings: list[str] = []
             if three_gate_decision is None:
                 warnings.append("尚未取得前一交易日三關價，停止產生正式進場訊號")
+            if opening_retest is not None and opening_retest.required and not opening_retest.ready:
+                warnings.append("開盤直接跳越關鍵價，回測完成前禁止追價進場")
             if not metrics["qualified"]:
                 warnings.append(str(metrics["qualificationMessage"]))
             if quote.source == "TWSE MIS 五檔參考價":
                 warnings.append("目前為五檔參考價，等待最新成交價")
             if chase_blocked:
                 warnings.append(str(timing["reason"]))
-            if metrics["fiveMinuteReady"] and direction == "long" and not metrics["fiveMinuteLongSetup"]:
-                warnings.append("尚未同時符合站上開盤價、5 分 K 均線向上與多方價格結構")
-            if metrics["fiveMinuteReady"] and direction == "short" and not metrics["fiveMinuteShortSetup"]:
-                warnings.append("尚未同時符合跌破開盤價、5 分 K 均線向下與空方價格結構")
+            if metrics["fiveMinuteReady"] and direction == "long" and not directional_setup:
+                warnings.append("尚未符合三關價回測與 5 分 K 均線向上的多方結構")
+            if metrics["fiveMinuteReady"] and direction == "short" and not directional_setup:
+                warnings.append("尚未符合三關價回測與 5 分 K 均線向下的空方結構")
             if not volume_accelerating:
                 warnings.append("近期量能尚未明顯增加")
             reasons = [
+                opening_retest.status if opening_retest is not None else "等待三關價回測判讀",
                 (
                     f"{three_gate_decision.status}（上 {three_gate.upper:,.2f}／中 {three_gate.middle:,.2f}／下 {three_gate.lower:,.2f}）"
                     if three_gate_decision is not None and three_gate is not None
@@ -783,6 +855,12 @@ class MockDayTradingEngine:
                 "threeGatePosition": three_gate_decision.position if three_gate_decision else None,
                 "threeGateCrossed": three_gate_decision.crossed if three_gate_decision else False,
                 "threeGateStatus": three_gate_decision.status if three_gate_decision else "三關價資料載入中",
+                "threeGateOpeningPattern": opening_retest.pattern if opening_retest else None,
+                "threeGateRetestRequired": opening_retest.required if opening_retest else False,
+                "threeGateRetestTouched": opening_retest.touched if opening_retest else False,
+                "threeGateRetestReady": opening_retest.ready if opening_retest else False,
+                "threeGateEntryLevel": opening_retest.level if opening_retest else None,
+                "threeGateEntryStatus": opening_retest.status if opening_retest else "等待三關價回測判讀",
             })
             if official_strategy:
                 item["id"] = str(item["id"]).replace("mock-", "live-", 1)

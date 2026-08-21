@@ -129,6 +129,12 @@ export interface DayTradingSignal {
   threeGatePosition?: "above" | "below" | null;
   threeGateCrossed?: boolean;
   threeGateStatus?: string;
+  threeGateOpeningPattern?: "open-above-middle" | "open-below-lower" | null;
+  threeGateRetestRequired?: boolean;
+  threeGateRetestTouched?: boolean;
+  threeGateRetestReady?: boolean;
+  threeGateEntryLevel?: "middle" | "lower" | null;
+  threeGateEntryStatus?: string;
   spreadPercentage: number;
   tradingEligible: boolean;
   shortEligible: boolean;
