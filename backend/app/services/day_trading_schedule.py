@@ -15,7 +15,7 @@ MIN_DAY_TRADING_VOLUME_SHARES = 1_000_000
 MIN_DAY_TRADING_TURNOVER = 100_000_000
 MIN_LIQUIDITY_PROGRESS = 0.10
 DAY_TRADING_SIGNAL_START = "09:05"
-DAY_TRADING_ENTRY_CUTOFF = "10:30"
+DAY_TRADING_ENTRY_CUTOFF = "11:00"
 DAY_TRADING_CLOSE_REMINDER = "13:25"
 DAY_TRADING_FORCED_EXIT = "13:30"
 
@@ -118,7 +118,7 @@ def trading_session_state(
                 next_transition = None
         elif local_now < latest_entry:
             phase, robot_status, message, next_transition = (
-                "scanning", "5 分 K 強勢股掃描中", "AI 當沖機器人正在用 5 分 K 掃描強勢股；10:30 後停止新進場。", latest_entry,
+                "scanning", "5 分 K 強勢股掃描中", "AI 當沖機器人正在用 5 分 K 掃描強勢股；11:00 後停止新進場。", latest_entry,
             )
         elif local_now < close_reminder:
             phase, robot_status, message, next_transition = (

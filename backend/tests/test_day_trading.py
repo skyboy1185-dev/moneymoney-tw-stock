@@ -287,11 +287,11 @@ def test_non_trading_day_and_entry_cutoff_block_formal_signals() -> None:
         quote_samples=10, infrastructure_ok=True,
     )
     before_cutoff = trading_session_state(
-        config, datetime(2026, 7, 21, 10, 29, tzinfo=TAIPEI),
+        config, datetime(2026, 7, 21, 10, 59, tzinfo=TAIPEI),
         quote_samples=10, infrastructure_ok=True,
     )
     cutoff = trading_session_state(
-        config, datetime(2026, 7, 21, 10, 30, tzinfo=TAIPEI),
+        config, datetime(2026, 7, 21, 11, 0, tzinfo=TAIPEI),
         quote_samples=10, infrastructure_ok=True,
     )
     assert saturday["phase"] == "non_trading"
