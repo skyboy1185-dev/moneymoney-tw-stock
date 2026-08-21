@@ -11,6 +11,7 @@ from app.adaptive_schemas import (
 )
 from app.services.adaptive_backtest_service import run_backtest
 from app.services.adaptive_electronic_service import _display_candidate_status, _selection_strategy
+from app.services.adaptive_electronic_automation import _normalize_scan_payload
 from app.services.adaptive_entry_window import adaptive_entry_window_open
 from app.services.adaptive_parameters import DEFAULT_PARAMETERS
 from app.services.adaptive_performance_service import estimated_trade_result, win_rate_from_profits
@@ -22,6 +23,13 @@ from app.services.risk_management_service import position_size_shares
 
 TAIPEI = ZoneInfo("Asia/Taipei")
 PARAMETERS = {f"{group}.{name}": value for (group, name), (value, _) in DEFAULT_PARAMETERS.items()}
+
+
+def test_scan_payload_normalizes_missing_industry_code_without_rejecting_batch() -> None:
+    raw = {"stocks": [{"stock_code": "2330", "industry_code": ""}, {"stock_code": "2454", "industry_code": "24"}]}
+    normalized = _normalize_scan_payload(raw)
+    assert normalized["stocks"][0]["industry_code"] == "00"
+    assert normalized["stocks"][1]["industry_code"] == "24"
 
 
 def market(**changes):
@@ -95,6 +103,18 @@ def test_uncertain_market_keeps_recovery_observation_scanner_running() -> None:
     assert PARAMETERS["recovery.observation_score"] == 60
 
 
+def test_strong_rebound_from_uncertain_is_provisional_recovery() -> None:
+    metrics = market(
+        taiex_new_low=False, electronic_new_low=False, higher_low=True,
+        taiex_above_ma5=True, ma5_slope=1.4, advance_ratio_2d=74,
+        up_volume_expanding=True, sector_continuation_days=3,
+        new_high_20d_ratio=11,
+    )
+    result = evaluate_market_regime(metrics, PARAMETERS, previous_regime="UNCERTAIN")
+    assert result.provisional_regime == "RECOVERY"
+    assert result.regime == "UNCERTAIN"
+
+
 def test_non_electronic_industry_is_rejected_even_if_name_looks_technical() -> None:
     item = stock(industry_code="15", main_industry="航運", sub_industry="AI 航運", is_electronic=False)
     failures = common_filter_failures(item, PARAMETERS, date(2026, 7, 31))
@@ -114,6 +134,13 @@ def test_twse_mis_five_level_reference_price_remains_observable() -> None:
     item = stock(quote_source="TWSE MIS 五檔參考價")
     failures = common_filter_failures(item, PARAMETERS, date(2026, 7, 31))
     assert "行情來源非官方市場資訊" not in failures
+
+
+def test_yahoo_fallback_quote_remains_observable() -> None:
+    failures = common_filter_failures(
+        stock(quote_source="Yahoo Finance fallback"), PARAMETERS, date(2026, 7, 31),
+    )
+    assert failures == []
 
 
 def test_new_entry_window_closes_exactly_at_1320() -> None:

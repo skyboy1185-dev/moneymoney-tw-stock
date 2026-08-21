@@ -9,7 +9,10 @@ export type StockTheme =
   | "記憶體"
   | "玻纖布"
   | "廠務工程"
-  | "IC設計";
+  | "IC設計"
+  | "CPO／矽光子"
+  | "半導體封測"
+  | "電源／電力";
 
 export interface DailyPrice {
   symbol: string;

@@ -22,15 +22,34 @@ function isTaipeiMarketSession() {
 }
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   context: { params: Promise<{ symbol: string }> },
 ) {
   const { symbol } = await context.params;
   const encoder = new TextEncoder();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let closed = false;
+
   const stream = new ReadableStream({
-    async start(controller) {
+    start(controller) {
+      const stop = () => {
+        if (closed) return;
+        closed = true;
+        if (timer) clearTimeout(timer);
+      };
+      const enqueue = (payload: string) => {
+        if (closed) return false;
+        try {
+          controller.enqueue(encoder.encode(payload));
+          return true;
+        } catch {
+          stop();
+          return false;
+        }
+      };
+      const schedule = (callback: () => void, delay: number) => {
+        if (!closed) timer = setTimeout(callback, delay);
+      };
       const send = async () => {
         if (closed) return;
         let payload: Partial<ChipFlowResponse>;
@@ -47,19 +66,16 @@ export async function GET(
             latest: null,
             series: [],
             statusMessage: error instanceof Error
-              ? `盤中籌碼服務暫時無法連線：${error.message}`
-              : "盤中籌碼服務暫時無法連線。",
+              ? `即時籌碼資料連線失敗：${error.message}`
+              : "即時籌碼資料連線失敗",
           };
         }
-        controller.enqueue(encoder.encode(
-          `event: CHIP_FLOW_UPDATE\ndata: ${JSON.stringify(payload)}\n\n`,
-        ));
+
+        if (!enqueue(`event: CHIP_FLOW_UPDATE\ndata: ${JSON.stringify(payload)}\n\n`)) return;
         if (!isTaipeiMarketSession()) {
-          controller.enqueue(encoder.encode(
-            `event: CHIP_FLOW_END\ndata: ${JSON.stringify({ stockId: symbol, reason: "market_closed" })}\n\n`,
-          ));
+          enqueue(`event: CHIP_FLOW_END\ndata: ${JSON.stringify({ stockId: symbol, reason: "market_closed" })}\n\n`);
           closed = true;
-          controller.close();
+          try { controller.close(); } catch { /* client already disconnected */ }
           return;
         }
         const nextDelay = payload.status === "realtime" || payload.status === "no_data"
@@ -67,16 +83,20 @@ export async function GET(
           : payload.status === "disconnected"
             ? 5_000
             : 30_000;
-        timer = setTimeout(send, nextDelay);
+        schedule(() => void send(), nextDelay);
       };
-      controller.enqueue(encoder.encode("retry: 2000\n\n"));
-      await send();
+
+      request.signal.addEventListener("abort", stop, { once: true });
+      enqueue("retry: 2000\n\n");
+      if (request.signal.aborted) stop();
+      else void send();
     },
     cancel() {
       closed = true;
       if (timer) clearTimeout(timer);
     },
   });
+
   return new Response(stream, {
     headers: {
       "Content-Type": "text/event-stream",

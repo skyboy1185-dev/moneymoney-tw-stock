@@ -1,16 +1,14 @@
 import math
 import threading
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from .official_market_data import OfficialStockQuote
 from .day_trading_schedule import MAX_LONG_CHASE_CHANGE_PERCENT
+from .popular_stock_universe import merge_momentum_stocks
 from .theme_stock_universe import (
-    THEME_STOCKS,
     ThemeStock,
-    is_target_theme_symbol,
-    themes_for_symbol,
 )
 
 
@@ -20,6 +18,9 @@ LIVE_DATA_NOTICE = "價格與盤中技術條件由 TWSE MIS 實際行情樣本�
 TAIPEI = ZoneInfo("Asia/Taipei")
 LIVE_QUOTE_MAX_DELAY_SECONDS = 20
 SOURCE_INTERRUPTION_SECONDS = 300
+EXTREME_RANGE_EDGE_PERCENT = 10.0
+RETEST_RANGE_EDGE_PERCENT = 25.0
+DIRECT_ENTRY_MAX_VWAP_DEVIATION_PERCENT = 1.5
 THEME_REFERENCE_PRICES = {
     "2308": 468.0,
     "2313": 199.5,
@@ -48,7 +49,7 @@ THEME_REFERENCE_PRICES = {
 }
 
 
-def _theme_seed_signal(stock: ThemeStock, wave: float) -> dict[str, Any]:
+def _stock_seed_signal(stock: ThemeStock, wave: float) -> dict[str, Any]:
     reference = THEME_REFERENCE_PRICES.get(stock.symbol, 100.0)
     current = reference * (1 + wave * .001)
     risk_distance = max(current * .012, .1)
@@ -93,8 +94,9 @@ def _theme_seed_signal(stock: ThemeStock, wave: float) -> dict[str, Any]:
         "activeForce": 0,
         "industryScore": 0,
         "liquidityScore": 0,
-        "reasons": [f"屬於{theme_label}主題股票池", "等待實際盤中行情完成暖機"],
+        "reasons": [f"屬於大單動能雷達股票池（{theme_label}）", "等待實際盤中行情完成暖機"],
         "warnings": ["尚未取得足夠實際行情樣本"],
+        "momentumUniverseMember": True,
     }
 
 
@@ -114,8 +116,78 @@ def short_signal_score(metrics: dict[str, float | bool]) -> int:
         "vwap_down": 15, "below_vwap": 15, "breakdown": 15, "volume": 10,
         "active_sell": 15, "large_sell": 10, "short_trend": 10,
         "market_fit": 5, "industry_fit": 5,
+        "below_open": 10, "five_minute_structure": 10,
+        "five_minute_ma": 10,
     }
     return min(100, round(sum(weight for key, weight in weights.items() if metrics.get(key))))
+
+
+def entry_timing_guard(
+    *,
+    direction: str,
+    price: float,
+    day_low: float,
+    day_high: float,
+    vwap: float,
+    change_percent: float,
+    five_minute_retest_confirmed: bool,
+) -> dict[str, Any]:
+    """Block direct entries at intraday extremes until a completed 5m retest."""
+    day_range = max(0.0, day_high - day_low)
+    range_position = (
+        max(0.0, min(100.0, (price - day_low) / day_range * 100))
+        if day_range > 0 else 50.0
+    )
+    vwap_deviation = ((price - vwap) / vwap * 100) if vwap else 0.0
+    extreme_range = (
+        range_position >= 100 - EXTREME_RANGE_EDGE_PERCENT
+        if direction == "long"
+        else range_position <= EXTREME_RANGE_EDGE_PERCENT
+    )
+    retest_zone = (
+        range_position >= 100 - RETEST_RANGE_EDGE_PERCENT
+        if direction == "long"
+        else range_position <= RETEST_RANGE_EDGE_PERCENT
+    )
+    vwap_stretched = (
+        vwap_deviation >= DIRECT_ENTRY_MAX_VWAP_DEVIATION_PERCENT
+        if direction == "long"
+        else vwap_deviation <= -DIRECT_ENTRY_MAX_VWAP_DEVIATION_PERCENT
+    )
+    daily_extreme = (
+        direction == "long"
+        and change_percent >= MAX_LONG_CHASE_CHANGE_PERCENT
+        and extreme_range
+    )
+    retest_required = retest_zone or vwap_stretched
+    blocked = extreme_range or daily_extreme or (
+        retest_required and not five_minute_retest_confirmed
+    )
+    if extreme_range:
+        reason = (
+            "位於日內區間最高 10%，禁止直接追多，等待完整 5 分 K 拉回確認"
+            if direction == "long"
+            else "位於日內區間最低 10%，禁止直接追空，等待完整 5 分 K 反彈確認"
+        )
+    elif retest_required and not five_minute_retest_confirmed:
+        reason = (
+            "接近日內高檔或偏離 VWAP，等待完整 5 分 K 回測後再做多"
+            if direction == "long"
+            else "接近日內低檔或偏離 VWAP，等待完整 5 分 K 反彈後再放空"
+        )
+    else:
+        reason = "進場位置與完整 5 分 K 回測條件合格"
+    return {
+        "blocked": blocked,
+        "reason": reason,
+        "rangePositionPercent": round(range_position, 2),
+        "vwapDeviationPercent": round(vwap_deviation, 2),
+        "extremeRangeBlocked": extreme_range,
+        "vwapRetestRequired": vwap_stretched,
+        "retestRequired": retest_required,
+        "retestConfirmed": five_minute_retest_confirmed,
+        "dailyExtremeBlocked": daily_extreme,
+    }
 
 
 def is_signal_expired(expires_at: datetime, now: datetime | None = None) -> bool:
@@ -177,6 +249,10 @@ def prioritize_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 class MockDayTradingEngine:
+    _PERSISTED_HISTORY_LIMIT = 180
+    _LIVE_HISTORY_LIMIT = 420
+    _LIVE_HISTORY_SAMPLE_SECONDS = 15
+
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._tick = 0
@@ -185,6 +261,65 @@ class MockDayTradingEngine:
         self._official_quotes: dict[str, OfficialStockQuote] = {}
         self._quote_history: dict[str, list[OfficialStockQuote]] = {}
         self._signal_windows: dict[str, tuple[datetime, datetime, str]] = {}
+        self._stock_universe, _ = merge_momentum_stocks(())
+
+    def set_stock_universe(self, stocks: tuple[ThemeStock, ...]) -> None:
+        """Use the momentum radar pool as the sole day-trading candidate universe."""
+        deduplicated = tuple({stock.symbol: stock for stock in stocks}.values())
+        if not deduplicated:
+            return
+        active_symbols = {stock.symbol for stock in deduplicated}
+        with self._lock:
+            self._stock_universe = deduplicated
+            # The radar starts with a smaller fallback pool while its official
+            # 300-stock ranking is loading. Do not discard restored history
+            # during that brief startup window.
+            if len(deduplicated) >= 200:
+                self._official_quotes = {
+                    symbol: quote
+                    for symbol, quote in self._official_quotes.items()
+                    if symbol == "t00" or symbol in active_symbols
+                }
+                self._quote_history = {
+                    symbol: history
+                    for symbol, history in self._quote_history.items()
+                    if symbol == "t00" or symbol in active_symbols
+                }
+
+    @property
+    def stock_universe_symbols(self) -> tuple[str, ...]:
+        with self._lock:
+            return tuple(stock.symbol for stock in self._stock_universe)
+
+    @property
+    def quote_coverage_count(self) -> int:
+        with self._lock:
+            universe = {stock.symbol for stock in self._stock_universe}
+            return sum(symbol in self._official_quotes for symbol in universe)
+
+    @property
+    def warmed_symbol_count(self) -> int:
+        with self._lock:
+            universe = {stock.symbol for stock in self._stock_universe}
+            histories = {
+                symbol: list(history)
+                for symbol, history in self._quote_history.items()
+                if symbol in universe
+            }
+        warmed = 0
+        for history in histories.values():
+            buckets: set[int] = set()
+            for quote in history:
+                if quote.source != "TWSE MIS" or not quote.is_realtime:
+                    continue
+                try:
+                    timestamp = datetime.fromisoformat(quote.quote_timestamp)
+                except ValueError:
+                    continue
+                buckets.add(int(timestamp.timestamp() // 300))
+            if max(0, len(buckets) - 1) >= 5:
+                warmed += 1
+        return warmed
 
     def trigger(self, scenario: str) -> None:
         with self._lock:
@@ -196,6 +331,14 @@ class MockDayTradingEngine:
         with self._lock:
             for symbol, quote in quotes.items():
                 previous = self._official_quotes.get(symbol)
+                if previous is not None:
+                    try:
+                        if datetime.fromisoformat(quote.quote_timestamp) < datetime.fromisoformat(
+                            previous.quote_timestamp
+                        ):
+                            continue
+                    except ValueError:
+                        pass
                 self._official_quotes[symbol] = quote
                 history = self._quote_history.setdefault(symbol, [])
                 if history and history[-1].quote_timestamp[:10] != quote.quote_timestamp[:10]:
@@ -207,10 +350,139 @@ class MockDayTradingEngine:
                     or previous.volume != quote.volume
                 )
                 if is_new_sample:
-                    history.append(quote)
-                    if len(history) > 1_500:
-                        del history[:-1_500]
+                    replace_latest = False
+                    if history:
+                        try:
+                            latest_at = datetime.fromisoformat(history[-1].quote_timestamp)
+                            quote_at = datetime.fromisoformat(quote.quote_timestamp)
+                            elapsed = (quote_at - latest_at).total_seconds()
+                            replace_latest = 0 <= elapsed < self._LIVE_HISTORY_SAMPLE_SECONDS
+                        except ValueError:
+                            replace_latest = False
+                    if replace_latest:
+                        history[-1] = quote
+                    else:
+                        history.append(quote)
+                    if len(history) > self._LIVE_HISTORY_LIMIT:
+                        del history[:-self._LIVE_HISTORY_LIMIT]
                     self._tick += 1
+
+    def export_official_quote_history(self, now: datetime | None = None) -> dict[str, Any]:
+        """Returns a compact, current-day warmup snapshot suitable for Redis."""
+        trading_date = (now or self._now()).astimezone(TAIPEI).date().isoformat()
+        with self._lock:
+            histories = {
+                symbol: list(values)
+                for symbol, values in self._quote_history.items()
+            }
+        symbols: dict[str, dict[str, Any]] = {}
+        for symbol, history in histories.items():
+            buckets: dict[int, OfficialStockQuote] = {}
+            for quote in history:
+                try:
+                    timestamp = datetime.fromisoformat(quote.quote_timestamp)
+                except (TypeError, ValueError):
+                    continue
+                if timestamp.astimezone(TAIPEI).date().isoformat() != trading_date:
+                    continue
+                buckets[int(timestamp.timestamp() // 60)] = quote
+            samples = [buckets[key] for key in sorted(buckets)][-self._PERSISTED_HISTORY_LIMIT:]
+            if not samples:
+                continue
+            latest = samples[-1]
+            symbols[symbol] = {
+                "name": latest.name,
+                "previousClose": latest.previous_close,
+                "source": latest.source,
+                "samples": [
+                    [
+                        quote.quote_timestamp,
+                        quote.price,
+                        quote.open,
+                        quote.high,
+                        quote.low,
+                        quote.volume,
+                        quote.change,
+                        quote.change_percent,
+                        quote.is_realtime,
+                        quote.best_bid,
+                        quote.best_ask,
+                    ]
+                    for quote in samples
+                ],
+            }
+        return {"version": 1, "tradingDate": trading_date, "symbols": symbols}
+
+    def restore_official_quote_history(
+        self,
+        payload: Any,
+        now: datetime | None = None,
+    ) -> int:
+        """Restores only today's verified samples; stale quotes remain safety-gated."""
+        trading_date = (now or self._now()).astimezone(TAIPEI).date().isoformat()
+        if not isinstance(payload, dict) or payload.get("tradingDate") != trading_date:
+            return 0
+        raw_symbols = payload.get("symbols")
+        if not isinstance(raw_symbols, dict):
+            return 0
+        restored: dict[str, list[OfficialStockQuote]] = {}
+        for raw_symbol, raw_history in raw_symbols.items():
+            if not isinstance(raw_history, dict):
+                continue
+            symbol = str(raw_symbol)
+            name = str(raw_history.get("name") or symbol)
+            source = str(raw_history.get("source") or "TWSE MIS")
+            try:
+                previous_close = float(raw_history.get("previousClose"))
+            except (TypeError, ValueError):
+                continue
+            quotes: list[OfficialStockQuote] = []
+            for sample in raw_history.get("samples", []):
+                if not isinstance(sample, list) or len(sample) < 11:
+                    continue
+                try:
+                    timestamp = str(sample[0])
+                    parsed_timestamp = datetime.fromisoformat(timestamp)
+                    if parsed_timestamp.astimezone(TAIPEI).date().isoformat() != trading_date:
+                        continue
+                    quotes.append(OfficialStockQuote(
+                        symbol=symbol,
+                        name=name,
+                        price=float(sample[1]),
+                        previous_close=previous_close,
+                        open=float(sample[2]),
+                        high=float(sample[3]),
+                        low=float(sample[4]),
+                        volume=int(sample[5]),
+                        change=float(sample[6]),
+                        change_percent=float(sample[7]),
+                        quote_timestamp=timestamp,
+                        source=source,
+                        is_realtime=bool(sample[8]),
+                        best_bid=float(sample[9]) if sample[9] is not None else None,
+                        best_ask=float(sample[10]) if sample[10] is not None else None,
+                    ))
+                except (TypeError, ValueError):
+                    continue
+            if quotes:
+                restored[symbol] = quotes[-self._PERSISTED_HISTORY_LIMIT:]
+        with self._lock:
+            for symbol, quotes in restored.items():
+                existing = {
+                    quote.quote_timestamp: quote
+                    for quote in self._quote_history.get(symbol, [])
+                    if quote.quote_timestamp[:10] == trading_date
+                }
+                existing.update({quote.quote_timestamp: quote for quote in quotes})
+                merged = sorted(existing.values(), key=lambda quote: quote.quote_timestamp)
+                self._quote_history[symbol] = merged[-self._PERSISTED_HISTORY_LIMIT:]
+                self._official_quotes[symbol] = self._quote_history[symbol][-1]
+            restored_count = max(
+                (len(self._quote_history[symbol]) for symbol in restored),
+                default=0,
+            )
+            self._tick = max(self._tick, restored_count)
+        return restored_count
 
     def apply_official_quotes(self, signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
         with self._lock:
@@ -278,6 +550,9 @@ class MockDayTradingEngine:
                 "short_trend": trend_1m < 0 and trend_5m <= 0,
                 "market_fit": market_alignment >= 55,
                 "industry_fit": False,
+                "below_open": metrics["belowOpen"],
+                "five_minute_structure": metrics["fiveMinuteLowerHighs"],
+                "five_minute_ma": metrics["fiveMinuteMaFalling"],
             }
             confidence = (
                 long_signal_score(score_metrics)
@@ -285,26 +560,40 @@ class MockDayTradingEngine:
                 else short_signal_score(score_metrics)
             )
             health = round(max(0, min(100, confidence * .65 + metrics["qualityScore"] * .35)))
-            deviation = ((price - vwap) / vwap * 100) if vwap else 0
-            vwap_chase_blocked = (
-                direction == "long" and deviation > 2.5
-            ) or (
-                direction == "short" and deviation < -2.5
+            retest_confirmed = bool(
+                metrics["fiveMinuteLongRetest"]
+                if direction == "long"
+                else metrics["fiveMinuteShortRetest"]
             )
-            daily_chase_blocked = (
-                direction == "long"
-                and quote.change_percent >= MAX_LONG_CHASE_CHANGE_PERCENT
+            timing = entry_timing_guard(
+                direction=direction,
+                price=price,
+                day_low=quote.low,
+                day_high=quote.high,
+                vwap=vwap,
+                change_percent=quote.change_percent,
+                five_minute_retest_confirmed=retest_confirmed,
             )
-            chase_blocked = vwap_chase_blocked or daily_chase_blocked
+            deviation = float(timing["vwapDeviationPercent"])
+            vwap_chase_blocked = bool(timing["vwapRetestRequired"] and not retest_confirmed)
+            daily_chase_blocked = bool(timing["dailyExtremeBlocked"])
+            chase_blocked = bool(timing["blocked"])
             confirmed = (
                 bool(metrics["qualified"])
-                and direction == "long"
-                and bool(metrics["fiveMinuteLongSetup"])
+                and (
+                    bool(metrics["fiveMinuteLongSetup"])
+                    if direction == "long"
+                    else bool(metrics["fiveMinuteShortSetup"])
+                )
                 and confidence >= 75
                 and not chase_blocked
             )
-            if daily_chase_blocked:
-                action = f"禁止追價（今日漲幅達 {MAX_LONG_CHASE_CHANGE_PERCENT:g}%）"
+            if chase_blocked:
+                action = (
+                    "禁止追多，等待完整 5 分 K 拉回確認"
+                    if direction == "long"
+                    else "禁止追空，等待完整 5 分 K 反彈確認"
+                )
             elif direction == "long":
                 action = (
                     "5 分 K 突破買進"
@@ -316,7 +605,13 @@ class MockDayTradingEngine:
                     else "等待 5 分 K 多方確認"
                 )
             else:
-                action = "5 分 K 空方轉弱觀察"
+                action = (
+                    "5 分 K 跌破放空"
+                    if confirmed and metrics["fiveMinuteBreakdown"]
+                    else "5 分 K 順勢放空"
+                    if confirmed
+                    else "等待 5 分 K 空方確認"
+                )
             day_range = max(quote.high - quote.low, price * .008)
             risk_distance = min(price * .025, max(price * .008, day_range * .18))
             entry_min = price * (.998 if direction == "long" else .997)
@@ -336,16 +631,12 @@ class MockDayTradingEngine:
                 warnings.append(str(metrics["qualificationMessage"]))
             if quote.source == "TWSE MIS 五檔參考價":
                 warnings.append("目前為五檔參考價，等待最新成交價")
-            if daily_chase_blocked:
-                warnings.append(
-                    f"今日漲幅已達 {MAX_LONG_CHASE_CHANGE_PERCENT:g}%，禁止追價"
-                )
-            elif vwap_chase_blocked:
-                warnings.append("價格距離監控期間 VWAP 過遠，禁止追價")
-            if direction == "short":
-                warnings.append("空方結構只用於多單減碼／出場，不發放空進場訊息")
-            if metrics["fiveMinuteReady"] and not metrics["fiveMinuteLongSetup"]:
+            if chase_blocked:
+                warnings.append(str(timing["reason"]))
+            if metrics["fiveMinuteReady"] and direction == "long" and not metrics["fiveMinuteLongSetup"]:
                 warnings.append("尚未同時符合站上開盤價、5 分 K 均線向上與多方價格結構")
+            if metrics["fiveMinuteReady"] and direction == "short" and not metrics["fiveMinuteShortSetup"]:
+                warnings.append("尚未同時符合跌破開盤價、5 分 K 均線向下與空方價格結構")
             if not volume_accelerating:
                 warnings.append("近期量能尚未明顯增加")
             reasons = [
@@ -357,6 +648,8 @@ class MockDayTradingEngine:
                 f"價格{'站上' if metrics['aboveOpen'] else '跌破'}開盤價 {quote.open:,.2f}",
                 "5 分 K 低點墊高" if metrics["fiveMinuteHigherLows"] else "5 分 K 頭頭低" if metrics["fiveMinuteLowerHighs"] else "5 分 K 結構尚未確認",
                 f"5 分 K MA3 / MA5：{metrics['fiveMinuteMaFast']:.2f} / {metrics['fiveMinuteMaSlow']:.2f}",
+                f"日內區間位置 {timing['rangePositionPercent']:.1f}%（0% 為最低、100% 為最高）",
+                "完整 5 分 K 回測已確認" if retest_confirmed else "尚未完成 5 分 K 回測確認",
             ]
             item.update({
                 "stockName": quote.name,
@@ -397,6 +690,12 @@ class MockDayTradingEngine:
                 "excessiveNegativeDeviation": deviation <= -5,
                 "dailyChaseBlocked": daily_chase_blocked,
                 "chaseBlocked": chase_blocked,
+                "rangePositionPercent": timing["rangePositionPercent"],
+                "vwapDeviationPercent": timing["vwapDeviationPercent"],
+                "extremeRangeBlocked": timing["extremeRangeBlocked"],
+                "entryRetestRequired": timing["retestRequired"],
+                "entryRetestConfirmed": timing["retestConfirmed"],
+                "entryTimingStatus": timing["reason"],
                 "stopDistancePercent": round(risk_distance / price * 100, 2),
                 "marketAlignment": market_alignment,
                 "confirmationScore": round(metrics["confirmationScore"]),
@@ -469,7 +768,10 @@ class MockDayTradingEngine:
                 "fiveMinuteBreakdown": False,
                 "fiveMinuteBollingerMiddle": None,
                 "fiveMinuteBollingerRetest": False,
+                "fiveMinuteLongRetest": False,
+                "fiveMinuteShortRetest": False,
                 "fiveMinuteLongSetup": False,
+                "fiveMinuteShortSetup": False,
                 "fiveMinuteBearishExit": False,
                 "fiveMinuteSetup": "等待 5 分 K 暖機",
             }
@@ -603,6 +905,7 @@ class MockDayTradingEngine:
         )
         ma_rising = len(completed_closes) >= 4 and ma_fast > previous_ma_fast
         ma_falling = len(completed_closes) >= 4 and ma_fast < previous_ma_fast
+        last_completed = completed_bars[-1] if completed_bars else None
         opening_price = latest.open if latest.open > 0 else same_day[0].price
         above_open = latest.price > opening_price
         below_open = latest.price < opening_price
@@ -622,12 +925,29 @@ class MockDayTradingEngine:
             variance = sum((value - bollinger_middle) ** 2 for value in window) / len(window)
             _bollinger_upper = bollinger_middle + 2 * math.sqrt(variance)
             _bollinger_lower = bollinger_middle - 2 * math.sqrt(variance)
-            last_completed = completed_bars[-1]
             bollinger_retest = (
                 float(last_completed["low"]) <= bollinger_middle
                 and float(last_completed["close"]) >= bollinger_middle
                 and latest.price >= bollinger_middle
             )
+        five_minute_long_retest = bool(
+            five_minute_ready
+            and last_completed is not None
+            and float(last_completed["low"]) <= ma_fast * 1.002
+            and float(last_completed["close"]) >= ma_fast
+            and float(last_completed["close"]) >= float(last_completed["open"])
+            and latest.price >= ma_fast
+            and trend_1m >= 0
+        )
+        five_minute_short_retest = bool(
+            five_minute_ready
+            and last_completed is not None
+            and float(last_completed["high"]) >= ma_fast * .998
+            and float(last_completed["close"]) <= ma_fast
+            and float(last_completed["close"]) <= float(last_completed["open"])
+            and latest.price <= ma_fast
+            and trend_1m <= 0
+        )
         five_minute_bullish = (
             five_minute_ready
             and above_open
@@ -701,7 +1021,10 @@ class MockDayTradingEngine:
             "fiveMinuteBreakdown": five_minute_breakdown,
             "fiveMinuteBollingerMiddle": bollinger_middle,
             "fiveMinuteBollingerRetest": bollinger_retest,
+            "fiveMinuteLongRetest": five_minute_long_retest,
+            "fiveMinuteShortRetest": five_minute_short_retest,
             "fiveMinuteLongSetup": five_minute_bullish,
+            "fiveMinuteShortSetup": five_minute_bearish,
             "fiveMinuteBearishExit": five_minute_bearish,
             "fiveMinuteSetup": five_minute_setup,
         }
@@ -721,6 +1044,11 @@ class MockDayTradingEngine:
 
     def market_regime(self) -> dict[str, Any]:
         now = self._now()
+        local_now = now.astimezone(TAIPEI)
+        market_session_open = (
+            local_now.weekday() < 5
+            and time(9, 0) <= local_now.time() < time(13, 30)
+        )
         with self._lock:
             scenario = self._scenario
             quotes = dict(self._official_quotes)
@@ -758,6 +1086,8 @@ class MockDayTradingEngine:
                 if index_quote.source == "TWSE MIS" and delay <= SOURCE_INTERRUPTION_SECONDS
                 else "source_error"
             )
+            if not market_session_open:
+                data_status = "closed"
             index_metrics = self._live_metrics(histories.get("t00", []))
             advancers = sum(quote.change > 0 for quote in pool_quotes)
             decliners = sum(quote.change < 0 for quote in pool_quotes)
@@ -828,7 +1158,11 @@ class MockDayTradingEngine:
                 "directionLabel": direction_label,
                 "score": score,
                 "environmentScore": round(environment_score),
-                "environmentLabel": "適合交易" if data_status == "normal" else "停止新訊號",
+                "environmentLabel": (
+                    "適合交易" if data_status == "normal"
+                    else "今日已收盤" if data_status == "closed"
+                    else "停止新訊號"
+                ),
                 "preferredDirection": preferred,
                 "shortRestriction": "放空資格與券源必須由券商確認",
                 "risk": "中高" if abs(score) >= 60 else "中",
@@ -844,7 +1178,7 @@ class MockDayTradingEngine:
                 "dataStatus": data_status,
                 "dataDelaySeconds": round(delay, 1),
                 "dataSource": "TWSE MIS 實際行情＋抽樣 Tick Rule 推估",
-                "marketOpen": True,
+                "marketOpen": market_session_open,
                 "session": "09:00～13:30",
                 "updatedAt": now.isoformat(),
                 "metrics": live_metrics,
@@ -855,8 +1189,12 @@ class MockDayTradingEngine:
             "direction": direction,
             "directionLabel": "偏多" if direction == "bull" else "資料異常",
             "score": score,
-            "environmentScore": 78 if data_status == "normal" else 0,
-            "environmentLabel": "適合交易" if data_status == "normal" else "停止新訊號",
+            "environmentScore": 78 if data_status == "normal" and market_session_open else 0,
+            "environmentLabel": (
+                "今日已收盤" if not market_session_open
+                else "適合交易" if data_status == "normal"
+                else "停止新訊號"
+            ),
             "preferredDirection": "做多",
             "shortRestriction": "只允許高信心弱勢股",
             "risk": "中",
@@ -865,14 +1203,14 @@ class MockDayTradingEngine:
             "suitableStrategies": ["突破買進", "回踩買進", "弱勢股跌破放空"],
             "forbiddenStrategies": ["無量追價", "急跌追空"],
             "reasons": ["指數站上 VWAP", "上漲家數高於下跌家數", "大單買盤增加", "5 分 K 均線偏多"],
-            "dataStatus": data_status,
+            "dataStatus": "closed" if not market_session_open else data_status,
             "dataDelaySeconds": delay,
             "dataSource": (
                 "TWSE MIS 個股報價＋Mock 大盤策略"
                 if has_official_quotes
                 else "Mock Streaming Data"
             ),
-            "marketOpen": True,
+            "marketOpen": market_session_open,
             "session": "09:00～13:30",
             "updatedAt": now.isoformat(),
             "metrics": {
@@ -909,6 +1247,7 @@ class MockDayTradingEngine:
             self._tick += 1
             tick = self._tick
             scenario = self._scenario
+            stock_universe = tuple(self._stock_universe)
         now = now or self._now()
         wave = math.sin(tick / 4)
         templates = [
@@ -1009,22 +1348,22 @@ class MockDayTradingEngine:
                 "warnings": ["展示模式價格", "須確認券源與放空限制"],
             },
         ]
-        templates = [
-            item for item in templates
-            if is_target_theme_symbol(str(item["symbol"]))
-        ]
-        existing_symbols = {str(item["symbol"]) for item in templates}
-        templates.extend(
-            _theme_seed_signal(stock, wave)
-            for stock in THEME_STOCKS
-            if stock.symbol not in existing_symbols
-        )
-        for item in templates:
-            item["themes"] = list(themes_for_symbol(str(item["symbol"])))
-        if scenario == "long_signal":
+        template_by_symbol = {
+            str(item["symbol"]): item
+            for item in templates
+        }
+        templates = []
+        for stock in stock_universe:
+            item = dict(template_by_symbol.get(stock.symbol) or _stock_seed_signal(stock, wave))
+            item["stockName"] = stock.name
+            item["market"] = stock.market
+            item["themes"] = list(stock.themes)
+            item["momentumUniverseMember"] = True
+            templates.append(item)
+        if scenario == "long_signal" and templates:
             templates[0]["action"] = "突破買進"
             templates[0]["confidenceScore"] = 92
-        if scenario == "short_signal":
+        if scenario == "short_signal" and len(templates) > 1:
             templates[1]["action"] = "反彈放空"
             templates[1]["confidenceScore"] = 91
         if scenario in {"data_delay", "disconnect"}:
@@ -1054,8 +1393,30 @@ class MockDayTradingEngine:
         return self.apply_official_quotes(templates)
 
     def quote_for(self, symbol: str) -> float | None:
-        signal = next((item for item in self.signals() if item["symbol"] == symbol), None)
-        return None if signal is None else float(signal["price"])
+        with self._lock:
+            quote = self._official_quotes.get(symbol)
+        return None if quote is None else float(quote.price)
+
+    def quote_history_for(self, symbol: str, limit: int = 240) -> list[dict[str, object]]:
+        """Return today's compact intraday price series for lightweight charts."""
+        bounded_limit = max(1, min(limit, self._LIVE_HISTORY_LIMIT))
+        today = self._now().astimezone(TAIPEI).date()
+        with self._lock:
+            history = list(self._quote_history.get(symbol, []))
+        points: list[dict[str, object]] = []
+        for quote in history:
+            try:
+                timestamp = datetime.fromisoformat(quote.quote_timestamp)
+            except (TypeError, ValueError):
+                continue
+            if timestamp.astimezone(TAIPEI).date() != today:
+                continue
+            points.append({
+                "timestamp": quote.quote_timestamp,
+                "price": float(quote.price),
+                "isRealtime": bool(quote.is_realtime),
+            })
+        return points[-bounded_limit:]
 
     def position_risk_for(self, symbol: str) -> dict[str, str] | None:
         """Return a long-position exit when completed 5-minute bars turn bearish."""

@@ -102,10 +102,10 @@ def evaluate_market_regime(
     if immediate or len(crash) >= parameters["regime.crash_minimum_conditions"]:
         provisional = "CRASH"
         reasons = (["單日市場急跌，立即切換防守模式"] if immediate else []) + crash
-    elif previous_regime == "CRASH" and len(recovery) >= parameters["regime.recovery_minimum_conditions"]:
-        provisional, reasons = "RECOVERY", recovery
     elif len(breakout) >= parameters["regime.breakout_minimum_conditions"]:
         provisional, reasons = "BREAKOUT", breakout
+    elif len(recovery) >= parameters["regime.recovery_minimum_conditions"]:
+        provisional, reasons = "RECOVERY", recovery
     elif len(range_reasons) >= parameters["regime.range_minimum_conditions"]:
         provisional, reasons = "RANGE", range_reasons
     else:

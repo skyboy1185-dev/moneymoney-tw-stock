@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { backendJson, BackendUnavailableError } from "@/services/backend-client";
-import { buildMarketSnapshot } from "@/services/market-snapshot-service";
+import { loadMarketSnapshot } from "@/services/scanner-worker-client";
 import { getUserId } from "@/lib/portfolio-api";
 
 export const runtime = "nodejs";
@@ -15,7 +15,7 @@ export async function GET(request: NextRequest) {
   const userId = getUserId(request);
   if (!userId) return NextResponse.json({ error: "缺少有效的使用者識別。" }, { status: 401 });
   try {
-    const snapshot = await buildMarketSnapshot(true);
+    const snapshot = await loadMarketSnapshot(true);
     if (snapshot.featured.length) {
       await backendJson("/ai-stock-monitor/sync", {
         method: "POST",

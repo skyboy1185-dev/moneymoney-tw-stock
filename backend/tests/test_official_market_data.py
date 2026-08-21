@@ -1,11 +1,150 @@
-from datetime import datetime, timedelta
+import asyncio
+from datetime import UTC, datetime, timedelta
+
+import httpx
 
 from app.services.day_trading import MockDayTradingEngine
+from app.services import official_market_data
 from app.services.official_market_data import (
     OfficialStockQuote,
     StockQuoteRequest,
+    TwseMisMarketDataProvider,
     parse_mis_quote,
 )
+
+
+def test_force_refresh_retains_verified_quote_when_twse_mis_temporarily_fails(
+    monkeypatch,
+) -> None:
+    provider = TwseMisMarketDataProvider()
+    quote = OfficialStockQuote(
+        symbol="2330",
+        name="TSMC",
+        price=1000,
+        previous_close=995,
+        open=996,
+        high=1002,
+        low=994,
+        volume=10_000_000,
+        change=5,
+        change_percent=0.5,
+        quote_timestamp="2026-08-11T10:20:00+08:00",
+        source="TWSE MIS",
+        is_realtime=True,
+    )
+    provider._cache[quote.symbol] = (quote, datetime.now(UTC) + timedelta(seconds=5))
+
+    class FailingClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def get(self, *args, **kwargs):
+            request = httpx.Request("GET", "https://mis.twse.com.tw")
+            raise httpx.ConnectError("temporary outage", request=request)
+
+    monkeypatch.setattr(
+        official_market_data.httpx,
+        "AsyncClient",
+        lambda **kwargs: FailingClient(),
+    )
+
+    result = asyncio.run(
+        provider.get_quotes(
+            [StockQuoteRequest("2330", "TSMC", "上市")],
+            force_refresh=True,
+        ),
+    )
+
+    assert result == {"2330": quote}
+
+
+def test_quote_history_for_returns_only_today_and_respects_limit() -> None:
+    engine = MockDayTradingEngine()
+    now = engine._now().astimezone(official_market_data.TAIPEI)
+    yesterday = now - timedelta(days=1)
+    quotes = [
+        OfficialStockQuote(
+            symbol="2330",
+            name="台積電",
+            price=price,
+            previous_close=995,
+            open=996,
+            high=max(996, price),
+            low=min(996, price),
+            volume=10_000_000,
+            change=price - 995,
+            change_percent=(price - 995) / 995 * 100,
+            quote_timestamp=timestamp.isoformat(),
+            source="TWSE MIS",
+            is_realtime=True,
+        )
+        for price, timestamp in (
+            (990, yesterday),
+            (1000, now - timedelta(minutes=1)),
+            (1005, now),
+        )
+    ]
+    for quote in quotes:
+        engine.update_official_quotes({quote.symbol: quote})
+
+    assert engine.quote_history_for("2330", limit=1) == [{
+        "timestamp": quotes[-1].quote_timestamp,
+        "price": 1005.0,
+        "isRealtime": True,
+    }]
+
+
+def test_twse_mis_requests_large_pools_in_batches_and_retries_invalid_json(
+    monkeypatch,
+) -> None:
+    provider = TwseMisMarketDataProvider()
+    calls: list[str] = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, invalid: bool = False) -> None:
+            self.invalid = invalid
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            if self.invalid:
+                raise ValueError("truncated response")
+            return {"msgArray": []}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def get(self, *args, **kwargs):
+            calls.append(kwargs["params"]["ex_ch"])
+            return FakeResponse(invalid=len(calls) == 1)
+
+    monkeypatch.setattr(
+        official_market_data.httpx,
+        "AsyncClient",
+        lambda **kwargs: FakeClient(),
+    )
+    stocks = [
+        StockQuoteRequest(str(1000 + index), f"Stock {index}", "上市")
+        for index in range(36)
+    ]
+
+    result = asyncio.run(provider.get_quotes(stocks, force_refresh=True))
+
+    assert result == {}
+    assert len(calls) == 3
+    assert len(calls[0].split("|")) == 35
+    assert calls[1] == calls[0]
+    assert len(calls[2].split("|")) == 1
 
 
 def test_parse_twse_mis_quote_uses_latest_trade_and_converts_lots_to_shares() -> None:
@@ -181,6 +320,80 @@ def test_day_trading_signal_becomes_official_after_real_sample_warmup() -> None:
     assert signal["status"] == "confirmed"
     assert signal["action"] == "5 分 K 突破買進"
     assert "展示" not in signal["dataNotice"]
+
+
+def test_bearish_five_minute_structure_confirms_short_entry_signal() -> None:
+    engine = MockDayTradingEngine()
+    start = datetime.fromisoformat("2026-07-27T09:05:00+08:00")
+    offsets = [0, 4, 5, 9, 10, 14, 15, 19, 20, 24, 25, 26]
+    for index, minutes in enumerate(offsets):
+        quote_time = start + timedelta(minutes=minutes)
+        price = 260 - index * .7
+        engine.update_official_quotes({
+            "2317": OfficialStockQuote(
+                symbol="2317",
+                name="鴻海",
+                price=price,
+                previous_close=261,
+                open=260.5,
+                high=260.5,
+                low=price,
+                volume=10_000_000 + index * 100_000,
+                change=price - 261,
+                change_percent=(price - 261) / 261 * 100,
+                quote_timestamp=quote_time.isoformat(),
+                source="TWSE MIS",
+                is_realtime=True,
+                best_bid=price,
+                best_ask=price + .5,
+            ),
+        })
+
+    signal = next(item for item in engine.signals(start + timedelta(minutes=27)) if item["symbol"] == "2317")
+
+    assert signal["direction"] == "short"
+    assert signal["status"] == "confirmed"
+    assert signal["action"] == "5 分 K 跌破放空"
+    assert signal["fiveMinuteSetup"] == "空方轉弱"
+
+
+def test_day_trading_quote_warmup_survives_a_process_restart() -> None:
+    engine = MockDayTradingEngine()
+    start = datetime.fromisoformat("2026-07-27T09:05:00+08:00")
+    for index in range(12):
+        quote_time = start + timedelta(minutes=index)
+        price = 250 + index * .5
+        engine.update_official_quotes({
+            "2317": OfficialStockQuote(
+                symbol="2317",
+                name="鴻海",
+                price=price,
+                previous_close=249,
+                open=249.5,
+                high=price,
+                low=249,
+                volume=10_000_000 + index * 100_000,
+                change=price - 249,
+                change_percent=(price - 249) / 249 * 100,
+                quote_timestamp=quote_time.isoformat(),
+                source="TWSE MIS",
+                is_realtime=True,
+                best_bid=price - .5,
+                best_ask=price,
+            ),
+        })
+
+    snapshot = engine.export_official_quote_history(start + timedelta(minutes=12))
+    restored = MockDayTradingEngine()
+    restored_count = restored.restore_official_quote_history(
+        snapshot,
+        start + timedelta(minutes=12),
+    )
+
+    assert restored_count == 12
+    assert restored.sample_count == 12
+    assert restored.quote_for("2317") is not None
+    assert restored.quote_for("2317").price == 255.5
 
 
 def test_day_trading_long_signal_blocks_chasing_after_seven_percent_gain() -> None:

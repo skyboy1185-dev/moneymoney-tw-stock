@@ -1,8 +1,8 @@
 import type { MarketContext, RankingRow } from "@/lib/market-types";
 import { allRobots } from "@/robots";
-import { thematicStockCatalog } from "@/services/stock-service";
+import { getAIStockUniverse } from "@/services/ai-stock-universe-service";
 import { getOfficialQuotes } from "@/services/market-data/official-quote-provider";
-import { buildOfficialStockPayload } from "@/services/market-data/official-history-provider";
+import { buildOfficialRecentStockPayload } from "@/services/market-data/official-history-provider";
 import { calculateRSI } from "@/lib/technical";
 import { assessKeyPrice } from "@/lib/key-price";
 
@@ -20,13 +20,14 @@ export class AutoScreeningEngine {
   async scan(market: MarketContext, activeStrategyIds: string[]): Promise<RankingRow[]> {
     const active = allRobots.filter((robot) => activeStrategyIds.includes(robot.id));
     const now = new Date().toISOString();
-    const officialQuotes = await getOfficialQuotes(thematicStockCatalog);
-    const candidates: (RankingRow | null)[] = await Promise.all(thematicStockCatalog.map(async (meta): Promise<RankingRow | null> => {
+    const stockUniverse = await getAIStockUniverse();
+    const officialQuotes = await getOfficialQuotes(stockUniverse);
+    const candidates: (RankingRow | null)[] = await Promise.all(stockUniverse.map(async (meta): Promise<RankingRow | null> => {
       const officialQuote = officialQuotes.get(meta.symbol) ?? null;
       if (!officialQuote || !active.length) return null;
       let stock;
       try {
-        stock = await buildOfficialStockPayload(meta, officialQuote);
+        stock = await buildOfficialRecentStockPayload(meta, officialQuote);
       } catch {
         return null;
       }

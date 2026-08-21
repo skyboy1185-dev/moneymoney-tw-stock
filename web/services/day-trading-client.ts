@@ -10,6 +10,7 @@ async function request<T>(path: string, userId: string, init?: RequestInit): Pro
       "x-user-id": userId,
       ...(init?.headers ?? {}),
     },
+    signal: init?.signal ?? AbortSignal.timeout(12_000),
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.detail ?? payload.error ?? "操作失敗");
@@ -19,6 +20,7 @@ async function request<T>(path: string, userId: string, init?: RequestInit): Pro
 export const dayTradingClient = {
   regime: (userId: string) => request<unknown>("market-regime", userId),
   signals: (userId: string) => request<{ items: unknown[]; candidates: unknown[]; summary: string; maximum: number }>("signals", userId),
+  todaySignals: (userId: string) => request<{ tradingDate: string; items: unknown[]; total: number }>("signals/today", userId),
   rankings: (userId: string) => request<{ items: unknown[] }>("rankings", userId),
   positions: (userId: string) => request<{ items: unknown[] }>("positions", userId),
   alerts: (userId: string) => request<{ items: unknown[]; unread: number }>("alerts", userId),

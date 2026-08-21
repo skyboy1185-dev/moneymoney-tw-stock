@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+import logging
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -9,10 +10,12 @@ from sqlalchemy.exc import IntegrityError
 from ..config import get_settings
 from ..database import SessionLocal
 from ..models import AIStockLineDeliveryLog, AIStockLineGroup
+from .gmail_messaging import gmail_notification_dispatcher
 from .line_messaging import LineMessagingClient, LineNotificationEvent
 
 
 AI_STOCK_OFFICIAL_ACCOUNT_NAME = "AI選股機器人"
+logger = logging.getLogger(__name__)
 
 
 class AIStockLineNotificationDispatcher:
@@ -39,7 +42,7 @@ class AIStockLineNotificationDispatcher:
         return group_ids
 
     async def dispatch_many(self, events: list[LineNotificationEvent]) -> int:
-        if not events or not get_settings().ai_stock_line_notifications_enabled:
+        if not events:
             return 0
         sent = 0
         async with self._lock:
@@ -48,6 +51,20 @@ class AIStockLineNotificationDispatcher:
         return sent
 
     async def _dispatch(self, event: LineNotificationEvent) -> int:
+        try:
+            await gmail_notification_dispatcher.dispatch(
+                event_type=event.event_type,
+                action=event.action,
+                message=event.message,
+                dedupe_key=event.dedupe_key,
+                signal_id=event.signal_id,
+                symbol=event.symbol,
+                channel_name=AI_STOCK_OFFICIAL_ACCOUNT_NAME,
+            )
+        except Exception:
+            logger.exception("AI stock Gmail notification failed for %s", event.dedupe_key)
+        if not get_settings().ai_stock_line_notifications_enabled:
+            return 0
         successful = 0
         for group_id in self._active_group_ids():
             with SessionLocal() as db:

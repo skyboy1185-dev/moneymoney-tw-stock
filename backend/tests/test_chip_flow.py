@@ -1,6 +1,7 @@
 import asyncio
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+import math
 from types import SimpleNamespace
 from typing import cast
 from zoneinfo import ZoneInfo
@@ -18,13 +19,22 @@ from app.services.chip_flow_provider import (
 )
 from app.services.chip_flow_service import ChipFlowService
 from app.services.chip_flow_alerts import (
+    FAST_POPULAR_LIMIT,
+    MAX_CONCURRENT_STOCK_SCANS,
     ChipFlowAlertRules,
+    ElectronicChipFlowAlertMonitor,
+    analyze_large_order_momentum,
+    analyze_large_order_short_momentum,
+    build_market_order_pulse,
     enrich_day_trading_large_order_confirmation,
     evaluate_large_order_surge,
+    evaluate_large_order_short_surge,
 )
 from app.services.chip_flow_accumulator import ChipFlowAccumulator
 from app.services.chip_flow_repository import ChipFlowRepository
 from app.services.chip_flow_types import (
+    ChipFlowSnapshotData,
+    ChipFlowTotals,
     NormalizedTradeTick,
     OrderSize,
     TradeDirection,
@@ -38,6 +48,21 @@ from app.services.theme_stock_universe import ThemeStock
 
 TAIPEI = ZoneInfo("Asia/Taipei")
 DAY = date(2026, 7, 29)
+
+
+def test_snapshot_exposes_small_order_buy_and_sell_totals() -> None:
+    snapshot_time = datetime(2026, 7, 29, 10, 0, tzinfo=TAIPEI)
+    snapshot = ChipFlowSnapshotData(
+        stock_id="2330",
+        trade_date=DAY,
+        snapshot_time=snapshot_time,
+        totals=ChipFlowTotals(small_buy_shares=8_000, small_sell_shares=3_000),
+        updated_at=snapshot_time,
+    )
+
+    assert snapshot.small_buy_shares == 8_000
+    assert snapshot.small_sell_shares == 3_000
+    assert snapshot.small_net_shares == 5_000
 ALERT_STOCK = ThemeStock("2330", "台積電", "上市", "半導體", ("AI",))
 
 
@@ -46,13 +71,25 @@ def alert_snapshot(
     *,
     buy_shares: int,
     sell_shares: int,
+    small_net_shares: int = 0,
+    small_buy_shares: int | None = None,
+    small_sell_shares: int | None = None,
 ) -> SimpleNamespace:
     snapshot_time = datetime(2026, 7, 29, 10, minute, tzinfo=TAIPEI)
+    inferred_small_buy_shares = max(0, small_net_shares)
+    inferred_small_sell_shares = max(0, -small_net_shares)
     return SimpleNamespace(
         snapshot_time=snapshot_time,
         large_buy_shares=buy_shares,
         large_sell_shares=sell_shares,
         large_net_shares=buy_shares - sell_shares,
+        small_buy_shares=(
+            inferred_small_buy_shares if small_buy_shares is None else small_buy_shares
+        ),
+        small_sell_shares=(
+            inferred_small_sell_shares if small_sell_shares is None else small_sell_shares
+        ),
+        small_net_shares=small_net_shares,
         updated_at=snapshot_time,
     )
 
@@ -194,8 +231,172 @@ def test_large_order_surge_requires_recent_continuous_net_buying() -> None:
 
     assert result is not None
     assert result["symbol"] == "2330"
+    assert result["market"] == "上市"
     assert result["recentNetBuyLots"] == 25
     assert result["positiveSteps"] == 3
+
+
+def test_large_order_short_surge_requires_persistent_net_selling() -> None:
+    result = evaluate_large_order_short_surge(
+        ALERT_STOCK,
+        [
+            alert_snapshot(0, buy_shares=10_000, sell_shares=20_000),
+            alert_snapshot(2, buy_shares=12_000, sell_shares=30_000),
+            alert_snapshot(4, buy_shares=14_000, sell_shares=42_000),
+            alert_snapshot(5, buy_shares=15_000, sell_shares=50_000),
+        ],
+        ChipFlowAlertRules(),
+        as_of=datetime(2026, 7, 29, 10, 6, tzinfo=TAIPEI),
+    )
+
+    assert result is not None
+    assert result["recentNetSellLots"] == 25
+    assert result["negativeSteps"] == 3
+
+
+def test_large_order_threshold_adapts_to_gross_flow_and_exposes_freshness() -> None:
+    result = evaluate_large_order_surge(
+        ALERT_STOCK,
+        [
+            alert_snapshot(0, buy_shares=20_000, sell_shares=10_000),
+            alert_snapshot(2, buy_shares=100_000, sell_shares=30_000),
+            alert_snapshot(5, buy_shares=220_000, sell_shares=60_000),
+        ],
+        ChipFlowAlertRules(),
+    )
+
+    assert result is not None
+    assert result["recentGrossLargeLots"] == 250
+    assert result["effectiveNetThresholdLots"] == 30
+    assert result["lastLargeOrderAt"] == "2026-07-29T10:05:00+08:00"
+
+
+def test_large_order_signal_rejects_balanced_two_way_block_trading() -> None:
+    result = evaluate_large_order_surge(
+        ALERT_STOCK,
+        [
+            alert_snapshot(0, buy_shares=10_000, sell_shares=5_000),
+            alert_snapshot(2, buy_shares=30_000, sell_shares=15_000),
+            alert_snapshot(5, buy_shares=70_000, sell_shares=45_000),
+        ],
+        ChipFlowAlertRules(),
+    )
+
+    assert result is None
+
+
+def test_short_momentum_exposes_independent_bar_history() -> None:
+    result = analyze_large_order_short_momentum(
+        ALERT_STOCK,
+        [
+            alert_snapshot(0, buy_shares=10_000, sell_shares=20_000, small_net_shares=-1_000),
+            alert_snapshot(2, buy_shares=12_000, sell_shares=30_000, small_net_shares=-5_000),
+            alert_snapshot(4, buy_shares=14_000, sell_shares=42_000, small_net_shares=-10_000),
+            alert_snapshot(5, buy_shares=15_000, sell_shares=50_000, small_net_shares=-14_000),
+        ],
+        ChipFlowAlertRules(),
+        as_of=datetime(2026, 7, 29, 10, 6, tzinfo=TAIPEI),
+    )
+
+    assert result is not None
+    assert result["direction"] == "short"
+    assert result["currentQualifies"] is True
+    assert result["recentNetSellLots"] == 25
+    assert result["simultaneousIncrease"] is True
+    assert result["history"]
+
+
+def test_large_and_small_order_increase_exposes_combined_force() -> None:
+    result = analyze_large_order_momentum(
+        ALERT_STOCK,
+        [
+            alert_snapshot(0, buy_shares=20_000, sell_shares=10_000, small_net_shares=1_000),
+            alert_snapshot(2, buy_shares=30_000, sell_shares=12_000, small_net_shares=5_000),
+            alert_snapshot(4, buy_shares=42_000, sell_shares=14_000, small_net_shares=10_000),
+            alert_snapshot(5, buy_shares=50_000, sell_shares=15_000, small_net_shares=14_000),
+        ],
+        ChipFlowAlertRules(),
+        as_of=datetime(2026, 7, 29, 10, 6, tzinfo=TAIPEI),
+    )
+
+    assert result is not None
+    assert result["simultaneousIncrease"] is True
+    assert result["recentNetBuyLots"] == 25
+    assert result["recentSmallNetBuyLots"] == 13
+    assert result["combinedNetBuyLots"] == 38
+
+
+def test_market_order_pulse_classifies_strengthening_bull_flow() -> None:
+    rows = [
+        alert_snapshot(0, buy_shares=20_000, sell_shares=10_000, small_net_shares=0),
+        alert_snapshot(2, buy_shares=30_000, sell_shares=12_000, small_net_shares=2_000),
+        alert_snapshot(4, buy_shares=42_000, sell_shares=14_000, small_net_shares=5_000),
+        alert_snapshot(5, buy_shares=60_000, sell_shares=15_000, small_net_shares=9_000),
+    ]
+
+    result = build_market_order_pulse(
+        {"2330": rows},
+        ChipFlowAlertRules(),
+        as_of=datetime(2026, 7, 29, 10, 5, 30, tzinfo=TAIPEI),
+    )
+
+    assert result["directionLabel"] == "多方"
+    assert result["trendLabel"] == "多方持續增強"
+    assert result["largeNetLots"] == 35
+    assert result["largeChangeLots"] == 17
+    assert result["coverageCount"] == 1
+
+
+def test_momentum_exposes_large_and_retail_buy_sell_accumulation() -> None:
+    result = analyze_large_order_momentum(
+        ALERT_STOCK,
+        [
+            alert_snapshot(
+                0,
+                buy_shares=20_000,
+                sell_shares=10_000,
+                small_net_shares=3_000,
+                small_buy_shares=8_000,
+                small_sell_shares=5_000,
+            ),
+            alert_snapshot(
+                2,
+                buy_shares=30_000,
+                sell_shares=12_000,
+                small_net_shares=7_000,
+                small_buy_shares=14_000,
+                small_sell_shares=7_000,
+            ),
+            alert_snapshot(
+                4,
+                buy_shares=42_000,
+                sell_shares=14_000,
+                small_net_shares=12_000,
+                small_buy_shares=22_000,
+                small_sell_shares=10_000,
+            ),
+            alert_snapshot(
+                5,
+                buy_shares=50_000,
+                sell_shares=15_000,
+                small_net_shares=15_000,
+                small_buy_shares=28_000,
+                small_sell_shares=13_000,
+            ),
+        ],
+        ChipFlowAlertRules(),
+        as_of=datetime(2026, 7, 29, 10, 6, tzinfo=TAIPEI),
+    )
+
+    assert result is not None
+    assert result["recentBuyLots"] == 30
+    assert result["recentSellLots"] == 5
+    assert result["recentSmallBuyLots"] == 20
+    assert result["recentSmallSellLots"] == 8
+    assert result["dayLargeBuyLots"] == 50
+    assert result["dayLargeSellLots"] == 15
+    assert result["daySmallBuyLots"] == 28
+    assert result["daySmallSellLots"] == 13
 
 
 def test_day_trading_candidate_requires_fresh_continuous_large_order_buying() -> None:
@@ -222,6 +423,57 @@ def test_day_trading_candidate_requires_fresh_continuous_large_order_buying() ->
     assert candidates[0]["largeOrderRecentNetLots"] == 25
     assert candidates[0]["largeOrderPositiveSteps"] == 3
     assert "近 5 分鐘大單淨買超 +25 張" in candidates[0]["reasons"][0]
+
+
+def test_dynamic_momentum_stock_can_confirm_for_day_trading() -> None:
+    rows = [
+        alert_snapshot(0, buy_shares=20_000, sell_shares=10_000),
+        alert_snapshot(2, buy_shares=30_000, sell_shares=12_000),
+        alert_snapshot(4, buy_shares=42_000, sell_shares=14_000),
+        alert_snapshot(5, buy_shares=50_000, sell_shares=15_000),
+    ]
+
+    class RepositoryStub:
+        def list_for_day(self, stock_id: str, trade_date: date) -> list[SimpleNamespace]:
+            return rows if stock_id == "3481" and trade_date == DAY else []
+
+    candidates = enrich_day_trading_large_order_confirmation(
+        [{
+            "symbol": "3481", "stockName": "群創", "market": "上市",
+            "themes": ["熱門股"], "reasons": [], "warnings": [],
+        }],
+        cast(ChipFlowRepository, RepositoryStub()),
+        ChipFlowAlertRules(),
+        as_of=datetime(2026, 7, 29, 10, 6, tzinfo=TAIPEI),
+    )
+
+    assert candidates[0]["largeOrderDataAvailable"] is True
+    assert candidates[0]["largeOrderContinuousBuy"] is True
+
+
+def test_short_candidate_requires_fresh_continuous_large_order_selling() -> None:
+    rows = [
+        alert_snapshot(0, buy_shares=10_000, sell_shares=20_000),
+        alert_snapshot(2, buy_shares=12_000, sell_shares=30_000),
+        alert_snapshot(4, buy_shares=14_000, sell_shares=42_000),
+        alert_snapshot(5, buy_shares=15_000, sell_shares=50_000),
+    ]
+
+    class RepositoryStub:
+        def list_for_day(self, stock_id: str, trade_date: date) -> list[SimpleNamespace]:
+            return rows if stock_id == "2330" and trade_date == DAY else []
+
+    candidates = enrich_day_trading_large_order_confirmation(
+        [{"symbol": "2330", "direction": "short", "reasons": [], "warnings": []}],
+        cast(ChipFlowRepository, RepositoryStub()),
+        ChipFlowAlertRules(),
+        as_of=datetime(2026, 7, 29, 10, 6, tzinfo=TAIPEI),
+    )
+
+    assert candidates[0]["largeOrderContinuousSell"] is True
+    assert candidates[0]["largeOrderContinuousBuy"] is False
+    assert candidates[0]["largeOrderRecentNetLots"] == -25
+    assert candidates[0]["largeOrderStatus"] == "大戶持續加空"
 
 
 def test_large_order_surge_rejects_sell_dominated_window() -> None:
@@ -251,6 +503,349 @@ def test_large_order_surge_rejects_stale_intraday_snapshot() -> None:
     )
 
     assert result is None
+
+
+def test_large_order_momentum_records_occurrences_and_reinforces_strength() -> None:
+    result = analyze_large_order_momentum(
+        ALERT_STOCK,
+        [
+            alert_snapshot(0, buy_shares=20_000, sell_shares=10_000),
+            alert_snapshot(2, buy_shares=30_000, sell_shares=12_000),
+            alert_snapshot(4, buy_shares=42_000, sell_shares=14_000),
+            alert_snapshot(5, buy_shares=60_000, sell_shares=16_000),
+            alert_snapshot(6, buy_shares=80_000, sell_shares=17_000),
+            alert_snapshot(7, buy_shares=105_000, sell_shares=18_000),
+        ],
+        ChipFlowAlertRules(),
+        as_of=datetime(2026, 7, 29, 10, 8, tzinfo=TAIPEI),
+    )
+
+    assert result is not None
+    assert result["occurrenceCount"] == 4
+    assert result["trend"] == "strengthening"
+    assert result["reinforced"] is True
+    assert result["trendStreak"] >= 2
+    assert len(cast(list[object], result["history"])) == 4
+
+
+def test_large_order_momentum_warns_when_started_flow_suddenly_fades() -> None:
+    result = analyze_large_order_momentum(
+        ALERT_STOCK,
+        [
+            alert_snapshot(0, buy_shares=20_000, sell_shares=10_000),
+            alert_snapshot(2, buy_shares=30_000, sell_shares=12_000),
+            alert_snapshot(4, buy_shares=42_000, sell_shares=14_000),
+            alert_snapshot(5, buy_shares=50_000, sell_shares=15_000),
+            alert_snapshot(6, buy_shares=51_000, sell_shares=35_000),
+        ],
+        ChipFlowAlertRules(),
+        as_of=datetime(2026, 7, 29, 10, 7, tzinfo=TAIPEI),
+    )
+
+    assert result is not None
+    assert result["occurrenceCount"] == 2
+    assert result["isWarning"] is True
+    assert result["trend"] == "fading"
+    assert result["alertLevel"] == "critical"
+    assert result["momentumChangeLots"] == -19
+
+
+def test_pinned_large_order_momentum_keeps_tracking_after_alert_lifecycle() -> None:
+    snapshots = [
+        alert_snapshot(0, buy_shares=20_000, sell_shares=10_000),
+        alert_snapshot(2, buy_shares=30_000, sell_shares=12_000),
+        alert_snapshot(4, buy_shares=42_000, sell_shares=14_000),
+        alert_snapshot(5, buy_shares=50_000, sell_shares=15_000),
+        alert_snapshot(21, buy_shares=51_000, sell_shares=20_000),
+        alert_snapshot(23, buy_shares=51_500, sell_shares=25_000),
+        alert_snapshot(25, buy_shares=52_000, sell_shares=30_000),
+    ]
+
+    expired = analyze_large_order_momentum(
+        ALERT_STOCK,
+        snapshots,
+        ChipFlowAlertRules(),
+        as_of=datetime(2026, 7, 29, 10, 26, tzinfo=TAIPEI),
+    )
+    tracked = analyze_large_order_momentum(
+        ALERT_STOCK,
+        snapshots,
+        ChipFlowAlertRules(),
+        as_of=datetime(2026, 7, 29, 10, 26, tzinfo=TAIPEI),
+        keep_tracking=True,
+    )
+
+    assert expired is None
+    assert tracked is not None
+    assert tracked["currentQualifies"] is False
+    assert tracked["updatedAt"] == datetime(2026, 7, 29, 10, 25, tzinfo=TAIPEI).isoformat()
+
+
+def test_pinned_symbols_are_isolated_by_browser_client() -> None:
+    monitor = ElectronicChipFlowAlertMonitor()
+    now = datetime(2026, 7, 29, 10, 0, tzinfo=TAIPEI)
+
+    monitor.set_pinned_symbols("browser-one", ["2330"], now)
+    monitor.set_pinned_symbols("browser-two", ["2317"], now)
+
+    assert set(monitor._client_pinned_stocks("browser-one")) == {"2330"}
+    assert set(monitor._client_pinned_stocks("browser-two")) == {"2317"}
+    assert set(monitor._active_pinned_stocks(now)) == {"2330", "2317"}
+
+
+def test_disposed_stocks_are_excluded_from_momentum_scans_and_pins() -> None:
+    class RestrictionStub:
+        state = {"status": "healthy", "lastRefreshAt": "2026-07-29T09:00:00+08:00"}
+
+        def is_disposed(self, symbol: object) -> bool:
+            return str(symbol) == "2330"
+
+        def market_restrictions_available(self, market: object) -> bool:
+            return True
+
+    monitor = ElectronicChipFlowAlertMonitor(
+        restriction_service=RestrictionStub(),  # type: ignore[arg-type]
+    )
+    allowed = ThemeStock("2317", "鴻海", "上市", "電子零組件", ("AI",))
+    monitor._stocks = (ALERT_STOCK, allowed)
+    now = datetime(2026, 7, 29, 10, 0, tzinfo=TAIPEI)
+
+    monitor.set_pinned_symbols("browser-one", ["2330", "2317"], now)
+    payload = monitor.payload(now=now, client_id="browser-one")
+
+    assert [stock.symbol for stock in monitor.stock_universe_snapshot()] == ["2317"]
+    assert set(monitor._client_pinned_stocks("browser-one")) == {"2317"}
+    assert payload["candidateCount"] == 1
+    assert payload["disposedExcludedCount"] == 1
+    assert payload["disposedExcludedSymbols"] == ["2330"]
+
+
+def test_momentum_monitor_wakes_at_opening_bell() -> None:
+    monitor = ElectronicChipFlowAlertMonitor()
+
+    assert monitor._idle_sleep_seconds(
+        datetime(2026, 7, 29, 8, 59, 45, tzinfo=TAIPEI),
+    ) == 15
+    assert monitor._idle_sleep_seconds(
+        datetime(2026, 7, 29, 8, 30, tzinfo=TAIPEI),
+    ) == 30
+    assert monitor._is_market_open(
+        datetime(2026, 7, 29, 9, 0, tzinfo=TAIPEI),
+    )
+
+
+def test_inactive_browser_pins_expire_after_one_day() -> None:
+    monitor = ElectronicChipFlowAlertMonitor()
+    now = datetime(2026, 7, 29, 10, 0, tzinfo=TAIPEI)
+    monitor.set_pinned_symbols("browser-one", ["2330"], now)
+
+    active = monitor._active_pinned_stocks(now + timedelta(hours=23))
+    expired = monitor._active_pinned_stocks(now + timedelta(hours=25))
+
+    assert set(active) == {"2330"}
+    assert expired == {}
+
+
+def test_expanded_tracking_is_prioritized_and_expires_quickly() -> None:
+    monitor = ElectronicChipFlowAlertMonitor()
+    stocks = tuple(
+        ThemeStock(str(4000 + index), f"測試{index}", "上市", "電子零組件", ("熱門股",))
+        for index in range(30)
+    )
+    monitor._stocks = stocks
+    monitor._fast_symbols = tuple(stock.symbol for stock in stocks[:10])
+    now = datetime.now(TAIPEI)
+    tracked_symbols = [stock.symbol for stock in stocks[10:22]]
+
+    monitor.set_tracking_symbols("browser-one", tracked_symbols, now)
+    batch = {stock.symbol for stock in monitor._next_scan_batch()}
+
+    assert set(tracked_symbols) <= batch
+    assert set(monitor._active_tracking_stocks(now + timedelta(seconds=14))) == set(tracked_symbols)
+    assert monitor._active_tracking_stocks(now + timedelta(seconds=16)) == {}
+
+
+def test_expanded_tracking_is_isolated_by_browser_client() -> None:
+    monitor = ElectronicChipFlowAlertMonitor()
+    now = datetime(2026, 7, 29, 10, 0, tzinfo=TAIPEI)
+
+    monitor.set_tracking_symbols("browser-one", ["2330"], now)
+    monitor.set_tracking_symbols("browser-two", ["2317"], now)
+
+    assert set(monitor._client_tracking_stocks("browser-one")) == {"2330"}
+    assert set(monitor._client_tracking_stocks("browser-two")) == {"2317"}
+    assert set(monitor._active_tracking_stocks(now)) == {"2330", "2317"}
+
+
+def test_layered_scan_batch_prioritizes_hot_fast_and_background_stocks() -> None:
+    monitor = ElectronicChipFlowAlertMonitor()
+    stocks = tuple(
+        ThemeStock(str(4000 + index), f"測試{index}", "上市", "電子零組件", ("熱門股",))
+        for index in range(60)
+    )
+    monitor._stocks = stocks
+    monitor._fast_symbols = tuple(stock.symbol for stock in stocks[:FAST_POPULAR_LIMIT])
+    monitor._hot_symbols = {stocks[55].symbol}
+
+    batch = monitor._next_scan_batch()
+    symbols = {stock.symbol for stock in batch}
+
+    assert stocks[55].symbol in symbols
+    assert len(symbols & set(monitor._fast_symbols)) == 4
+    assert len(symbols - set(monitor._fast_symbols) - monitor._hot_symbols) == 1
+
+
+def test_fast_fifty_complete_one_rotation_in_thirteen_batches() -> None:
+    monitor = ElectronicChipFlowAlertMonitor()
+    stocks = tuple(
+        ThemeStock(str(4000 + index), f"測試{index}", "上市", "電子零組件", ("熱門股",))
+        for index in range(60)
+    )
+    monitor._stocks = stocks
+    monitor._fast_symbols = tuple(stock.symbol for stock in stocks[:FAST_POPULAR_LIMIT])
+
+    scanned = {
+        stock.symbol
+        for _ in range(13)
+        for stock in monitor._next_scan_batch()
+        if stock.symbol in monitor._fast_symbols
+    }
+
+    assert scanned == set(monitor._fast_symbols)
+
+
+def test_three_hundred_stock_background_pool_completes_within_ninety_seconds() -> None:
+    monitor = ElectronicChipFlowAlertMonitor()
+    stocks = tuple(
+        ThemeStock(str(4000 + index), f"測試{index}", "上市", "市場熱門", ("熱門股",))
+        for index in range(300)
+    )
+    monitor._stocks = stocks
+    monitor._fast_symbols = tuple(stock.symbol for stock in stocks[:FAST_POPULAR_LIMIT])
+    background_symbols = {stock.symbol for stock in stocks[FAST_POPULAR_LIMIT:]}
+    batches = math.ceil(90 / monitor.scan_interval_seconds)
+
+    scanned = {
+        stock.symbol
+        for _ in range(batches)
+        for stock in monitor._next_scan_batch()
+        if stock.symbol in background_symbols
+    }
+
+    assert scanned == background_symbols
+
+
+def test_alert_payload_uses_live_memory_snapshots_for_browser_polls() -> None:
+    monitor = ElectronicChipFlowAlertMonitor()
+    monitor._stocks = (ALERT_STOCK,)
+    now = datetime(2026, 7, 29, 10, 0, tzinfo=TAIPEI)
+    first = monitor.payload(now=now, client_id="browser-one")
+    second = monitor.payload(now=now, client_id="browser-two")
+
+    assert first["status"] == "warming"
+    assert second["status"] == "warming"
+
+
+def test_empty_popular_refresh_preserves_last_successful_universe() -> None:
+    popular = tuple(
+        ThemeStock(str(4000 + index), f"熱門{index}", "上市", "市場熱門", ("熱門股",))
+        for index in range(200)
+    )
+
+    class PopularProviderStub:
+        def __init__(self) -> None:
+            self.responses = [popular, ()]
+
+        async def fetch(self) -> tuple[ThemeStock, ...]:
+            return self.responses.pop(0)
+
+    monitor = ElectronicChipFlowAlertMonitor(
+        popular_stock_provider=PopularProviderStub(),  # type: ignore[arg-type]
+    )
+    first_at = datetime(2026, 7, 29, 9, 0, tzinfo=TAIPEI)
+    asyncio.run(monitor._refresh_universe(first_at))
+    first_symbols = {stock.symbol for stock in monitor._stocks}
+
+    asyncio.run(monitor._refresh_universe(first_at + timedelta(minutes=16)))
+
+    assert {stock.symbol for stock in monitor._stocks} == first_symbols
+    assert monitor._universe_status == "degraded"
+    assert "保留上一版" in str(monitor._universe_notice)
+
+
+def test_multiple_browsers_share_one_momentum_payload_computation() -> None:
+    class ServiceStub:
+        provider = SimpleNamespace(
+            capabilities=SimpleNamespace(available=True, source="test-stream"),
+        )
+
+        def __init__(self) -> None:
+            self.snapshot_calls = 0
+
+        def alert_snapshots_snapshot(
+            self,
+            stock_ids: list[str],
+            trade_date: date,
+        ) -> dict[str, list[SimpleNamespace]]:
+            self.snapshot_calls += 1
+            return {symbol: [] for symbol in stock_ids}
+
+    class RestrictionStub:
+        state = {"status": "healthy", "lastRefreshAt": "2026-07-29T09:00:00+08:00"}
+
+        def is_disposed(self, symbol: object) -> bool:
+            return False
+
+        def market_restrictions_available(self, market: object) -> bool:
+            return True
+
+    service = ServiceStub()
+    monitor = ElectronicChipFlowAlertMonitor(
+        service=service,  # type: ignore[arg-type]
+        restriction_service=RestrictionStub(),  # type: ignore[arg-type]
+    )
+    monitor._stocks = (ALERT_STOCK,)
+    now = datetime(2026, 7, 29, 10, 0, 0, tzinfo=TAIPEI)
+
+    first = monitor.payload(now=now, pinned_symbols=(), client_id="browser-one")
+    second = monitor.payload(
+        now=now + timedelta(milliseconds=500),
+        pinned_symbols=(),
+        client_id="browser-two",
+    )
+
+    assert service.snapshot_calls == 1
+    assert first["payloadCacheHit"] is False
+    assert second["payloadCacheHit"] is True
+    assert second["payloadCacheHits"] == 1
+
+
+def test_background_scan_limits_concurrent_stock_jobs() -> None:
+    monitor = ElectronicChipFlowAlertMonitor()
+    stocks = tuple(
+        ThemeStock(str(4000 + index), f"測試{index}", "上市", "市場熱門", ("熱門股",))
+        for index in range(20)
+    )
+    active = 0
+    maximum_active = 0
+
+    async def fake_scan(
+        stock: ThemeStock,
+        trade_date: date,
+        pinned_symbols: set[str],
+    ) -> None:
+        nonlocal active, maximum_active
+        active += 1
+        maximum_active = max(maximum_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+
+    monitor._next_scan_batch = lambda: list(stocks)  # type: ignore[method-assign]
+    monitor._scan_stock = fake_scan  # type: ignore[method-assign]
+
+    asyncio.run(monitor._scan_next(DAY))
+
+    assert maximum_active == MAX_CONCURRENT_STOCK_SCANS
 
 
 def test_unknown_trade_keeps_volume_but_not_buy_sell_totals() -> None:
@@ -362,6 +957,20 @@ class CompleteTestTradeProvider:
         del stock_id
 
 
+class IncrementalTestTradeProvider(CompleteTestTradeProvider):
+    def __init__(self, batches: list[list[NormalizedTradeTick]]):
+        super().__init__([])
+        self.batches = list(batches)
+
+    async def drain_trade_ticks(self, stock_id: str, trade_date: date):
+        if not self.batches:
+            return []
+        return [
+            item for item in self.batches.pop(0)
+            if item.stock_id == stock_id and item.trade_date == trade_date
+        ]
+
+
 def test_service_persists_and_upserts_minute_snapshots_for_reload() -> None:
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
@@ -393,6 +1002,34 @@ def test_service_persists_and_upserts_minute_snapshots_for_reload() -> None:
         reloaded = asyncio.run(ChipFlowService(provider).get_intraday("3138", db, DAY))
         assert len(reloaded["series"]) == 2
         assert reloaded["latest"]["largeNetShares"] == -16_000
+
+
+def test_service_accumulates_incremental_batches_without_retaining_trade_ids() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    provider = IncrementalTestTradeProvider([
+        [tick(
+            "first", price="100", shares=20_000, ask="100",
+            at=datetime(2026, 7, 29, 9, 1, 5, tzinfo=TAIPEI),
+        )],
+        [tick(
+            "second", price="100", shares=10_000, bid="100",
+            at=datetime(2026, 7, 29, 9, 2, 5, tzinfo=TAIPEI),
+        )],
+    ])
+    service = ChipFlowService(provider)
+
+    with Session(engine) as db:
+        asyncio.run(service.get_intraday("3138", db, DAY))
+        result = asyncio.run(service.get_intraday("3138", db, DAY))
+
+    assert len(result["series"]) == 2
+    assert result["latest"]["largeNetShares"] == 10_000
+    assert service._accumulators[("3138", DAY)].seen_trade_ids == set()
 
 
 def test_service_replaces_stale_same_day_snapshots_with_reconstructed_series() -> None:
@@ -583,6 +1220,25 @@ def test_fugle_provider_uses_incremental_offset_and_deduplicates_serial() -> Non
     assert len(third) == 2
     assert observed_offsets == [0, 1, 2]
     assert len({item.id for item in third}) == 2
+
+
+def test_fugle_provider_backs_off_after_rate_limit_without_repeating_requests() -> None:
+    today = datetime.now(TAIPEI).date()
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(429, headers={"Retry-After": "60"}, json={"message": "rate limited"})
+
+    provider = FugleRealtimeTradeProvider(
+        "test-key",
+        include_odd_lot=False,
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert asyncio.run(provider.get_trade_ticks("3138", today)) == []
+    assert asyncio.run(provider.get_trade_ticks("2308", today)) == []
+    assert len(requests) == 1
 
 
 def test_fugle_provider_continues_after_fugle_500_row_api_cap() -> None:

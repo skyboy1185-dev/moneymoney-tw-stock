@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
@@ -15,9 +15,18 @@ from ..services.large_holders import (
     get_large_holder_rankings,
     persist_latest_distribution,
 )
+from ..services.whale_accumulation import get_whale_accumulation, resolve_whale_comparison_context
+from ..services.whale_market_data import fetch_whale_period_market_data
 from ..services.official_market_data import StockQuoteRequest, official_market_data_provider
 
 router = APIRouter(prefix="/large-holders", tags=["large-holders"])
+
+
+def _iso_date(value: str, label: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=f"{label}格式必須是 YYYY-MM-DD") from error
 
 
 def _user_id_optional(x_user_id: str | None = Header(default=None, max_length=80)) -> str | None:
@@ -72,6 +81,88 @@ async def rankings(
     if sync_result is not None:
         payload["syncResult"] = sync_result
     return payload
+
+
+@router.get("/accumulation")
+async def accumulation(
+    startDate: str = Query(min_length=10, max_length=10),
+    endDate: str = Query(min_length=10, max_length=10),
+    rankingType: str = Query(default="composite", pattern=r"^(composite|big400|big1000|lots|value|retail|shareholders)$"),
+    limit: int = Query(default=30, ge=20, le=100),
+    keyword: str = Query(default="", max_length=80),
+    industry: str = Query(default="", max_length=80),
+    minBig400: float = Query(default=-100, ge=-100, le=100),
+    minBig1000: float = Query(default=-100, ge=-100, le=100),
+    minLots: float = Query(default=0, ge=0),
+    minValue: float = Query(default=0, ge=0),
+    maxPriceChange: float = Query(default=1000, ge=-100, le=1000),
+    minScore: float = Query(default=0, ge=0, le=100),
+    db: Session = Depends(get_db),
+) -> dict:
+    requested_start = _iso_date(startDate, "起始日期")
+    requested_end = _iso_date(endDate, "結束日期")
+    try:
+        context_mode, actual_start, actual_end, available_dates = resolve_whale_comparison_context(db, requested_start, requested_end)
+        comparison_dates = [value for value in available_dates if actual_start <= value <= actual_end]
+        if len(comparison_dates) > 16:
+            step = max(1, len(comparison_dates) // 15)
+            comparison_dates = sorted(set([actual_start, *comparison_dates[::step], actual_end]))
+        price_history = (
+            await fetch_whale_period_market_data(comparison_dates)
+            if context_mode == "official_tdcc" else {}
+        )
+        prices = {
+            stock_code: periods[actual_end][0]
+            for stock_code, periods in price_history.items()
+            if actual_end in periods
+        }
+        return get_whale_accumulation(
+            db, requested_start, requested_end,
+            ranking_type=rankingType,  # type: ignore[arg-type]
+            limit=limit, keyword=keyword.strip(), industry=industry.strip(),
+            min_big400=minBig400, min_big1000=minBig1000, min_lots=minLots,
+            min_value=minValue, max_price_change=maxPriceChange, min_score=minScore,
+            prices=prices, price_history=price_history,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@router.get("/accumulation/stocks/{stock_code}/trend")
+async def accumulation_trend(
+    stock_code: str,
+    startDate: str = Query(min_length=10, max_length=10),
+    endDate: str = Query(min_length=10, max_length=10),
+    db: Session = Depends(get_db),
+) -> dict:
+    requested_start = _iso_date(startDate, "起始日期")
+    requested_end = _iso_date(endDate, "結束日期")
+    try:
+        context_mode, actual_start, actual_end, available_dates = resolve_whale_comparison_context(db, requested_start, requested_end)
+        comparison_dates = [value for value in available_dates if actual_start <= value <= actual_end]
+        if len(comparison_dates) > 16:
+            step = max(1, len(comparison_dates) // 15)
+            comparison_dates = sorted(set([actual_start, *comparison_dates[::step], actual_end]))
+        price_history = (
+            await fetch_whale_period_market_data(comparison_dates)
+            if context_mode == "official_tdcc" else {}
+        )
+        prices = {
+            code: periods[actual_end][0] for code, periods in price_history.items() if actual_end in periods
+        }
+        payload = get_whale_accumulation(
+            db, requested_start, requested_end, keyword=stock_code, limit=100,
+            prices=prices, price_history=price_history, include_history=True,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    item = next((row for row in payload["items"] if row["stockCode"] == stock_code), None)
+    if item is None:
+        raise HTTPException(status_code=404, detail="找不到此股票的區間籌碼資料")
+    return {
+        "requestedRange": payload["requestedRange"], "actualRange": payload["actualRange"],
+        "dataMode": payload["dataMode"], "dataNotice": payload["dataNotice"], "item": item,
+    }
 
 
 @router.get("/stocks/{stock_code}/history")

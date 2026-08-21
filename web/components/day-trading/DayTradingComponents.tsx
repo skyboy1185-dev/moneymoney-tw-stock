@@ -2,14 +2,14 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
-  AlertTriangle, Bell, BellRing, Bot, CheckCircle2, CircleDollarSign, Clock3, Download,
-  Eye, Gauge, Play, Settings2, ShieldAlert, Siren, TrendingDown,
+  AlertTriangle, Bell, BellRing, CheckCircle2, CircleDollarSign, Clock3, Download,
+  Eye, Gauge, Play, ShieldAlert, Siren, TrendingDown,
   TrendingUp, Volume2, VolumeX, Wifi, WifiOff, X,
 } from "lucide-react";
 import { filterSignals, isExpired, signalRemainingMs } from "@/lib/day-trading-engine";
 import type {
-  DayTradingAlert, DayTradingPerformance, DayTradingPosition, DayTradingSettings,
-  DayTradingSignal, DayTradingTrade, EmergencyEvent, MarketRegime, StreamConnection,
+  DayTradingAlert, DayTradingPerformance, DayTradingPosition, DayTradingSignal,
+  DayTradingTrade, EmergencyEvent, MarketRegime, StreamConnection,
 } from "@/lib/day-trading-types";
 
 const number = (value: number, digits = 2) => Number.isFinite(value)
@@ -18,6 +18,12 @@ const number = (value: number, digits = 2) => Number.isFinite(value)
 const compact = (value: number) => value >= 100_000_000
   ? `${number(value / 100_000_000, 2)} 億`
   : value >= 10_000 ? `${number(value / 10_000, 1)} 萬` : number(value, 0);
+const lotsAndShares = (value: number) => {
+  if (!Number.isFinite(value)) return "—";
+  const lots = value.toLocaleString("zh-TW", { maximumFractionDigits: 3 });
+  const shares = Math.round(value * 1_000).toLocaleString("zh-TW");
+  return `${lots} 張（${shares} 股）`;
+};
 const time = (value?: string) => value
   ? new Date(value).toLocaleTimeString("zh-TW", { hour12: false })
   : "—";
@@ -52,6 +58,9 @@ export function StreamConnectionStatus({ status }: { status: StreamConnection })
 }
 
 export function MarketDataDelayBadge({ seconds, status }: { seconds: number; status: string }) {
+  if (status === "closed") {
+    return <span className="dt-delay normal"><Clock3 size={13} />今日已收盤</span>;
+  }
   const level = status === "normal" && seconds <= 3 ? "normal" : seconds <= 8 ? "warning" : "danger";
   return <span className={`dt-delay ${level}`}><Clock3 size={13} />延遲 {number(seconds, 1)} 秒</span>;
 }
@@ -222,9 +231,13 @@ export function DayTradingRankingTable({
       <td><span className={`recommendation-tag ${item.isOfficialRecommendation ? "official" : "candidate"}`}>{item.recommendationLabel}</span><strong>{item.isOfficialRecommendation ? item.action : item.action === "放空資格待確認" ? item.action : `候選觀察：${item.action}`}</strong><small>{item.qualificationFailures?.slice(0, 2).join(" · ") || time(item.generatedAt)}</small></td>
       <td><span>{item.confidenceScore}／{item.healthScore}</span><small>R:R 1:{number(item.riskRewardRatio, 1)}</small></td>
       <td>{item.vwapStatus}<small>{item.volumeStatus}</small></td>
-      <td className={item.largeOrderContinuousBuy ? "text-up" : ""}>
+      <td className={item.largeOrderContinuousBuy ? "text-up" : item.largeOrderContinuousSell ? "text-down" : ""}>
         {item.largeOrderStatus ?? item.largeOrderForce}
-        <small>{item.largeOrderContinuousBuy ? `近 5 分鐘 +${number(item.largeOrderRecentNetLots ?? 0)} 張・連增 ${item.largeOrderPositiveSteps ?? 0} 次` : item.industryStrength}</small>
+        <small>{item.largeOrderContinuousBuy
+          ? `近 5 分鐘 +${number(item.largeOrderRecentNetLots ?? 0)} 張・連續加多 ${item.largeOrderDirectionalSteps ?? item.largeOrderPositiveSteps ?? 0} 次`
+          : item.largeOrderContinuousSell
+            ? `近 5 分鐘 ${number(item.largeOrderRecentNetLots ?? 0)} 張・連續加空 ${item.largeOrderDirectionalSteps ?? item.largeOrderNegativeSteps ?? 0} 次`
+            : item.industryStrength}</small>
       </td>
       <td><SignalCountdown expiresAt={item.expiresAt} serverNow={item.serverNow} /></td>
       <td><div className="table-actions"><button title="查看分析" onClick={() => onAnalyze(item.symbol)}><Eye /></button><button title="加入監控" onClick={() => onMonitor(item)}><Bell /></button><button title={`模擬${item.directionLabel}`} onClick={() => onSimulate(item)}><Play /></button><button title="忽略訊號" onClick={() => setIgnored((current) => [...current, item.id])}><X /></button></div></td>
@@ -245,7 +258,7 @@ export function PositionMonitorCard({
     <div className="position-head"><div><span className={`direction-tag ${position.direction}`}>{position.directionLabel}</span><h3>{position.symbol} {position.stockName}</h3></div><strong className={position.unrealizedProfit >= 0 ? "text-up" : "text-down"}>{position.unrealizedProfit >= 0 ? "+" : ""}{number(position.unrealizedProfit, 0)}<small>{number(position.returnPercentage)}%</small></strong></div>
     <div className="position-grid">
       <span>進場價格<strong>{number(position.entryPrice)}</strong></span><span>現價<strong>{number(position.currentPrice)}</strong></span>
-      <span>張數<strong>{number(position.quantity, 1)}</strong></span><span>持有時間<strong>{Math.floor(position.holdingSeconds / 60)} 分 {position.holdingSeconds % 60} 秒</strong></span>
+      <span>模擬成交數量<strong>{lotsAndShares(position.quantity)}</strong></span><span>持有時間<strong>{Math.floor(position.holdingSeconds / 60)} 分 {position.holdingSeconds % 60} 秒</strong></span>
       <span>停損價<strong>{number(position.stopLoss)}</strong></span><span>移動停利<strong>{position.trailingStop ? number(position.trailingStop) : "未啟用"}</strong></span>
       <span>第一目標<strong>{number(position.target1)}</strong></span><span>第二目標<strong>{number(position.target2)}</strong></span>
     </div>
@@ -304,65 +317,6 @@ export function AlertCenter({ alerts, onRead }: { alerts: DayTradingAlert[]; onR
   </section>;
 }
 
-export function RiskControlPanel({
-  settings, onSave,
-}: { settings: DayTradingSettings; onSave: (settings: DayTradingSettings) => void }) {
-  const [draft, setDraft] = useState(settings);
-  const [permission, setPermission] = useState<NotificationPermission | "unsupported">(
-    typeof Notification === "undefined" ? "unsupported" : Notification.permission,
-  );
-  useEffect(() => setDraft(settings), [settings]);
-  const setNumber = (key: keyof DayTradingSettings, value: string) => setDraft((current) => ({ ...current, [key]: Number(value) }));
-  const setBoolean = (key: keyof DayTradingSettings, value: boolean) => setDraft((current) => ({ ...current, [key]: value }));
-  return <section className="dt-card risk-panel">
-    <div className="dt-section-heading"><div><span className="eyebrow">RISK CONTROL</span><h2>交易風控與通知設定</h2></div><ShieldAlert /></div>
-    <div className="risk-form-grid">
-      {[
-        ["capital", "總交易資金", "元"], ["maxRiskPerTrade", "單筆最大風險", "%"],
-        ["maxDailyLoss", "單日最大虧損", "%"], ["maxDailyTrades", "每日最多交易", "筆"],
-        ["maxPositionPercentage", "單檔最大部位", "%"], ["maxConsecutiveLosses", "連續虧損停止", "筆"],
-        ["minimumRiskReward", "最低風險報酬比", ""], ["maximumSpread", "最大允許價差", "%"],
-        ["minimumVolume", "預估全日最低成交量", "股"], ["minimumTurnover", "預估全日最低成交金額", "元"],
-      ].map(([key, label, unit]) => <label key={key}><span>{label}</span><div><input type="number" value={String(draft[key as keyof DayTradingSettings])} onChange={(event) => setNumber(key as keyof DayTradingSettings, event.target.value)} /><em>{unit}</em></div></label>)}
-      <label><span>最晚進場（策略固定）</span><input type="time" value={draft.latestEntryTime} disabled readOnly /></label>
-      <label><span>強制平倉開始（策略固定）</span><input type="time" value={draft.closeReminderTime} disabled readOnly /></label>
-    </div>
-    <div className="schedule-settings">
-      <div className="schedule-settings-title"><Clock3 /><div><strong>開盤自動啟動排程</strong><span>Asia/Taipei；後端會依設定自動切換階段，不需每天手動啟動</span></div></div>
-      <div className="risk-form-grid">
-        {[
-          ["preheatTime", "系統預熱"], ["stockPoolTime", "載入股票池"],
-          ["healthCheckTime", "健康檢查"], ["marketOpenTime", "台股開盤"],
-        ].map(([key, label]) => <label key={key}><span>{label}</span><input type="time" value={String(draft[key as keyof DayTradingSettings])} onChange={(event) => setDraft({ ...draft, [key]: event.target.value })} /></label>)}
-        <label><span>正式訊號啟動（策略固定）</span><input type="time" value={draft.signalStartTime} disabled readOnly /></label>
-        <label><span>最晚出場（策略固定）</span><input type="time" value={draft.marketCloseTime} disabled readOnly /></label>
-        <label><span>開盤暖機</span><select value={draft.warmupMinutes} onChange={(event) => setDraft({ ...draft, warmupMinutes: Number(event.target.value) as DayTradingSettings["warmupMinutes"] })}><option value={0}>0 分鐘</option><option value={1}>1 分鐘</option><option value={3}>3 分鐘</option><option value={5}>5 分鐘</option><option value={10}>10 分鐘</option></select></label>
-        <label><span>推薦重算頻率</span><select value={draft.recommendationRefreshSeconds} onChange={(event) => setDraft({ ...draft, recommendationRefreshSeconds: Number(event.target.value) as DayTradingSettings["recommendationRefreshSeconds"] })}><option value={5}>5 秒</option><option value={10}>10 秒</option><option value={15}>15 秒</option><option value={30}>30 秒</option></select></label>
-        <label><span>替換分數門檻</span><div><input type="number" min={0} max={30} value={draft.replacementScoreGap} onChange={(event) => setNumber("replacementScoreGap", event.target.value)} /><em>分</em></div></label>
-        <label><span>最短保留時間</span><div><input type="number" min={0} max={30} value={draft.minimumRetentionMinutes} onChange={(event) => setNumber("minimumRetentionMinutes", event.target.value)} /><em>分</em></div></label>
-        <label><span>最低即時樣本</span><div><input type="number" min={2} value={draft.minimumLiveSamples} onChange={(event) => setNumber("minimumLiveSamples", event.target.value)} /><em>筆</em></div></label>
-        <label><span>最大停損距離</span><div><input type="number" min={0.1} step={0.1} value={draft.maximumStopDistance} onChange={(event) => setNumber("maximumStopDistance", event.target.value)} /><em>%</em></div></label>
-      </div>
-    </div>
-    <div className="notification-settings">
-      {[
-        ["notificationEnabled", "瀏覽器通知"], ["soundEnabled", "聲音提醒"],
-        ["entryNotification", "進場通知"], ["exitNotification", "出場通知"],
-        ["stopNotification", "停損通知"], ["targetNotification", "停利通知"],
-        ["dataAlertNotification", "資料異常通知"], ["highConfidenceOnly", "只通知高信心"],
-      ].map(([key, label]) => <label key={key}><input type="checkbox" checked={Boolean(draft[key as keyof DayTradingSettings])} onChange={(event) => setBoolean(key as keyof DayTradingSettings, event.target.checked)} /><span>{label}</span></label>)}
-      <label>最低信心<input type="number" value={draft.minimumConfidence} onChange={(event) => setNumber("minimumConfidence", event.target.value)} /></label>
-      <label>冷卻秒數<input type="number" value={draft.notificationCooldown} onChange={(event) => setNumber("notificationCooldown", event.target.value)} /></label>
-    </div>
-    <div className="risk-actions"><button onClick={async () => {
-      if (draft.notificationEnabled && typeof Notification !== "undefined" && Notification.permission === "default") {
-        setPermission(await Notification.requestPermission());
-      }
-      onSave(draft);
-    }}><Settings2 size={15} />儲存風控與通知設定</button><p>{permission === "denied" ? "瀏覽器通知已被拒絕；請點網址列左側的網站設定，將「通知」改為允許。" : "達到限制後只停止新進場，既有持倉仍持續產生出場與停損提醒。"}</p></div>
-  </section>;
-}
-
 export function TradeTimeline({
   signals, trades,
 }: { signals: DayTradingSignal[]; trades: DayTradingTrade[] }) {
@@ -380,7 +334,7 @@ export function TradeTimeline({
     <div className="dt-section-heading"><div><span className="eyebrow">SIGNAL & TRADE HISTORY</span><h2>訊號與完成交易紀錄</h2><p>可依日期、方向與指令篩選；上方績效卡提供今日與本月匯出。</p></div></div>
     <div className="timeline-filters"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜尋股票代號或名稱" /><input type="date" value={dateFilter} onChange={(event) => setDateFilter(event.target.value)} /><select value={direction} onChange={(event) => setDirection(event.target.value)}><option value="all">多空全部</option><option value="long">做多</option><option value="short">放空</option></select><select value={actionFilter} onChange={(event) => setActionFilter(event.target.value)}><option value="all">全部指令</option><option value="等待">等待進場</option><option value="買進">買進</option><option value="放空">放空</option><option value="出">出場</option><option value="回補">回補</option></select></div>
     <div className="timeline-list">{rows.map((item) => <div key={item.id} className={`timeline-item ${item.direction}`}><i /><time>{time(item.generatedAt)}</time><div><strong>{item.symbol} {item.stockName}</strong><span>{item.action}</span><small>{item.reasons.slice(0, 3).join(" · ")}</small></div><em>{number(item.price)}</em></div>)}</div>
-    {!!trades.length && <div className="simulation-trades"><h3>已完成模擬交易</h3>{trades.map((trade) => <div key={trade.id}><span>{trade.symbol} {trade.stockName}</span><strong className={trade.profit >= 0 ? "text-up" : "text-down"}>{number(trade.profit, 0)}</strong><small>{trade.exitReason}</small></div>)}</div>}
+    {!!trades.length && <div className="simulation-trades"><h3>原版策略已完成交易</h3>{trades.map((trade) => <div key={trade.id}><span>{trade.symbol} {trade.stockName}<small>{trade.strategyName}</small></span><strong className={trade.profit >= 0 ? "text-up" : "text-down"}>{number(trade.profit, 0)}</strong><small>{trade.exitReason}</small></div>)}</div>}
   </section>;
 }
 
@@ -404,16 +358,37 @@ export function DayTradingPerformancePanel({
   const monthRealized = performance?.realizedProfit ?? 0;
   const todayTotal = todayRealized + liveTodayUnrealized;
   const monthTotal = monthRealized + liveMonthUnrealized;
+  const todayLongRealized = performance?.today?.longRealizedProfit ?? performance?.today?.longProfit ?? 0;
+  const todayLongUnrealized = performance?.today?.longUnrealizedProfit
+    ?? todayPositions.filter((item) => item.direction === "long").reduce((sum, item) => sum + item.unrealizedProfit, 0);
+  const todayLongTotal = todayLongRealized + todayLongUnrealized;
+  const todayShortRealized = performance?.today?.shortRealizedProfit ?? performance?.today?.shortProfit ?? 0;
+  const todayShortUnrealized = performance?.today?.shortUnrealizedProfit
+    ?? todayPositions.filter((item) => item.direction === "short").reduce((sum, item) => sum + item.unrealizedProfit, 0);
+  const todayShortTotal = todayShortRealized + todayShortUnrealized;
+  const monthLongRealized = performance?.longRealizedProfit ?? performance?.longProfit ?? 0;
+  const monthLongUnrealized = performance?.longUnrealizedProfit
+    ?? monthPositions.filter((item) => item.direction === "long").reduce((sum, item) => sum + item.unrealizedProfit, 0);
+  const monthLongTotal = monthLongRealized + monthLongUnrealized;
+  const monthShortRealized = performance?.shortRealizedProfit ?? performance?.shortProfit ?? 0;
+  const monthShortUnrealized = performance?.shortUnrealizedProfit
+    ?? monthPositions.filter((item) => item.direction === "short").reduce((sum, item) => sum + item.unrealizedProfit, 0);
+  const monthShortTotal = monthShortRealized + monthShortUnrealized;
   const reportTime = new Date().toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" });
   const pnlClass = (value: number) => value >= 0 ? "text-up" : "text-down";
+  const strategyKey = performance?.strategy?.key ?? "paper";
+  const strategyLabel = performance?.strategy?.label ?? "模擬策略";
 
   const exportToday = () => downloadCsv(
-    `AI當沖多空機器人_今日明細_${tradeDate}.csv`,
+    `AI當沖多空機器人_${strategyKey}_今日明細_${tradeDate}.csv`,
     [
-      ["AI 當沖多空機器人今日模擬績效"],
+      [`AI 當沖多空機器人－${strategyLabel}－今日模擬績效`],
       ["交易日", tradeDate, "報表產生時間", reportTime],
+      ["部位規則", "每次正式訊號固定 2 張", "計算方式", "原版策略獨立模擬"],
       ["已完成交易", performance?.today?.tradeCount ?? 0, "未平倉", todayPositions.length, "勝率", `${performance?.today?.winRate ?? 0}%`],
       ["已實現損益", todayRealized, "未實現損益", liveTodayUnrealized, "今日總盈虧", todayTotal],
+      ["今日多單已實現", todayLongRealized, "多單未實現", todayLongUnrealized, "多單合計", todayLongTotal],
+      ["今日空單已實現", todayShortRealized, "空單未實現", todayShortUnrealized, "空單合計", todayShortTotal],
       ["手續費", performance?.today?.fee ?? 0, "交易稅", performance?.today?.tax ?? 0, "滑價", performance?.today?.slippage ?? 0, "交易成本", performance?.today?.tradingCost ?? 0],
       [],
       ["代號", "名稱", "方向", "狀態", "進場時間", "進場點位", "出場／現價", "數量（張）", "盈虧", "報酬率", "進場原因", "出場原因"],
@@ -433,12 +408,14 @@ export function DayTradingPerformancePanel({
   );
 
   const exportMonth = () => downloadCsv(
-    `AI當沖多空機器人_本月績效_${month}.csv`,
+    `AI當沖多空機器人_${strategyKey}_本月績效_${month}.csv`,
     [
-      ["AI 當沖多空機器人本月模擬績效"],
+      [`AI 當沖多空機器人－${strategyLabel}－本月模擬績效`],
       ["月份", month, "報表產生時間", reportTime],
       ["已完成交易", performance?.tradeCount ?? 0, "獲利", performance?.wins ?? 0, "虧損", performance?.losses ?? 0, "勝率", `${performance?.winRate ?? 0}%`],
       ["已實現損益", monthRealized, "未實現損益", liveMonthUnrealized, "本月總盈虧", monthTotal],
+      ["本月多單已實現", monthLongRealized, "多單未實現", monthLongUnrealized, "多單合計", monthLongTotal],
+      ["本月空單已實現", monthShortRealized, "空單未實現", monthShortUnrealized, "空單合計", monthShortTotal],
       ["手續費", performance?.fee ?? 0, "交易稅", performance?.tax ?? 0, "滑價", performance?.slippage ?? 0, "交易成本", performance?.tradingCost ?? 0],
       [],
       ["代號", "名稱", "方向", "狀態", "進場時間", "進場點位", "出場時間", "出場／現價", "數量（張）", "手續費", "交易稅", "滑價", "盈虧", "報酬率", "進場原因", "出場原因", "策略"],
@@ -459,33 +436,32 @@ export function DayTradingPerformancePanel({
   );
 
   return <section className="adaptive-performance-card dt-card dt-performance-card">
-    <div className="adaptive-performance-title"><div><span className="eyebrow">AI PAPER PERFORMANCE</span><h2><CircleDollarSign size={19} />模擬買賣與績效</h2><p>當沖模擬損益；已完成交易已扣除手續費、交易稅與滑價。</p></div><div className="adaptive-performance-actions"><strong>本月勝率 {number(performance?.winRate ?? 0)}%</strong><button onClick={exportToday}><Download size={14} />匯出今日</button><button onClick={exportMonth}><Download size={14} />匯出本月績效表</button></div></div>
+    <div className="adaptive-performance-title"><div><span className="eyebrow">ORIGINAL FIXED-LOT PAPER STRATEGY</span><h2><CircleDollarSign size={19} />{performance?.strategy?.label ?? "原版固定 2 張"}</h2><p>{performance?.strategy?.description ?? "每次正式訊號固定模擬 2 張"}；已完成交易已扣除手續費、交易稅與滑價。</p></div><div className="adaptive-performance-actions"><strong>本月勝率 {number(performance?.winRate ?? 0)}%</strong><button onClick={exportToday}><Download size={14} />匯出今日</button><button onClick={exportMonth}><Download size={14} />匯出本月績效表</button></div></div>
     <div className="adaptive-performance-summary day-trading-performance-summary">
+      <article><span>原版部位規則</span><b>每筆固定 2 張</b><small>每次正式訊號獨立模擬</small></article>
       <article><span>今日完成交易</span><b>{performance?.today?.tradeCount ?? 0} 筆</b><small>{tradeDate} · 持倉 {todayPositions.length} 筆</small></article>
       <article className={todayTotal >= 0 ? "profit" : "loss"}><span>今日總盈虧</span><b>{number(todayTotal, 0)} 元</b><small>已實現 {number(todayRealized, 0)} · 未實現 {number(liveTodayUnrealized, 0)}</small></article>
       <article><span>本月完成交易</span><b>{performance?.tradeCount ?? 0} 筆</b><small>獲利 {performance?.wins ?? 0} · 虧損 {performance?.losses ?? 0}</small></article>
       <article className={monthTotal >= 0 ? "profit" : "loss"}><span>本月總盈虧</span><b>{number(monthTotal, 0)} 元</b><small>已實現 {number(monthRealized, 0)} · 未實現 {number(liveMonthUnrealized, 0)}</small></article>
       <article><span>本月交易成本</span><b>{number(performance?.tradingCost ?? 0, 0)} 元</b><small>手續費、交易稅與滑價</small></article>
     </div>
-    <div className="adaptive-trade-columns">
-      <div><h3>今日模擬持倉</h3>{todayPositions.length ? <div className="adaptive-trade-table"><table><thead><tr><th>股票</th><th>方向</th><th>進場點位</th><th>目前價</th><th>未實現盈虧</th></tr></thead><tbody>{todayPositions.map((item) => <tr key={item.id}><td><b>{item.symbol}</b><span>{item.stockName}</span></td><td>{item.direction === "long" ? "做多" : "放空"}</td><td>{number(item.entryPrice)}<span>{new Date(item.openedAt).toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" })}</span></td><td>{number(item.currentPrice)}</td><td className={item.unrealizedProfit >= 0 ? "profit" : "loss"}>{number(item.unrealizedProfit, 0)} 元<span>{number(item.returnPercentage)}%</span></td></tr>)}</tbody></table></div> : <p className="adaptive-trade-empty">今天尚無模擬進場紀錄。</p>}</div>
-      <div><h3>今日已完成交易</h3>{todayTrades.length ? <div className="adaptive-trade-table"><table><thead><tr><th>股票</th><th>方向</th><th>進場 → 出場</th><th>淨盈虧</th><th>出場原因</th></tr></thead><tbody>{todayTrades.map((item) => <tr key={item.id}><td><b>{item.symbol}</b><span>{item.stockName}</span></td><td>{item.direction === "long" ? "做多" : "放空"}</td><td>{number(item.entryPrice)} → {number(item.exitPrice)}<span>{new Date(item.exitTime).toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" })}</span></td><td className={item.profit >= 0 ? "profit" : "loss"}>{number(item.profit, 0)} 元<span>{number(item.returnPercentage)}%</span></td><td>{item.exitReason}</td></tr>)}</tbody></table></div> : <p className="adaptive-trade-empty">今天尚無已完成的模擬交易。</p>}</div>
+    <div className="day-trading-directional-pnl">
+      <article className={monthLongTotal >= 0 ? "profit" : "loss"}>
+        <div><span>多單賺賠</span><b>本月 {number(monthLongTotal, 0)} 元</b></div>
+        <small>今日 {number(todayLongTotal, 0)}（已實現 {number(todayLongRealized, 0)}／未實現 {number(todayLongUnrealized, 0)}）</small>
+        <small>本月已實現 {number(monthLongRealized, 0)}／未實現 {number(monthLongUnrealized, 0)}</small>
+      </article>
+      <article className={monthShortTotal >= 0 ? "profit" : "loss"}>
+        <div><span>空單賺賠</span><b>本月 {number(monthShortTotal, 0)} 元</b></div>
+        <small>今日 {number(todayShortTotal, 0)}（已實現 {number(todayShortRealized, 0)}／未實現 {number(todayShortUnrealized, 0)}）</small>
+        <small>本月已實現 {number(monthShortRealized, 0)}／未實現 {number(monthShortUnrealized, 0)}</small>
+      </article>
     </div>
-    <footer><AlertTriangle size={14} />這是 AI 當沖模擬績效，不代表真實成交，也不構成投資建議。</footer>
-  </section>;
-}
-
-export function SimulationControls({ onTrigger }: { onTrigger: (scenario: string) => void }) {
-  const buttons = [
-    ["market_open", "模擬週五開盤"],
-    ["long_signal", "產生做多訊號"], ["short_signal", "產生放空訊號"],
-    ["long_stop", "觸發多單停損"], ["short_stop", "觸發空單停損"],
-    ["target_1", "觸發第一停利"], ["emergency_exit", "觸發緊急出場"],
-    ["data_delay", "模擬資料延遲"], ["disconnect", "模擬行情斷線"],
-  ];
-  return <section className="dt-card simulation-controls">
-    <div><Bot size={20} /><span><strong>Mock Streaming 測試控制台</strong><small>僅影響展示模式，不會執行任何真實交易</small></span></div>
-    <div>{buttons.map(([value, label]) => <button key={value} onClick={() => onTrigger(value)}>{label}</button>)}</div>
+    <div className="adaptive-trade-columns">
+      <div><h3>今日模擬持倉</h3>{todayPositions.length ? <div className="adaptive-trade-table"><table><thead><tr><th>股票</th><th>方向</th><th>進場價格／時間</th><th>成交數量（張／股）</th><th>目前價格</th><th>未實現盈虧</th></tr></thead><tbody>{todayPositions.map((item) => <tr key={item.id}><td><b>{item.symbol}</b><span>{item.stockName}</span></td><td>{item.direction === "long" ? "做多（買進）" : "放空（先賣）"}</td><td><b>{item.direction === "long" ? "買進價" : "放空價"} {number(item.entryPrice)}</b><span>{new Date(item.openedAt).toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" })}</span></td><td><b>{lotsAndShares(item.quantity)}</b><span>1 張＝1,000 股</span></td><td><b>現價 {number(item.currentPrice)}</b></td><td className={item.unrealizedProfit >= 0 ? "profit" : "loss"}>{number(item.unrealizedProfit, 0)} 元<span>{number(item.returnPercentage)}%</span></td></tr>)}</tbody></table></div> : <p className="adaptive-trade-empty">{todayTrades.length ? `今日機器人已進場，並完成 ${todayTrades.length} 筆出場交易。` : "今天尚無模擬進場紀錄。"}</p>}</div>
+      <div><h3>今日已完成交易</h3>{todayTrades.length ? <div className="adaptive-trade-table"><table><thead><tr><th>股票</th><th>方向</th><th>買賣點（進場／出場）</th><th>成交數量（張／股）</th><th>淨盈虧</th><th>出場原因</th></tr></thead><tbody>{todayTrades.map((item) => <tr key={item.id}><td><b>{item.symbol}</b><span>{item.stockName}</span></td><td>{item.direction === "long" ? "做多（買進後賣出）" : "放空（先賣後回補）"}</td><td><b>進場 {number(item.entryPrice)} → 出場 {number(item.exitPrice)}</b><span>{new Date(item.exitTime).toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" })}</span></td><td><b>{lotsAndShares(item.quantity)}</b><span>1 張＝1,000 股</span></td><td className={item.profit >= 0 ? "profit" : "loss"}>{number(item.profit, 0)} 元<span>{number(item.returnPercentage)}%</span></td><td>{item.exitReason}</td></tr>)}</tbody></table></div> : <p className="adaptive-trade-empty">今天尚無已完成的模擬交易。</p>}</div>
+    </div>
+    <footer><AlertTriangle size={14} />原版策略每次正式訊號固定模擬 2 張，歷史績效完整保留；不代表真實成交，也不構成投資建議。</footer>
   </section>;
 }
 

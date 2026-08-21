@@ -5,19 +5,134 @@ import hmac
 from typing import Any
 
 import httpx
+from sqlalchemy import create_engine, func, select
+from sqlalchemy.orm import sessionmaker
 
+from app.models import LineDeliveryLog, LineNotificationGroup, LineNotificationSettings
+import app.services.line_messaging as line_messaging_module
 from app.services.line_messaging import (
     LINE_GROUP_DISCLAIMER,
     PERSONAL_STRATEGY_SIMULATION_NOTE,
     LineMessagingClient,
+    LineApiResult,
     LineNotificationDispatcher,
     LineNotificationEvent,
+    effective_daily_trade_message_limit,
     format_personal_strategy_simulation,
     format_position_message,
     format_signal_message,
     mask_group_id,
     verify_line_signature,
 )
+
+
+def test_daily_trade_notifications_stop_after_ten_but_system_events_continue(
+    monkeypatch: Any,
+) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    for table in (LineNotificationGroup.__table__, LineNotificationSettings.__table__, LineDeliveryLog.__table__):
+        table.create(engine)
+    test_session = sessionmaker(bind=engine, expire_on_commit=False)
+    now = line_messaging_module.datetime.now(line_messaging_module.UTC)
+    with test_session() as db:
+        db.add(LineNotificationSettings(id=1, updated_at=now))
+        for index in range(10):
+            db.add(LineDeliveryLog(
+                group_id="C-test-group",
+                event_type="long_entry" if index % 2 == 0 else "long_exit",
+                signal_id=f"signal-{index}",
+                symbol=f"23{index:02d}",
+                action="trade",
+                priority=1,
+                dedupe_key=f"existing-{index}",
+                status="sent",
+                attempts=1,
+                response_status=200,
+                message_preview="trade",
+                created_at=now,
+                sent_at=now,
+            ))
+        db.commit()
+
+    settings = line_messaging_module.get_settings()
+    monkeypatch.setattr(settings, "line_notifications_enabled", True)
+    monkeypatch.setattr(settings, "line_target_group_id", "C-test-group")
+    monkeypatch.setattr(settings, "line_daily_trade_message_limit", 10)
+    monkeypatch.setattr(line_messaging_module, "SessionLocal", test_session)
+
+    pushed: list[str] = []
+
+    async def fake_push(_: str, message: str) -> LineApiResult:
+        pushed.append(message)
+        return LineApiResult(True, 1, 200, None)
+
+    dispatcher = LineNotificationDispatcher()
+    monkeypatch.setattr(dispatcher.client, "push_text", fake_push)
+
+    async def fake_quota() -> tuple[int, int]:
+        return 200, 190
+
+    monkeypatch.setattr(dispatcher.client, "message_quota", fake_quota)
+
+    blocked = asyncio.run(dispatcher.dispatch_many([
+        LineNotificationEvent("stop_loss", "sell", "blocked trade", "trade-11", 0),
+    ]))
+    system_sent = asyncio.run(dispatcher.dispatch_many([
+        LineNotificationEvent("opening", "open", "system message", "opening-test", 3),
+    ]))
+
+    assert blocked == 0
+    assert system_sent == 1
+    assert pushed == ["system message"]
+    with test_session() as db:
+        skipped = db.scalar(select(func.count()).select_from(LineDeliveryLog).where(
+            LineDeliveryLog.status == "skipped",
+            LineDeliveryLog.dedupe_key == "trade-11",
+        ))
+        assert skipped == 1
+
+
+def test_daily_limit_expands_as_monthly_reset_approaches() -> None:
+    assert effective_daily_trade_message_limit(
+        monthly_limit=200,
+        monthly_usage=50,
+        remaining_trading_days=20,
+        base_limit=10,
+    ) == 8
+    assert effective_daily_trade_message_limit(
+        monthly_limit=200,
+        monthly_usage=50,
+        remaining_trading_days=15,
+        base_limit=10,
+    ) == 10
+    assert effective_daily_trade_message_limit(
+        monthly_limit=200,
+        monthly_usage=50,
+        remaining_trading_days=5,
+        base_limit=10,
+    ) == 30
+    assert effective_daily_trade_message_limit(
+        monthly_limit=200,
+        monthly_usage=199,
+        remaining_trading_days=5,
+        base_limit=10,
+    ) == 1
+    assert effective_daily_trade_message_limit(
+        monthly_limit=200,
+        monthly_usage=150,
+        remaining_trading_days=20,
+        base_limit=200,
+        minimum_daily_limit=6,
+    ) == 6
+
+
+def test_daily_limit_uses_fallback_only_when_line_quota_is_unavailable() -> None:
+    assert effective_daily_trade_message_limit(
+        monthly_limit=None,
+        monthly_usage=None,
+        remaining_trading_days=20,
+        base_limit=200,
+    ) == 200
 
 
 def test_line_signature_uses_raw_body_hmac_sha256() -> None:
@@ -62,6 +177,12 @@ def test_signal_and_emergency_messages_follow_required_format() -> None:
     assert "模擬進場點：995.00～1,000.00" in message
     assert "模擬停損/停利：980.00 / 1,020.00、1,040.00" in message
     assert message.endswith(PERSONAL_STRATEGY_SIMULATION_NOTE)
+
+    combined = format_signal_message(signal, include_session_status=True)
+    assert combined.startswith("【AI當沖機器人｜今日首次進場】")
+    assert "啟動：09:05 正式訊號掃描已啟動" in combined
+    assert "結束：10:30 停止新進場，13:30 完成當沖部位處理" in combined
+    assert "【個人策略模擬測試】" in combined
 
     demo_message = format_signal_message({
         **signal,
@@ -110,6 +231,67 @@ def test_personal_strategy_template_keeps_name_before_symbol() -> None:
     ]
 
 
+def test_session_status_is_attached_only_to_first_enabled_entry(
+    monkeypatch: Any,
+) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    for table in (
+        LineNotificationGroup.__table__,
+        LineNotificationSettings.__table__,
+        LineDeliveryLog.__table__,
+    ):
+        table.create(engine)
+    test_session = sessionmaker(bind=engine, expire_on_commit=False)
+    now = line_messaging_module.datetime.now(line_messaging_module.UTC)
+    with test_session() as db:
+        db.add(LineNotificationSettings(id=1, updated_at=now))
+        db.commit()
+
+    settings = line_messaging_module.get_settings()
+    monkeypatch.setattr(settings, "line_notifications_enabled", True)
+    monkeypatch.setattr(settings, "line_target_group_id", "C-test-group")
+    monkeypatch.setattr(settings, "line_daily_trade_message_limit", 200)
+    monkeypatch.setattr(line_messaging_module, "SessionLocal", test_session)
+    pushed: list[str] = []
+
+    async def fake_push(_: str, message: str) -> LineApiResult:
+        pushed.append(message)
+        return LineApiResult(True, 1, 200, None)
+
+    dispatcher = LineNotificationDispatcher()
+    monkeypatch.setattr(dispatcher.client, "push_text", fake_push)
+
+    async def fake_quota() -> tuple[int, int]:
+        return 200, 0
+
+    monkeypatch.setattr(dispatcher.client, "message_quota", fake_quota)
+
+    def signal(symbol: str) -> dict[str, Any]:
+        return {
+            "id": f"signal-{symbol}",
+            "symbol": symbol,
+            "stockName": f"股票{symbol}",
+            "direction": "long",
+            "action": "突破買進",
+            "entryMin": 100,
+            "entryMax": 101,
+            "stopLoss": 98,
+            "target1": 103,
+            "target2": 105,
+            "isOfficialRecommendation": True,
+            "generatedAt": "2026-08-10T09:20:00+08:00",
+        }
+
+    assert asyncio.run(dispatcher.send_recommendations([
+        signal("2330"), signal("2317"),
+    ])) == 2
+    assert asyncio.run(dispatcher.send_recommendations([signal("2308")])) == 1
+    assert len(pushed) == 3
+    assert pushed[0].startswith("【AI當沖機器人｜今日首次進場】")
+    assert not pushed[1].startswith("【AI當沖機器人｜今日首次進場】")
+    assert not pushed[2].startswith("【AI當沖機器人｜今日首次進場】")
+
+
 def test_push_retries_at_most_three_times(monkeypatch: Any) -> None:
     calls = 0
     retry_keys: list[str] = []
@@ -153,6 +335,30 @@ def test_line_retry_key_treats_accepted_409_as_success(monkeypatch: Any) -> None
     assert result.response_status == 409
 
 
+def test_line_rate_limit_429_retries_three_times(monkeypatch: Any) -> None:
+    calls = 0
+
+    async def fake_post(*_: Any, **__: Any) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(429, json={"message": "Too many requests"})
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    client = LineMessagingClient()
+    monkeypatch.setattr(client._settings, "line_channel_access_token", "test-token")
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+    result = asyncio.run(client.push_text("C-test-group", "test"))
+
+    assert not result.success
+    assert result.attempts == 3
+    assert result.response_status == 429
+    assert result.error == "LINE API HTTP 429: Too many requests"
+    assert calls == 3
+
+
 def test_queue_sends_emergency_before_entry(monkeypatch: Any) -> None:
     order: list[str] = []
     dispatcher = LineNotificationDispatcher()
@@ -178,6 +384,17 @@ def test_queue_sends_emergency_before_entry(monkeypatch: Any) -> None:
 
 
 def test_line_recommendations_are_capped_at_five_per_batch(monkeypatch: Any) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    LineNotificationSettings.__table__.create(engine)
+    LineDeliveryLog.__table__.create(engine)
+    test_session = sessionmaker(bind=engine, expire_on_commit=False)
+    with test_session() as db:
+        db.add(LineNotificationSettings(
+            id=1,
+            updated_at=line_messaging_module.datetime.now(line_messaging_module.UTC),
+        ))
+        db.commit()
+    monkeypatch.setattr(line_messaging_module, "SessionLocal", test_session)
     dispatcher = LineNotificationDispatcher()
     captured: list[LineNotificationEvent] = []
 
@@ -210,12 +427,24 @@ def test_line_recommendations_are_capped_at_five_per_batch(monkeypatch: Any) -> 
         }
         for index in range(6)
     ]
+    recommendations[0]["action"] = "5 分 K 順勢買進"
     sent = asyncio.run(dispatcher.send_recommendations(recommendations))
     assert sent == 5
     assert len(captured) == 5
 
 
 def test_same_stock_direction_uses_one_daily_formal_entry(monkeypatch: Any) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    LineNotificationSettings.__table__.create(engine)
+    LineDeliveryLog.__table__.create(engine)
+    test_session = sessionmaker(bind=engine, expire_on_commit=False)
+    with test_session() as db:
+        db.add(LineNotificationSettings(
+            id=1,
+            updated_at=line_messaging_module.datetime.now(line_messaging_module.UTC),
+        ))
+        db.commit()
+    monkeypatch.setattr(line_messaging_module, "SessionLocal", test_session)
     dispatcher = LineNotificationDispatcher()
     captured: list[LineNotificationEvent] = []
 

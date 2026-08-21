@@ -30,6 +30,14 @@ interface TpexPayload {
   }>;
 }
 
+interface TpexOpenApiSummaryRow {
+  Date: string;
+  Investor: string;
+  PurchaseAmount: string;
+  SaleAmount: string;
+  Net: string;
+}
+
 interface TaifexDailyRow {
   Date: string;
   Contract: string;
@@ -233,6 +241,22 @@ async function fetchJson<T>(url: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+function reasonText(reason: unknown) {
+  return reason instanceof Error ? reason.message : String(reason);
+}
+
+async function fetchJsonFromFirstAvailable<T>(urls: string[]) {
+  const failures: string[] = [];
+  for (const url of urls) {
+    try {
+      return { payload: await fetchJson<T>(url), url };
+    } catch (reason) {
+      failures.push(`${new URL(url).hostname}: ${reasonText(reason)}`);
+    }
+  }
+  throw new Error(failures.join("; "));
+}
+
 async function fetchTaifexCsv(url: string, body: URLSearchParams) {
   const response = await fetch(url, {
     method: "POST",
@@ -250,8 +274,11 @@ async function fetchTaifexCsv(url: string, body: URLSearchParams) {
 }
 
 async function twseDay(date: string) {
-  const url = `https://www.twse.com.tw/rwd/zh/fund/BFI82U?date=${compactDate(date)}&response=json`;
-  const payload = await fetchJson<TwsePayload>(url);
+  const path = `/rwd/zh/fund/BFI82U?date=${compactDate(date)}&response=json`;
+  const { payload, url } = await fetchJsonFromFirstAvailable<TwsePayload>([
+    `https://www.twse.com.tw${path}`,
+    `https://wwwc.twse.com.tw${path}`,
+  ]);
   if (payload.stat !== "OK" || payload.date !== compactDate(date) || !payload.data?.length) {
     throw new Error("證交所當日資料尚未發布。");
   }
@@ -268,13 +295,39 @@ function tpexRows(payload: TpexPayload) {
 
 async function tpexDay(date: string) {
   const url = `https://www.tpex.org.tw/web/stock/3insti/3insti_summary/3itrdsum_result.php?d=${encodeURIComponent(rocDate(date))}&l=zh-tw&o=json&p=1&t=D`;
-  const payload = await fetchJson<TpexPayload>(url);
-  if (payload.date !== compactDate(date)) throw new Error("櫃買中心當日資料尚未發布。");
-  return { values: parseInstitutionTable(tpexRows(payload)), url };
+  try {
+    const payload = await fetchJson<TpexPayload>(url);
+    if (payload.date !== compactDate(date)) throw new Error("櫃買中心當日資料尚未發布。");
+    return { values: parseInstitutionTable(tpexRows(payload)), url };
+  } catch (legacyReason) {
+    const openApiUrl = "https://www.tpex.org.tw/openapi/v1/tpex_3insti_summary";
+    try {
+      const rows = await fetchJson<TpexOpenApiSummaryRow[]>(openApiUrl);
+      const rocDateText = rows[0]?.Date ?? "";
+      const openApiDate = /^\d{7}$/.test(rocDateText)
+        ? `${Number(rocDateText.slice(0, 3)) + 1911}-${rocDateText.slice(3, 5)}-${rocDateText.slice(5, 7)}`
+        : null;
+      if (openApiDate !== date || !rows.length) throw new Error("櫃買 OpenAPI 尚未發布該日資料。");
+      return {
+        values: parseInstitutionTable(rows.map((row) => [
+          row.Investor,
+          row.PurchaseAmount,
+          row.SaleAmount,
+          row.Net,
+        ])),
+        url: openApiUrl,
+      };
+    } catch (openApiReason) {
+      throw new Error(
+        `櫃買舊版端點：${reasonText(legacyReason)}；櫃買 OpenAPI：${reasonText(openApiReason)}`,
+      );
+    }
+  }
 }
 
 async function latestCommonDay() {
   const today = new Date();
+  const failures: string[] = [];
   for (let offset = 0; offset < 14; offset += 1) {
     const candidateDate = new Date(today);
     candidateDate.setDate(today.getDate() - offset);
@@ -283,14 +336,21 @@ async function latestCommonDay() {
     if (listed.status === "fulfilled" && otc.status === "fulfilled") {
       return { date, listed: listed.value, otc: otc.value };
     }
+    failures.push(
+      `${date} TWSE=${listed.status === "rejected" ? reasonText(listed.reason) : "OK"}`
+      + ` TPEx=${otc.status === "rejected" ? reasonText(otc.reason) : "OK"}`,
+    );
   }
-  throw new Error("最近交易日的三大法人資料尚無法取得。");
+  throw new Error(`最近交易日的三大法人資料尚無法取得。${failures.slice(0, 3).join(" | ")}`);
 }
 
 async function twseMonth(date: string) {
   const monthDate = `${date.slice(0, 7)}-01`;
-  const url = `https://www.twse.com.tw/rwd/zh/fund/BFI82U?type=month&monthDate=${compactDate(monthDate)}&response=json`;
-  const payload = await fetchJson<TwsePayload>(url);
+  const path = `/rwd/zh/fund/BFI82U?type=month&monthDate=${compactDate(monthDate)}&response=json`;
+  const { payload, url } = await fetchJsonFromFirstAvailable<TwsePayload>([
+    `https://www.twse.com.tw${path}`,
+    `https://wwwc.twse.com.tw${path}`,
+  ]);
   if (payload.stat !== "OK" || !payload.data?.length) throw new Error("證交所月資料尚未發布。");
   return {
     values: parseInstitutionTable(payload.data),
@@ -674,12 +734,13 @@ export async function getInstitutionalInvestorResponse() {
   const now = Date.now();
   if (cached?.expiresAt && cached.expiresAt > now) return cached.value;
   if (cached) {
-    if (!pending && now >= nextRefreshAt) {
-      void refreshInstitutionalInvestorResponse().catch((reason) => {
-        console.warn("institutional-investors background refresh failed", reason);
-      });
+    if (now < nextRefreshAt) return staleResponse(cached.value);
+    try {
+      return await refreshInstitutionalInvestorResponse();
+    } catch (reason) {
+      console.warn("institutional-investors refresh failed", reason);
+      return staleResponse(cached.value);
     }
-    return staleResponse(cached.value);
   }
   return refreshInstitutionalInvestorResponse();
 }

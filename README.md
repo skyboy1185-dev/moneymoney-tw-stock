@@ -92,7 +92,21 @@ copy .env.example .env.local
 npm run dev
 ```
 
-`FASTAPI_URL=http://localhost:8000` 由 Next.js 伺服器端讀取，不會把資料庫連線字串或 API Key 暴露至瀏覽器。FastAPI 暫時離線時，個股、產業與新聞 API 會安全降級至 Next.js Mock Provider。
+`FASTAPI_URL=http://127.0.0.1:8000` 由 Next.js 伺服器端讀取，不會把資料庫連線字串或 API Key 暴露至瀏覽器。
+
+## 本機／Railway 模式切換
+
+所有前端到 FastAPI、LINE Proxy 與掃描 worker 的連線設定集中在 `web/lib/runtime-config.ts`，不需再逐一修改 API 路由。
+
+| 執行環境 | 設定位置 | 必要設定 |
+|---|---|---|
+| 本機 | `web/.env.local`、`backend/.env` | `APP_RUNTIME_MODE=local`、`FASTAPI_URL=http://127.0.0.1:8000` |
+| Docker Compose | `docker-compose.yml` | 已固定為 `local`，FastAPI 使用 `http://backend:8000` |
+| Railway | 各服務的 Railway Variables | `APP_RUNTIME_MODE=railway`；前端另設定 Railway 私有 `FASTAPI_URL` |
+
+`APP_RUNTIME_MODE=auto` 會依 `RAILWAY_*` 系統變數自動辨識，但正式環境建議明確設定 `railway`。Railway 模式若漏設 `FASTAPI_URL`，或錯填成 `localhost`，程式會回報設定錯誤而不會錯連前端容器自己。Docker 建置不再寫入 `FASTAPI_URL`，因此同一份映像可由執行時環境變數切換。
+
+啟動後可登入並呼叫 `GET /api/runtime` 驗證；本機應回傳 `mode: local`，Railway 應回傳 `mode: railway`。此端點只顯示模式與連線是否已設定，不會洩漏實際網址或密鑰。
 
 ## 建置與驗證
 
@@ -167,7 +181,7 @@ curl http://127.0.0.1:8000/api/v1/health
 
 測試情境可從頁面上的 Mock 控制台觸發：做多、放空、多空停損、第一停利、緊急出場、資料延遲與行情中斷。
 
-新增資料表的可重複執行 SQL 位於 `backend/migrations/001_day_trading.sql`、`backend/migrations/002_day_trading_schedule.sql` 與 `backend/migrations/003_line_group_notifications.sql`；FastAPI 啟動時也會由 SQLAlchemy `create_all()` 建立缺少的資料表。
+新增資料表的可重複執行 SQL 位於 `backend/migrations/001_day_trading.sql`、`backend/migrations/002_day_trading_schedule.sql`、`backend/migrations/003_line_group_notifications.sql` 與 `backend/migrations/004_day_trading_recommendation_history.sql`；FastAPI 啟動時也會由 SQLAlchemy `create_all()` 建立缺少的資料表。
 
 開盤自動流程預設為 08:30 預熱、08:45 載入股票池、08:55 健康檢查、09:00 開盤與暖機、13:20 停止新倉、13:25 部位提醒、13:30 摘要。時間、暖機分鐘、推薦重算頻率、名單替換門檻與最低行情樣本都可在當沖頁的「交易風控與通知設定」保存到 PostgreSQL。非交易日、盤外、暖機、Redis／資料庫／行情異常時不會產生正式進場推薦，但既有持倉仍持續接受出場與停損檢查。
 
@@ -194,8 +208,35 @@ LINE_CHANNEL_ACCESS_TOKEN=
 LINE_CHANNEL_SECRET=
 LINE_TARGET_GROUP_ID=
 LINE_NOTIFICATIONS_ENABLED=true
+LINE_DAILY_TRADE_MESSAGE_LIMIT=200
+GMAIL_NOTIFICATIONS_ENABLED=true
+GMAIL_SENDER_EMAIL=
+GMAIL_APP_PASSWORD=
+GMAIL_RECIPIENT_EMAILS=
+GMAIL_APPS_SCRIPT_URL=
+GMAIL_APPS_SCRIPT_SECRET=
 PUBLIC_WEB_URL=https://moneymoney-tw-stock-production.up.railway.app
 ```
+
+Gmail 使用 `smtp.gmail.com:465`，與 LINE 獨立寄送及去重。設定方式：
+
+1. 寄件 Gmail 帳號先開啟 Google 兩步驟驗證。
+2. 在 Google 帳戶建立 16 碼「應用程式密碼」。
+3. 將寄件地址填入 `GMAIL_SENDER_EMAIL`，應用程式密碼填入 `GMAIL_APP_PASSWORD`。
+4. `GMAIL_RECIPIENT_EMAILS` 可填一個或多個收件地址，多個地址以逗號分隔。
+5. 不可填 Gmail 一般登入密碼，也不可把應用程式密碼提交到 Git。
+
+AI 當沖與 AI 選股機器人的正式進場、加減碼、賣出、停損與系統訊息會沿用相同事件內容；即使 LINE 月額度已滿，Gmail 仍會嘗試寄送。每位收件者與事件使用唯一鍵，避免重複寄信。可在當沖頁的通知設定中查看 Gmail 狀態並寄送測試信。
+
+飆股雷達的正式買進（BUY）也會沿用同一組 Gmail 設定寄送，信件包含股票、買進價、股數／張數、預估金額與進場理由；觀察、突破與一般警告不寄信，以免產生過多郵件。
+
+如果部署平台封鎖 SMTP，可使用免費的 Google Apps Script HTTPS 寄信橋樑：
+
+1. 在 [Google Apps Script](https://script.google.com/) 建立新專案，貼上 `backend/scripts/google_apps_script_gmail.gs`。
+2. 在「專案設定 → 指令碼屬性」新增 `MAIL_WEBHOOK_SECRET`（自行產生的長密碼）與 `MAIL_ALLOWED_RECIPIENT`（允許的收件地址）。
+3. 選「部署 → 新增部署作業 → 網頁應用程式」，執行身分選「我」，存取權選「任何人」，完成 Gmail 權限授權。
+4. 將部署產生的 `/exec` 網址填入 `GMAIL_APPS_SCRIPT_URL`，並把同一組長密碼填入 `GMAIL_APPS_SCRIPT_SECRET`。
+5. 設定完成後會優先使用 Apps Script HTTPS；`GMAIL_APP_PASSWORD` 可移除。寄件對象仍由 `GMAIL_RECIPIENT_EMAILS` 控制。
 
 ## 盤中大小單籌碼
 
@@ -214,6 +255,15 @@ CHIP_FLOW_SMALL_ORDER_AMOUNT=500000
 CHIP_FLOW_DYNAMIC_LARGE_ORDER_ENABLED=true
 CHIP_FLOW_DYNAMIC_LARGE_ORDER_PERCENTILE=0.99
 CHIP_FLOW_DYNAMIC_LARGE_ORDER_MIN_SAMPLES=100
+CHIP_FLOW_ALERT_WINDOW_MINUTES=5
+CHIP_FLOW_ALERT_MIN_RECENT_NET_LOTS=10
+CHIP_FLOW_ALERT_MIN_BUY_SELL_RATIO=1.5
+CHIP_FLOW_ALERT_MIN_POSITIVE_STEPS=2
+CHIP_FLOW_ALERT_LIFECYCLE_MINUTES=15
+CHIP_FLOW_ALERT_SUDDEN_DROP_RATIO=0.35
+CHIP_FLOW_ALERT_MIN_MOMENTUM_CHANGE_LOTS=2
+CHIP_FLOW_ALERT_MIN_SUDDEN_DROP_LOTS=5
+CHIP_FLOW_ELECTRONIC_SCAN_INTERVAL_SECONDS=2
 FUGLE_MARKETDATA_API_KEY=
 ```
 
@@ -228,6 +278,10 @@ FUGLE_MARKETDATA_API_KEY=
 API 會回傳 `awaiting_provider`，畫面顯示「等待串接逐筆成交行情」，不會產生
 推測或隨機數字。設定 Fugle 金鑰後，後端會回補當日整股與盤中零股成交明細，
 以 Fugle `serial` 去重，並從成交價、買一、賣一及 Tick Rule 推估成交方向。
+頂部「大單動能」跑馬燈會保存每分鐘符合條件的出現次數與 5 分鐘動能軌跡；
+啟動後 15 分鐘內持續追蹤。動能連續增加時加強標示，較前次驟減 35%（至少
+5 張）或連續減弱時顯示警示。已啟動標的會插入優先掃描佇列，前端每 2 秒
+刷新狀態，同時保留一半掃描機會繼續發現其他電子股。
 真實金鑰只能放在 Railway Variables 等加密環境變數，且公開展示行情或衍生資訊
 前，須先確認資料供應商與交易所授權範圍。
 
@@ -250,7 +304,11 @@ LINE Developers Console 設定：
 - `測試當沖通知`
 - `解除當沖通知`
 
-正式推薦只推送通過風控的股票，做多與放空每小時合計最多五檔；市場候選不推送。同一 `signalId + action` 每群只通知一次，一般進場同股票三分鐘冷卻。Push API 最多嘗試三次，三次使用相同 `X-Line-Retry-Key` 防止 LINE 接受第一次請求後因網路錯誤造成重複訊息。緊急出場、停損與回補的佇列優先級高於新進場。
+正式推薦只推送通過風控的股票，做多與放空每小時合計最多五檔；市場候選不推送。同一 `signalId + action` 每群只通知一次，一般進場同股票三分鐘冷卻。系統直接以 LINE API 回傳的「本月剩餘額度 ÷ 剩餘交易日」作為當日買賣通知額度，不再套用固定每日 10 則；`LINE_DAILY_TRADE_MESSAGE_LIMIT` 只在 LINE 額度 API 暫時無法讀取時作為備援上限。升級 LINE 方案後會自動使用新的月上限。開盤、行情異常與收盤摘要不計入交易通知平均額度。網頁保存今日所有正式訊號，不受 LINE 上限影響；所有正式訊號都會建立模擬持倉並計算盈虧。Push API 最多嘗試三次，三次使用相同 `X-Line-Retry-Key` 防止 LINE 接受第一次請求後因網路錯誤造成重複訊息。緊急出場、停損與回補的佇列優先級高於新進場。
+
+每日啟動通知不再獨立推送，而是附在當天第一則已啟用的正式進場通知中，
+同一訊息列出 09:15 啟動、10:30 停止新進場及 13:30 完成當沖部位處理；
+13:30 的實際每日收盤摘要仍依 LINE 通知開關決定是否發送。
 
 本機測試：
 
@@ -366,3 +424,55 @@ PUBLIC_WEB_URL=https://moneymoney-tw-stock-production.up.railway.app
 6. 需要解除時輸入 `解除AI選股通知`。
 
 AI 選股群組、推送紀錄及 Webhook 去重分別保存於 `ai_stock_line_groups`、`ai_stock_line_delivery_logs` 與 `ai_stock_line_webhook_events`，不會與當沖群組或通知紀錄混用。
+# 飆股雷達
+
+「飆股雷達」沿用既有 TWSE／TPEx 行情、技術指標、法人、大戶與產業分類資料，建立獨立的 100 萬元模擬帳戶。後端交易事件會在同一個資料庫交易內同步更新持倉、現金、成交、每日資產與網站通知；此模組不會呼叫 LINE Messaging API。
+
+主要服務：
+
+- 前端全市場高流動性掃描：`GET /api/rocket-radar/scan`
+- 後端儀表板：`GET /api/v1/rocket-radar/dashboard`
+- 即時事件輪詢：`GET /api/v1/rocket-radar/events?afterId=0`
+- 通知歷史：`GET /api/v1/rocket-radar/notifications`
+- 無前視績效驗證：`GET /api/v1/rocket-radar/backtest?period=3m`
+
+本機啟動後，背景掃描器會在台股交易日 08:50～14:10 依 `ROCKET_RADAR_SCAN_INTERVAL_SECONDS` 執行。若未設定 `ROCKET_RADAR_SCANNER_URL`，會從 `ADAPTIVE_ELECTRONIC_SCANNER_URL` 自動推導 `/api/rocket-radar/scan`。
+
+測試：
+
+```powershell
+.\.artifacts\python-env\Scripts\python.exe -m pytest backend\tests\test_rocket_radar.py -q
+cd web
+npm.cmd test -- --run
+npm.cmd run build
+```
+
+## 本機／遠端資料庫安全切換
+
+切換工具會先把目前使用中的資料庫合併至目標資料庫，全部同步成功後才更新
+`backend/.env` 的 `DATABASE_URL`。目標端獨有資料不會被刪除；同一主鍵若兩邊內容
+不同，以目前使用中的資料庫為準。切回本機前會在 `backend/data/backups/` 自動建立
+SQLite 備份。
+
+切換前先停止 FastAPI，然後在 `backend` 目錄執行：
+
+```powershell
+# 只檢查本機與 Railway PostgreSQL 是否都能連線
+python scripts/switch_database.py --to remote --dry-run
+
+# 同步本機資料至 Railway PostgreSQL，成功後切到遠端 DB
+python scripts/switch_database.py --to remote
+
+# 同步目前的遠端資料至本機 SQLite，成功後切回本機 DB
+python scripts/switch_database.py --to local
+```
+
+若專案已由 Railway CLI 連結，工具會自動讀取 `Postgres` 服務的
+`DATABASE_PUBLIC_URL`，不必把密碼寫入版本庫。也可在 `backend/.env` 手動設定：
+
+```env
+LOCAL_DATABASE_URL=sqlite:///./data/moneymoney-backend.db
+REMOTE_DATABASE_URL=postgresql+psycopg://USER:PASSWORD@PUBLIC_HOST:PORT/DATABASE
+```
+
+請勿直接手動改 `DATABASE_URL`，否則會略過同步流程。切換完成後重新啟動 FastAPI。

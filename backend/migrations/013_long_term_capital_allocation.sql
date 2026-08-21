@@ -1,0 +1,8 @@
+ALTER TABLE long_term_positions
+  ADD COLUMN IF NOT EXISTS allocation_weight_pct NUMERIC(9,4) NOT NULL DEFAULT 10;
+
+ALTER TABLE long_term_positions
+  ADD COLUMN IF NOT EXISTS allocated_capital NUMERIC(20,2) NOT NULL DEFAULT 100000;
+
+ALTER TABLE long_term_positions
+  ADD COLUMN IF NOT EXISTS quantity INTEGER NOT NULL DEFAULT 0;

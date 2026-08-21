@@ -1,6 +1,9 @@
 import type { StockMeta, StockTheme } from "@/lib/types";
 
-export const TARGET_STOCK_THEMES: readonly StockTheme[] = ["AI", "低軌衛星", "玻纖布", "廠務工程"];
+export const TARGET_STOCK_THEMES: readonly StockTheme[] = [
+  "AI", "低軌衛星", "PCB", "ABF載板", "被動元件", "記憶體",
+  "玻纖布", "廠務工程", "IC設計", "CPO／矽光子", "半導體封測", "電源／電力",
+];
 
 export const THEME_STOCKS = {
   "2330": ["AI"],

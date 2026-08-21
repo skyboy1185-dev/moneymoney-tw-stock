@@ -4,6 +4,9 @@ export type Timeframe = "day" | "week" | "month";
 export type MarketDirection = "strong_bull" | "bull" | "sideways" | "bear" | "strong_bear" | "transition";
 export type MarketRegime = "wave_up" | "range" | "wave_down" | "transition";
 export type SignalStatus = "temporary" | "confirmed" | "cancelled";
+export type ManualMacdSignalMode = "confirmed" | "forecast";
+export type ManualDeductionSignalMode = "deduction-low" | "deduction-high";
+export type ManualSignalMode = ManualMacdSignalMode | ManualDeductionSignalMode | "kd-below" | "kd-bullish-divergence" | "kd-double-bullish-divergence";
 
 export interface KDPoint {
   date: string;
@@ -18,6 +21,11 @@ export interface ManualStrategy {
   timeframe: Timeframe;
   volumeThreshold: number;
   requiresKD: boolean;
+  signalMode: ManualSignalMode;
+  maPeriod?: number;
+  deductionDirection?: "low" | "high";
+  kdThreshold?: number;
+  divergenceLookback?: number;
 }
 
 export interface ManualScreenRow {
@@ -32,6 +40,19 @@ export interface ManualScreenRow {
   dif: number | null;
   signal: number | null;
   histogram: number | null;
+  signalMode: ManualSignalMode;
+  estimatedBarsToCross: number | null;
+  maPeriod?: number;
+  deductionValues?: number[];
+  deductionAverage?: number;
+  deductionGapPercent?: number;
+  projectedMaValues?: number[];
+  divergencePreviousDate?: string;
+  divergenceMiddleDate?: string;
+  divergencePreviousLow?: number;
+  divergenceMiddleLow?: number;
+  divergenceCurrentLow?: number;
+  divergenceStrength?: number;
   k: number | null;
   d: number | null;
   signalDate: string;

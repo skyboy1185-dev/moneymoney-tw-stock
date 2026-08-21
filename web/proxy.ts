@@ -16,7 +16,11 @@ function secured(response: NextResponse): NextResponse {
 export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
   if (
-    (pathname === "/api/adaptive-electronic/scan" || pathname === "/api/ai")
+    (
+      pathname === "/api/adaptive-electronic/scan"
+      || pathname === "/api/rocket-radar/scan"
+      || pathname === "/api/ai"
+    )
     && await verifyAdaptiveScannerToken(request.headers.get("x-adaptive-scanner-token"))
   ) {
     return secured(NextResponse.next());

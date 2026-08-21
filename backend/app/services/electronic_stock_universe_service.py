@@ -38,6 +38,7 @@ def common_filter_failures(
     if not (
         stock.quote_source.startswith("TWSE MIS")
         or stock.quote_source in {"TWSE OpenAPI", "TPEx OpenAPI"}
+        or stock.quote_source.startswith("Yahoo Finance")
     ):
         failures.append("行情來源非官方市場資訊")
     return failures

@@ -7,6 +7,15 @@ export interface ThreeGatePrice {
   lower: number;
 }
 
+export type ThreeGatePosition = "crossed-above" | "crossed-below" | "above" | "below";
+
+export interface ThreeGateLevelStatus {
+  key: "upper" | "middle" | "lower";
+  label: "上關價" | "中關價" | "下關價";
+  price: number;
+  position: ThreeGatePosition;
+}
+
 export function stockTickSize(price: number) {
   if (price < 10) return 0.01;
   if (price < 50) return 0.05;
@@ -35,4 +44,28 @@ export function calculateThreeGatePrice(
     middle: roundToStockTick((source.high + source.low) / 2),
     lower: roundToStockTick(source.low - range * 0.382),
   };
+}
+
+export function evaluateThreeGateLevels(
+  currentPrice: number,
+  previousClose: number | null | undefined,
+  threeGate: ThreeGatePrice,
+): ThreeGateLevelStatus[] {
+  const levels = [
+    { key: "upper", label: "上關價", price: threeGate.upper },
+    { key: "middle", label: "中關價", price: threeGate.middle },
+    { key: "lower", label: "下關價", price: threeGate.lower },
+  ] as const;
+  return levels.map((level) => {
+    const crossedAbove = previousClose != null && previousClose < level.price && currentPrice >= level.price;
+    const crossedBelow = previousClose != null && previousClose >= level.price && currentPrice < level.price;
+    const position: ThreeGatePosition = crossedAbove
+      ? "crossed-above"
+      : crossedBelow
+        ? "crossed-below"
+        : currentPrice >= level.price
+          ? "above"
+          : "below";
+    return { ...level, position };
+  });
 }

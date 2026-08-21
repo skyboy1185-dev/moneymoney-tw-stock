@@ -1,8 +1,10 @@
 from collections.abc import Callable
+import asyncio
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 import logging
+from time import monotonic
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
@@ -119,6 +121,7 @@ class FugleRealtimeTradeProvider:
         max_pages: int = 100,
         include_odd_lot: bool = True,
         timeout_seconds: float = 15.0,
+        min_request_interval_seconds: float = 0.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ):
         self._api_key = api_key.strip()
@@ -128,8 +131,35 @@ class FugleRealtimeTradeProvider:
         self._include_odd_lot = include_odd_lot
         self._timeout_seconds = timeout_seconds
         self._transport = transport
+        self._min_request_interval_seconds = max(0.0, min_request_interval_seconds)
+        self._request_lock = asyncio.Lock()
+        self._next_request_at = 0.0
         self._cursors: dict[tuple[str, date, str], _FugleCursor] = {}
         self._callbacks: dict[str, set[Callable[[NormalizedTradeTick], None]]] = {}
+        self._rate_limited_until = 0.0
+        self._rate_limit_failures = 0
+
+    @property
+    def rate_limit_retry_seconds(self) -> float:
+        return max(0.0, self._rate_limited_until - monotonic())
+
+    async def _paced_get(
+        self,
+        client: httpx.AsyncClient,
+        path: str,
+        *,
+        params: dict[str, str | int],
+    ) -> httpx.Response | None:
+        """Serialize all Fugle calls so every consumer shares one rate budget."""
+        async with self._request_lock:
+            if monotonic() < self._rate_limited_until:
+                return None
+            delay = self._next_request_at - monotonic()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            response = await client.get(path, params=params)
+            self._next_request_at = monotonic() + self._min_request_interval_seconds
+            return response
 
     @property
     def capabilities(self) -> RealtimeTradeCapabilities:
@@ -169,6 +199,8 @@ class FugleRealtimeTradeProvider:
             return []
         if trade_date != datetime.now(TAIPEI).date():
             return self._cached_ticks(stock_id, trade_date)
+        if monotonic() < self._rate_limited_until:
+            return self._cached_ticks(stock_id, trade_date)
 
         session_types = ("regular", "oddlot") if self._include_odd_lot else ("regular",)
         async with httpx.AsyncClient(
@@ -179,7 +211,37 @@ class FugleRealtimeTradeProvider:
         ) as client:
             for session_type in session_types:
                 await self._refresh_session(client, stock_id, trade_date, session_type)
+                if monotonic() < self._rate_limited_until:
+                    break
         return self._cached_ticks(stock_id, trade_date)
+
+    async def drain_trade_ticks(
+        self,
+        stock_id: str,
+        trade_date: date,
+    ) -> list[NormalizedTradeTick]:
+        """Fetch only newly appended trades and release their raw objects after delivery."""
+        ticks = await self.get_trade_ticks(stock_id, trade_date)
+        for (item_stock, item_date, _), cursor in self._cursors.items():
+            if item_stock == stock_id and item_date == trade_date:
+                cursor.ticks.clear()
+        return ticks
+
+    def _start_rate_limit_backoff(self, response: httpx.Response) -> None:
+        self._rate_limit_failures += 1
+        try:
+            retry_after = float(response.headers.get("Retry-After", "0"))
+        except ValueError:
+            retry_after = 0.0
+        delay_seconds = max(
+            retry_after,
+            min(300.0, 15.0 * (2 ** (self._rate_limit_failures - 1))),
+        )
+        self._rate_limited_until = monotonic() + delay_seconds
+        logger.warning(
+            "Fugle rate limit reached; pausing chip-flow requests for %.1f seconds",
+            delay_seconds,
+        )
 
     async def _refresh_session(
         self,
@@ -199,8 +261,19 @@ class FugleRealtimeTradeProvider:
             }
             if session_type == "oddlot":
                 params["type"] = "oddlot"
-            response = await client.get(f"/stock/intraday/trades/{stock_id}", params=params)
+            response = await self._paced_get(
+                client,
+                f"/stock/intraday/trades/{stock_id}",
+                params=params,
+            )
+            if response is None:
+                return
+            if response.status_code == 429:
+                self._start_rate_limit_backoff(response)
+                return
             response.raise_for_status()
+            self._rate_limit_failures = 0
+            self._rate_limited_until = 0.0
             payload = response.json()
             payload_date = payload.get("date")
             if payload_date and payload_date != trade_date.isoformat():

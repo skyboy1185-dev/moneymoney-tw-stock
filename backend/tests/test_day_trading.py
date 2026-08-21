@@ -3,6 +3,7 @@ from zoneinfo import ZoneInfo
 
 from app.services.day_trading import (
     MockDayTradingEngine,
+    entry_timing_guard,
     entry_allowed,
     evaluate_position,
     is_signal_expired,
@@ -11,6 +12,7 @@ from app.services.day_trading import (
     short_signal_score,
 )
 from app.services.official_market_data import OfficialStockQuote
+from app.services.popular_stock_universe import merge_momentum_stocks
 from app.services.day_trading_schedule import (
     MIN_DAY_TRADING_TURNOVER,
     MIN_DAY_TRADING_VOLUME_SHARES,
@@ -20,7 +22,7 @@ from app.services.day_trading_schedule import (
     recommendation_qualification,
     trading_session_state,
 )
-from app.services.theme_stock_universe import THEME_STOCKS_BY_SYMBOL, themes_for_symbol
+from app.services.theme_stock_universe import ThemeStock, themes_for_symbol
 
 
 def test_long_and_short_scores_use_multiple_conditions() -> None:
@@ -34,6 +36,60 @@ def test_long_and_short_scores_use_multiple_conditions() -> None:
         "active_sell": True, "large_sell": True, "short_trend": True,
         "market_fit": False, "industry_fit": False,
     }) == 90
+
+
+def test_entry_timing_blocks_lighton_chase_high_and_intraday_low_short() -> None:
+    lighton = entry_timing_guard(
+        direction="long",
+        price=278.5,
+        day_low=265.0,
+        day_high=279.5,
+        vwap=272.34,
+        change_percent=5.69,
+        five_minute_retest_confirmed=False,
+    )
+    low_short = entry_timing_guard(
+        direction="short",
+        price=181.5,
+        day_low=181.5,
+        day_high=187.0,
+        vwap=184.0,
+        change_percent=-2.94,
+        five_minute_retest_confirmed=False,
+    )
+
+    assert lighton["blocked"]
+    assert lighton["extremeRangeBlocked"]
+    assert lighton["rangePositionPercent"] == 93.1
+    assert low_short["blocked"]
+    assert low_short["extremeRangeBlocked"]
+    assert low_short["rangePositionPercent"] == 0
+
+
+def test_completed_five_minute_retest_can_release_non_extreme_edge_entry() -> None:
+    waiting = entry_timing_guard(
+        direction="long",
+        price=108.0,
+        day_low=100.0,
+        day_high=110.0,
+        vwap=106.0,
+        change_percent=4.0,
+        five_minute_retest_confirmed=False,
+    )
+    confirmed = entry_timing_guard(
+        direction="long",
+        price=108.0,
+        day_low=100.0,
+        day_high=110.0,
+        vwap=106.0,
+        change_percent=4.0,
+        five_minute_retest_confirmed=True,
+    )
+
+    assert waiting["blocked"]
+    assert waiting["retestRequired"]
+    assert not confirmed["blocked"]
+    assert confirmed["retestConfirmed"]
 
 
 def test_signal_expiry() -> None:
@@ -65,6 +121,30 @@ def test_short_mis_staleness_is_delay_before_source_interruption() -> None:
 
     engine.update_official_quotes({"t00": index_quote(301)})
     assert engine.market_regime()["dataStatus"] == "source_error"
+
+
+def test_stale_mis_quote_is_reported_as_closed_after_market_hours() -> None:
+    now = datetime(2026, 8, 3, 16, 20, tzinfo=TAIPEI)
+
+    class FixedClockEngine(MockDayTradingEngine):
+        def _now(self) -> datetime:
+            return now
+
+    quote = OfficialStockQuote(
+        symbol="t00", name="加權指數", price=43_700, previous_close=43_000,
+        open=43_100, high=43_800, low=42_900, volume=1_000_000,
+        change=700, change_percent=1.63,
+        quote_timestamp=(now - timedelta(hours=3)).isoformat(), source="TWSE MIS",
+        is_realtime=False,
+    )
+    engine = FixedClockEngine()
+    engine.update_official_quotes({"t00": quote})
+
+    regime = engine.market_regime()
+
+    assert regime["dataStatus"] == "closed"
+    assert regime["environmentLabel"] == "今日已收盤"
+    assert regime["marketOpen"] is False
 
 
 def test_long_and_short_hard_stops_are_emergency() -> None:
@@ -108,7 +188,10 @@ def test_mock_streaming_data_changes_and_supports_scenarios() -> None:
     second = second_batch[0]["price"]
     assert first != second
     assert len(second_batch) >= 6
-    assert {item["symbol"] for item in second_batch} == set(THEME_STOCKS_BY_SYMBOL)
+    momentum_stocks, _ = merge_momentum_stocks(())
+    assert {item["symbol"] for item in second_batch} == {
+        stock.symbol for stock in momentum_stocks
+    }
     assert all(item["themes"] for item in second_batch)
     assert "2603" not in {item["symbol"] for item in second_batch}
     assert {"PCB", "ABF載板"} <= set(themes_for_symbol("3037"))
@@ -120,6 +203,21 @@ def test_mock_streaming_data_changes_and_supports_scenarios() -> None:
     assert engine.market_regime()["dataStatus"] == "severe_delay"
     engine.trigger("long_signal")
     assert engine.signals()[0]["confidenceScore"] == 92
+
+
+def test_day_trading_engine_uses_exact_momentum_radar_universe() -> None:
+    engine = MockDayTradingEngine()
+    stocks = (
+        ThemeStock("3481", "群創", "上市", "光電", ("熱門股",)),
+        ThemeStock("8358", "金居", "上櫃", "電子零組件", ("熱門股",)),
+    )
+
+    engine.set_stock_universe(stocks)
+    signals = engine.signals()
+
+    assert engine.stock_universe_symbols == ("3481", "8358")
+    assert [signal["symbol"] for signal in signals] == ["3481", "8358"]
+    assert all(signal["momentumUniverseMember"] for signal in signals)
 
 
 TAIPEI = ZoneInfo("Asia/Taipei")
@@ -137,6 +235,7 @@ def _candidate(signal_id: str, confidence: int = 80, **overrides: object) -> dic
         "stopDistancePercent": 1.0, "marketAlignment": 80, "confirmationScore": 80,
         "volumeScore": 80, "activeForce": 80, "largeOrderForce": 70,
         "largeOrderDataAvailable": True, "largeOrderContinuousBuy": True,
+        "largeOrderContinuousSell": True,
         "industryScore": 80, "liquidityScore": 80, "price": 100,
         "entryMin": 99, "entryMax": 101, "generatedAt": now.isoformat(),
         "expiresAt": (now + timedelta(minutes=20)).isoformat(),
@@ -152,21 +251,23 @@ def test_opening_schedule_and_warmup_use_taipei_time() -> None:
         quote_samples=3, infrastructure_ok=True,
     )
     assert at_open["phase"] == "warmup"
+    assert at_open["robotStatus"] == "多空動能掃描中"
+    assert "09:00 已開始多空動能掃描" in at_open["statusMessage"]
     assert not at_open["formalSignalsAllowed"]
     before_signal_start = trading_session_state(
-        config, datetime(2026, 7, 21, 9, 14, tzinfo=TAIPEI),
+        config, datetime(2026, 7, 21, 9, 4, tzinfo=TAIPEI),
         quote_samples=3, infrastructure_ok=True,
     )
     assert before_signal_start["phase"] == "warmup"
     assert not before_signal_start["formalSignalsAllowed"]
     after_warmup = trading_session_state(
-        config, datetime(2026, 7, 21, 9, 15, tzinfo=TAIPEI),
+        config, datetime(2026, 7, 21, 9, 5, tzinfo=TAIPEI),
         quote_samples=3, infrastructure_ok=True,
     )
     assert after_warmup["phase"] == "scanning"
     assert after_warmup["robotStatus"] == "5 分 K 強勢股掃描中"
     assert after_warmup["formalSignalsAllowed"]
-    assert after_warmup["schedule"]["signalStartTime"] == "09:15"
+    assert after_warmup["schedule"]["signalStartTime"] == "09:05"
 
 
 def test_zero_minute_warmup_still_requires_enough_ticks() -> None:
@@ -298,7 +399,15 @@ def test_recommendation_hard_filters_and_short_qualification() -> None:
         now,
     )
     assert not unrelated_passed
-    assert "不屬於 AI 或低軌衛星主題股票池" in unrelated_failures
+    assert "不屬於大單動能雷達股票池" in unrelated_failures
+    dynamic_passed, dynamic_failures = recommendation_qualification(
+        _candidate("dynamic", symbol="3481", momentumUniverseMember=True),
+        config,
+        session,
+        now,
+    )
+    assert dynamic_passed
+    assert not dynamic_failures
     no_large_order_passed, no_large_order_failures = recommendation_qualification(
         _candidate("no-large-order", largeOrderContinuousBuy=False),
         config,
@@ -306,7 +415,16 @@ def test_recommendation_hard_filters_and_short_qualification() -> None:
         now,
     )
     assert not no_large_order_passed
-    assert "大單尚未持續敲進" in no_large_order_failures
+    assert "大戶尚未持續加多" in no_large_order_failures
+
+    short_no_sell_passed, short_no_sell_failures = recommendation_qualification(
+        _candidate("short-no-sell", direction="short", largeOrderContinuousSell=False),
+        config,
+        session,
+        now,
+    )
+    assert not short_no_sell_passed
+    assert "大戶尚未持續加空" in short_no_sell_failures
 
 
 def test_disposal_stock_is_never_qualified_for_day_trading() -> None:
@@ -359,19 +477,19 @@ def test_intraday_liquidity_target_scales_with_market_progress() -> None:
     assert round(noon_turnover) == 66_666_667
 
 
-def test_long_entry_at_seven_percent_gain_is_never_recommended() -> None:
+def test_long_entry_at_five_percent_gain_and_range_high_is_never_recommended() -> None:
     now = datetime(2026, 7, 21, 9, 20, tzinfo=TAIPEI)
     config = TradingScheduleConfig()
     session = trading_session_state(config, now, quote_samples=10, infrastructure_ok=True)
 
     below_limit, _ = recommendation_qualification(
-        _candidate("below-limit", changePercent=6.99),
+        _candidate("below-limit", changePercent=4.99, rangePositionPercent=95),
         config,
         session,
         now,
     )
     at_limit, failures = recommendation_qualification(
-        _candidate("at-limit", changePercent=7.0),
+        _candidate("at-limit", changePercent=5.0, rangePositionPercent=95),
         config,
         session,
         now,
@@ -379,7 +497,7 @@ def test_long_entry_at_seven_percent_gain_is_never_recommended() -> None:
 
     assert below_limit
     assert not at_limit
-    assert "今日漲幅已達 7%，禁止追價" in failures
+    assert "今日漲幅已達 5%，禁止追價" in failures
 
 
 def test_theme_universe_is_ai_or_low_earth_orbit_satellite_only() -> None:

@@ -150,10 +150,13 @@ def _persist_regime(
     previous: MarketRegime | None,
 ) -> MarketRegime:
     current = db.scalar(select(MarketRegime).where(MarketRegime.trade_date == payload.market.trade_date))
+    prior = db.scalar(select(MarketRegime).where(
+        MarketRegime.trade_date < payload.market.trade_date,
+    ).order_by(MarketRegime.trade_date.desc()).limit(1))
     switched = previous is None or previous.regime != evaluation.regime
     confirmation = (
-        (previous.confirmation_days + 1)
-        if previous and previous.provisional_regime == evaluation.provisional_regime
+        (prior.confirmation_days + 1)
+        if prior and prior.provisional_regime == evaluation.provisional_regime
         else 1
     )
     values = {
@@ -272,7 +275,10 @@ def process_adaptive_scan(db: Session, payload: AdaptiveScanPayload) -> dict[str
         status = _status_code(result.status)
         # A MIS five-level reference price is official market data and may be
         # shown for observation, but it is not an executed trade price.
-        if stock.quote_source != "TWSE MIS" and stock.quote_source.startswith("TWSE MIS"):
+        if (
+            (stock.quote_source != "TWSE MIS" and stock.quote_source.startswith("TWSE MIS"))
+            or stock.quote_source.startswith("Yahoo Finance")
+        ):
             status = "waiting_confirmation"
         if evaluation.regime == "CRASH": status = "market_risk_high"
         elif not entry_window_open: status = "next_day_watch"

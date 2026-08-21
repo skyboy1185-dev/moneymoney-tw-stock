@@ -21,7 +21,12 @@ def trade(exit_time: datetime, profit: float, direction: str = "long") -> DayTra
     )
 
 
-def test_monthly_performance_and_trades_only_include_selected_taipei_month() -> None:
+def test_monthly_performance_and_trades_only_include_selected_taipei_month(monkeypatch) -> None:
+    monkeypatch.setattr(day_trading, "_daily_period", lambda: (
+        "2026-08-04",
+        datetime(2026, 8, 3, 16, 0, tzinfo=UTC),
+        datetime(2026, 8, 4, 16, 0, tzinfo=UTC),
+    ))
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -64,13 +69,98 @@ def test_monthly_performance_and_trades_only_include_selected_taipei_month() -> 
     assert report["realizedProfit"] == 600
     assert report["unrealizedProfit"] == 50_000
     assert report["totalPnl"] == 50_600
+    assert report["longRealizedProfit"] == 1_000
+    assert report["longUnrealizedProfit"] == 50_000
+    assert report["longTotalPnl"] == 51_000
+    assert report["longTradeCount"] == 1
+    assert report["longOpenPositionCount"] == 1
+    assert report["shortRealizedProfit"] == -400
+    assert report["shortUnrealizedProfit"] == 0
+    assert report["shortTotalPnl"] == -400
+    assert report["shortTradeCount"] == 1
+    assert report["shortOpenPositionCount"] == 0
     assert report["tradingCost"] == 340
     assert report["today"]["tradeDate"] == "2026-08-04"
     assert report["today"]["tradeCount"] == 1
     assert report["today"]["realizedProfit"] == -400
     assert report["today"]["unrealizedProfit"] == 50_000
     assert report["today"]["totalPnl"] == 49_600
+    assert report["today"]["longRealizedProfit"] == 0
+    assert report["today"]["longUnrealizedProfit"] == 50_000
+    assert report["today"]["longTotalPnl"] == 50_000
+    assert report["today"]["shortRealizedProfit"] == -400
+    assert report["today"]["shortUnrealizedProfit"] == 0
+    assert report["today"]["shortTotalPnl"] == -400
     assert report["today"]["tradingCost"] == 170
     assert trades.status_code == 200
     assert trades.json()["period"] == "2026-08"
     assert len(trades.json()["items"]) == 2
+
+
+def test_automation_performance_starts_on_august_fourth() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        before = trade(datetime(2026, 8, 3, 2, 0, tzinfo=UTC), -9_999)
+        before.user_id = "system-automation"
+        included = trade(datetime(2026, 8, 4, 3, 0, tzinfo=UTC), -400)
+        included.user_id = "system-automation"
+        db.add_all([before, included])
+        db.commit()
+
+    def session_dependency():
+        with Session(engine) as session:
+            yield session
+
+    app = FastAPI()
+    app.include_router(day_trading.router, prefix="/api/v1")
+    app.dependency_overrides[get_db] = session_dependency
+    headers = {"x-user-id": "system-automation"}
+    with TestClient(app) as client:
+        performance = client.get("/api/v1/day-trading/performance?month=2026-08", headers=headers)
+        trades = client.get("/api/v1/day-trading/trades?month=2026-08", headers=headers)
+
+    assert performance.status_code == 200
+    assert performance.json()["performanceStartDate"] == "2026-08-04"
+    assert performance.json()["strategy"]["key"] == "fixed_2_lots"
+    assert performance.json()["capitalPlan"] is None
+    assert performance.json()["realizedProfit"] == -400
+    assert len(trades.json()["items"]) == 1
+
+
+def test_dynamic_strategy_has_independent_performance_and_capital_plan() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        original = trade(datetime(2026, 8, 17, 3, 0, tzinfo=UTC), 9_999)
+        original.user_id = "system-automation"
+        dynamic = trade(datetime(2026, 8, 17, 3, 0, tzinfo=UTC), 600)
+        dynamic.user_id = "system-automation-5m"
+        db.add_all([original, dynamic])
+        db.commit()
+
+    def session_dependency():
+        with Session(engine) as session:
+            yield session
+
+    app = FastAPI()
+    app.include_router(day_trading.router, prefix="/api/v1")
+    app.dependency_overrides[get_db] = session_dependency
+    headers = {"x-user-id": "system-automation-5m"}
+    with TestClient(app) as client:
+        performance = client.get("/api/v1/day-trading/performance?month=2026-08", headers=headers)
+
+    assert performance.status_code == 200
+    report = performance.json()
+    assert report["performanceStartDate"] == "2026-08-17"
+    assert report["strategy"]["key"] == "dynamic_5m"
+    assert report["realizedProfit"] == 600
+    assert report["capitalPlan"]["dailyCapital"] == 5_000_000

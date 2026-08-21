@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   BellRing, CheckCircle2, ChevronDown, ChevronUp, Copy, Link2, LoaderCircle, MessageCircle,
   RefreshCw, Save, Send, ShieldCheck, Trash2, TriangleAlert,
@@ -8,6 +8,7 @@ import {
 import type {
   LineIntegrationStatus,
   LineNotificationSettings,
+  LineTradeDelivery,
 } from "@/lib/day-trading-types";
 import { lineNotificationClient } from "@/services/line-notification-client";
 
@@ -24,7 +25,11 @@ const statusLabel = {
 
 const GROUP_DISCLAIMER = "⚠️ 免責聲明：\n本訊息為演算法內部測試之【自動化數據產出】，僅供技術研究與程式調校之用。本站及發訊系統非屬投顧事業，本訊息「絕不構成」任何個股之買賣推介、操作勸誘或專業投資建議。金融市場具極高風險，群內成員請勿依此進行真實市場跟單。任何依此資訊所為之投資行為，均須【自行判斷並自負盈虧】，開發者不承擔任何直接或間接之法律責任。";
 
-export function LineNotificationPanel() {
+export function LineNotificationPanel({
+  onTradeDelivery,
+}: {
+  onTradeDelivery?: (delivery: LineTradeDelivery) => void;
+}) {
   const [status, setStatus] = useState<LineIntegrationStatus | null>(null);
   const [draft, setDraft] = useState<LineNotificationSettings | null>(null);
   const [loading, setLoading] = useState(true);
@@ -32,17 +37,31 @@ export function LineNotificationPanel() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [expanded, setExpanded] = useState(false);
+  const deliveredIds = useRef<Set<number> | null>(null);
 
   const refresh = useCallback(async () => {
     const next = await lineNotificationClient.status();
     setStatus(next);
-    setDraft(next.settings);
-  }, []);
+    setDraft((current) => current ?? next.settings);
+    const deliveries = next.recentTradeDeliveries ?? [];
+    const known = deliveredIds.current;
+    const recentCutoff = Date.now() - 15_000;
+    const unseen = known === null
+      ? deliveries.filter((item) => new Date(item.sentAt).getTime() >= recentCutoff)
+      : deliveries.filter((item) => !known.has(item.id));
+    deliveredIds.current = new Set(deliveries.map((item) => item.id));
+    unseen.slice().reverse().forEach((delivery) => onTradeDelivery?.(delivery));
+  }, [onTradeDelivery]);
 
   useEffect(() => {
     void refresh()
       .catch((reason) => setError(reason instanceof Error ? reason.message : "無法載入 LINE 通知設定"))
       .finally(() => setLoading(false));
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "hidden") return;
+      void refresh().catch(() => undefined);
+    }, 10_000);
+    return () => window.clearInterval(interval);
   }, [refresh]);
 
   const run = async (name: string, action: () => Promise<unknown>, success: string) => {
@@ -62,7 +81,7 @@ export function LineNotificationPanel() {
 
   if (!expanded) return <section className="dt-card line-panel collapsed">
     <div className="dt-section-heading">
-      <div><span className="eyebrow">LINE MESSAGING API</span><h2>LINE 通知設定</h2><p>設定內容已隱藏，需要時可再展開。</p></div>
+      <div><span className="eyebrow">LINE + GMAIL</span><h2>交易通知設定</h2><p>LINE 與 Gmail 獨立發送；設定內容已隱藏。</p></div>
       <div className="line-panel-heading-actions">
         {status && <span className={`line-status ${status.connectionStatus}`}>
           {status.connectionStatus === "connected" ? <CheckCircle2 /> : <TriangleAlert />}
@@ -75,7 +94,7 @@ export function LineNotificationPanel() {
 
   if (loading || !status || !draft) return <section className="dt-card line-panel">
     <div className="dt-section-heading">
-      <div><span className="eyebrow">LINE MESSAGING API</span><h2>LINE 通知設定</h2></div>
+      <div><span className="eyebrow">LINE + GMAIL</span><h2>交易通知設定</h2></div>
       <button className="line-panel-toggle" type="button" aria-expanded="true" onClick={() => setExpanded(false)}><ChevronUp />隱藏設定</button>
     </div>
     <div className="line-loading"><LoaderCircle className="spin" /><span>正在載入 LINE 群組通知設定…</span></div>
@@ -86,7 +105,7 @@ export function LineNotificationPanel() {
   };
 
   const notificationOptions: Array<[keyof LineNotificationSettings, string]> = [
-    ["openingEnabled", "開盤啟動通知"],
+    ["openingEnabled", "首則進場附啟動／結束時間"],
     ["longEntryEnabled", "做多進場通知"],
     ["shortEntryEnabled", "放空進場通知"],
     ["longExitEnabled", "多單出場通知"],
@@ -98,7 +117,7 @@ export function LineNotificationPanel() {
 
   return <section className="dt-card line-panel">
     <div className="dt-section-heading">
-      <div><span className="eyebrow">LINE MESSAGING API</span><h2>LINE 通知設定</h2><p>只發送正式進場訊號，以及持倉的出場、停利與停損通知</p></div>
+      <div><span className="eyebrow">LINE + GMAIL</span><h2>交易通知設定</h2><p>正式進場、減碼、停利與停損同步發送；LINE 額度滿時 Gmail 仍可寄送</p></div>
       <div className="line-panel-heading-actions">
         <span className={`line-status ${status.connectionStatus}`}>
           {status.connectionStatus === "connected" ? <CheckCircle2 /> : <TriangleAlert />}
@@ -112,8 +131,21 @@ export function LineNotificationPanel() {
       <div><MessageCircle /><span>官方帳號<strong>{status.officialAccountName}</strong></span></div>
       <div><Link2 /><span>已綁定群組<strong>{status.groups.length} 個</strong></span></div>
       <div><BellRing /><span>今日推送<strong>{status.todayPushCount} 則</strong></span></div>
+      <div><Send /><span>今日 Gmail<strong>{status.todayGmailPushCount} 封</strong></span></div>
       <div><RefreshCw /><span>最後推送<strong>{time(status.lastPushAt)}</strong></span></div>
     </div>
+
+    <div className="intraday-warning">
+      <BellRing />
+      今日買賣通知 {status.todayTradePushCount}／{status.effectiveDailyTradeMessageLimit} 則
+      ・本月 {status.monthlyMessageUsage ?? "—"}／{status.monthlyMessageLimit ?? "—"}
+      ・尚餘 {status.monthlyMessageRemaining ?? "—"} 則／{status.remainingTradingDays} 個交易日
+      ・Gmail {status.gmailConfigured ? `${status.gmailTransport === "apps_script" ? "HTTPS" : "SMTP"} 已設定（${status.gmailRecipients.join("、")}）` : "等待設定"}
+    </div>
+
+    {!status.gmailConfigured && <div className="line-setup-warning">
+      <TriangleAlert /><div><strong>Gmail 尚未完成設定</strong><span>請在 Railway 後端設定 GMAIL_SENDER_EMAIL、GMAIL_APP_PASSWORD 與 GMAIL_RECIPIENT_EMAILS；密碼必須使用 Google 應用程式密碼。</span></div>
+    </div>}
 
     <div className="line-webhook-row">
       <ShieldCheck />
@@ -168,6 +200,7 @@ export function LineNotificationPanel() {
     <div className="line-actions">
       <button disabled={working === "save"} onClick={() => void run("save", () => lineNotificationClient.saveSettings(draft), "LINE 通知開關已儲存")}><Save />儲存通知設定</button>
       <button className="test" disabled={!status.credentialsConfigured || !status.groups.length || working === "test"} onClick={() => void run("test", lineNotificationClient.test, "LINE 測試通知已送出")}><Send />測試通知</button>
+      <button className="test" disabled={!status.gmailConfigured || working === "gmail-test"} onClick={() => void run("gmail-test", lineNotificationClient.testGmail, "Gmail 測試信已寄出")}><Send />測試 Gmail</button>
     </div>
     <p className="line-disclaimer">第一版只提供 LINE 訊號通知，不串接券商下單。所有訊息僅供研究參考，不構成投資建議。</p>
   </section>;

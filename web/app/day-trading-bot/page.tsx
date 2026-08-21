@@ -1,7 +1,7 @@
 import Link from "next/link";
 import {
   Activity, BarChart3, Bot, Flame, Landmark, Newspaper, Search,
-  SlidersHorizontal, Star, TrendingUp, UsersRound, Waves,
+  SlidersHorizontal, TrendingUp, UsersRound, Waves,
 } from "lucide-react";
 import { DayTradingDashboard } from "@/components/day-trading/DayTradingDashboard";
 import { ElectronicChipFlowTicker } from "@/components/ElectronicChipFlowTicker";
@@ -40,7 +40,6 @@ export default function DayTradingBotPage() {
       <Link href="/?view=large-holders"><UsersRound size={17} />大戶持股變化榜</Link>
       <Link href="/?view=institutional-investors"><Landmark size={17} />三大法人</Link>
       <Link href="/?view=chip-flow"><Waves size={17} />盤中籌碼</Link>
-      <Link href="/?view=portfolio"><Star size={17} />觀察清單</Link>
       <Link href="/?view=industries"><Flame size={17} />產業熱點</Link>
       <Link href="/?view=news"><Newspaper size={17} />新聞</Link>
     </nav>

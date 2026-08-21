@@ -35,6 +35,7 @@ from ..services.ai_stock_service import (
 )
 from ..services.ai_stock_automation import ai_stock_automation
 from ..services.day_trading_cache import day_trading_cache
+from ..services.theme_stock_universe import AI_RELATED_THEME_STOCKS
 
 
 router = APIRouter(tags=["ai-stock"])
@@ -51,6 +52,23 @@ def _not_found(message: str) -> HTTPException:
 @router.get("/ai-stock-automation/status")
 def get_automation_status() -> dict:
     return ai_stock_automation.state
+
+
+@router.get("/ai-stock-universe")
+def get_ai_stock_universe() -> dict:
+    return {
+        "items": [
+            {
+                "symbol": stock.symbol,
+                "name": stock.name,
+                "market": stock.market,
+                "industry": stock.industry,
+                "themes": list(stock.themes),
+            }
+            for stock in AI_RELATED_THEME_STOCKS
+        ],
+        "total": len(AI_RELATED_THEME_STOCKS),
+    }
 
 
 @router.get("/portfolio/settings")

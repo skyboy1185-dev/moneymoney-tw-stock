@@ -283,3 +283,17 @@ def test_ai_monitor_sync_rejects_non_theme_symbols() -> None:
         )
         assert active == []
         assert db.query(AIStockMonitor).count() == 0
+
+
+def test_ai_monitor_sync_accepts_expanded_ai_supply_chain_symbols() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 7, 27, 10, 0, 30, tzinfo=TAIPEI)
+    with Session(engine) as db:
+        active = sync_recommendations(
+            db,
+            "expanded-theme-user",
+            [_recommendation("signal-ai-power-2301", "2301")],
+            now,
+        )
+        assert [item.symbol for item in active] == ["2301"]

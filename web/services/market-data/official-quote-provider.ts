@@ -257,7 +257,7 @@ async function fetchMisRows(metas: QuoteStockMeta[]): Promise<Record<string, unk
     batches.push(metas.slice(index, index + MIS_BATCH_SIZE));
   }
   const rows: Record<string, unknown>[] = [];
-  const concurrency = 8;
+  const concurrency = 2;
   for (let index = 0; index < batches.length; index += concurrency) {
     const wave = await Promise.allSettled(
       batches.slice(index, index + concurrency).map((batch) => fetchMisRowBatch(batch)),
@@ -265,6 +265,31 @@ async function fetchMisRows(metas: QuoteStockMeta[]): Promise<Record<string, unk
     rows.push(...wave.flatMap((result) => result.status === "fulfilled" ? result.value : []));
   }
   return rows;
+}
+
+async function fetchFallbackQuotes(
+  metas: QuoteStockMeta[],
+  loader: (meta: QuoteStockMeta) => Promise<StockQuote | null>,
+  result: Map<string, StockQuote>,
+  cacheMs: number,
+) {
+  const concurrency = 2;
+  for (let index = 0; index < metas.length; index += concurrency) {
+    const wave = await Promise.allSettled(
+      metas.slice(index, index + concurrency).map(async (meta) => ({
+        meta,
+        quote: await loader(meta),
+      })),
+    );
+    for (const item of wave) {
+      if (item.status !== "fulfilled" || !item.value.quote) continue;
+      quoteCache.set(item.value.meta.symbol, {
+        value: item.value.quote,
+        expiresAt: Date.now() + cacheMs,
+      });
+      result.set(item.value.meta.symbol, item.value.quote);
+    }
+  }
 }
 
 /** One-pass market snapshot for broad market views such as industry breadth.
@@ -353,7 +378,7 @@ async function fetchBackendMisQuotes(metas: QuoteStockMeta[]): Promise<Map<strin
     batches.push(metas.slice(index, index + BACKEND_QUOTE_BATCH_SIZE));
   }
   const results = new Map<string, StockQuote>();
-  const concurrency = 4;
+  const concurrency = 2;
   for (let index = 0; index < batches.length; index += concurrency) {
     const payloads = await Promise.allSettled(batches.slice(index, index + concurrency).map((items) =>
       backendJson<{ items: BackendOfficialQuote[] }>(
@@ -442,28 +467,20 @@ export async function getOfficialQuotes(metas: QuoteStockMeta[]): Promise<Map<st
     // The public official close remains the final fallback if the backend MIS relay is unavailable.
   }
   if (isMarketSession()) {
-    await Promise.all(missing.filter((meta) => !result.has(meta.symbol)).map(async (meta) => {
-      try {
-        const fallback = await fetchYahooQuote(meta);
-        if (!fallback) return;
-        quoteCache.set(meta.symbol, { value: fallback, expiresAt: Date.now() + 15_000 });
-        result.set(meta.symbol, fallback);
-      } catch {
-        // Keep the symbol unavailable rather than presenting an old close as today's quote.
-      }
-    }));
+    await fetchFallbackQuotes(
+      missing.filter((meta) => !result.has(meta.symbol)),
+      fetchYahooQuote,
+      result,
+      15_000,
+    );
     return result;
   }
-  await Promise.all(missing.filter((meta) => !result.has(meta.symbol)).map(async (meta) => {
-    try {
-      const fallback = await fetchClosingQuote(meta);
-      if (!fallback) return;
-      quoteCache.set(meta.symbol, { value: fallback, expiresAt: Date.now() + 60_000 });
-      result.set(meta.symbol, fallback);
-    } catch {
-      // Keep the symbol unavailable when neither live nor official closing data can be verified.
-    }
-  }));
+  await fetchFallbackQuotes(
+    missing.filter((meta) => !result.has(meta.symbol)),
+    fetchClosingQuote,
+    result,
+    60_000,
+  );
   return result;
 }
 

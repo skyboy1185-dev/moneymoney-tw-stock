@@ -293,14 +293,18 @@ export function AIStockWorkflow({
     </section>
 
     <section className="ai-section ai-alert-log">
-      <div className="ai-section-title"><div><Bell size={17} /><div><h2>AI 與 LINE 通知紀錄</h2><p>只記錄買進、加碼、減碼、賣出、停損與資料異常事件</p></div></div>
-        <button onClick={() => void aiStockLineNotificationClient.test().then(() => setMessage("AI選股 LINE 測試通知已送出")).catch((reason) => setMessage(reason.message))}>測試 AI選股 LINE</button>
+      <div className="ai-section-title"><div><Bell size={17} /><div><h2>AI、LINE 與 Gmail 通知紀錄</h2><p>只記錄買進、加碼、減碼、賣出、停損與資料異常事件</p></div></div>
+        <div className="ranking-actions">
+          <button onClick={() => void aiStockLineNotificationClient.test().then(() => setMessage("AI選股 LINE 測試通知已送出")).catch((reason) => setMessage(reason.message))}>測試 AI選股 LINE</button>
+          <button onClick={() => void aiStockLineNotificationClient.testGmail().then(() => setMessage("AI選股 Gmail 測試信已送出")).catch((reason) => setMessage(reason.message))}>測試 AI選股 Gmail</button>
+        </div>
       </div>
       {lineDetails && <div className="ai-line-overview">
         <div><span>官方帳號</span><strong>{lineDetails.officialAccountName}</strong></div>
         <div><span>連線狀態</span><strong>{lineDetails.connectionStatus === "connected" ? "已連線" : "尚未完成設定"}</strong></div>
         <div><span>已綁定群組</span><strong>{lineDetails.groups.length}</strong></div>
         <div><span>今日推送</span><strong>{lineDetails.todayPushCount}</strong></div>
+        <div><span>Gmail</span><strong>{lineDetails.gmailConfigured ? `已連線・${lineDetails.gmailTransport === "apps_script" ? "HTTPS" : "SMTP"}` : "尚未完成設定"}</strong></div>
         <div><span>最後推送</span><strong>{dateTime(lineDetails.lastPushAt)}</strong></div>
       </div>}
       {!dashboard?.alerts.length ? <div className="ai-monitor-empty">目前沒有通知紀錄。</div>

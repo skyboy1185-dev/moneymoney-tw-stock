@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+import json
 
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
@@ -7,14 +8,21 @@ from app.database import Base
 from app.models import (
     DayTradingAlert,
     DayTradingPosition,
+    DayTradingRecommendationHistory,
     DayTradingTrade,
     LineDeliveryLog,
 )
 from app.services.automated_position_tracker import (
+    AUTOMATION_DAILY_CAPITAL,
     AUTOMATION_USER_ID,
+    DYNAMIC_AUTOMATION_USER_ID,
+    DYNAMIC_STRATEGY_KEY,
+    FIXED_STRATEGY_KEY,
+    automation_capital_state,
     ensure_positions_for_delivered_entries,
     finalize_automatic_position_event,
     pending_automatic_position_events,
+    record_official_recommendations,
 )
 
 
@@ -61,9 +69,9 @@ def _delivered_entry(db: Session, signal_id: str) -> None:
     db.commit()
 
 
-def _automatic_position(db: Session) -> DayTradingPosition:
+def _automatic_position(db: Session, user_id: str = AUTOMATION_USER_ID) -> DayTradingPosition:
     position = DayTradingPosition(
-        user_id=AUTOMATION_USER_ID,
+        user_id=user_id,
         signal_id="2330-long-20260730T094152",
         symbol="2330",
         stock_name="台積電",
@@ -86,7 +94,7 @@ def _automatic_position(db: Session) -> DayTradingPosition:
     return position
 
 
-def test_delivered_formal_entry_creates_one_persisted_virtual_position() -> None:
+def test_formal_entry_creates_only_original_fixed_lot_position() -> None:
     with _session() as db:
         signal = _signal()
         _delivered_entry(db, str(signal["id"]))
@@ -98,22 +106,105 @@ def test_delivered_formal_entry_creates_one_persisted_virtual_position() -> None
 
         assert len(first) == 1
         assert second == []
-        position = db.scalar(select(DayTradingPosition))
-        assert position is not None
-        assert position.user_id == AUTOMATION_USER_ID
-        assert position.symbol == "2330"
-        assert position.entry_price == 2255
-        assert position.stop_loss == 2236.96
-        assert position.quantity == 2
+        positions = {
+            position.user_id: position
+            for position in db.scalars(select(DayTradingPosition)).all()
+        }
+        assert set(positions) == {AUTOMATION_USER_ID}
+        assert positions[AUTOMATION_USER_ID].quantity == 2
+        assert positions[AUTOMATION_USER_ID].symbol == "2330"
 
 
-def test_entry_without_successful_line_delivery_is_not_auto_tracked() -> None:
+def test_entry_without_successful_line_delivery_is_still_auto_tracked() -> None:
     with _session() as db:
         created = ensure_positions_for_delivered_entries(db, [_signal()])
         db.commit()
 
+        assert len(created) == 1
+        assert db.scalar(select(func.count()).select_from(DayTradingPosition)) == 1
+
+
+def test_repeated_same_symbol_signal_does_not_add_another_position() -> None:
+    with _session() as db:
+        first = _signal()
+        repeated = {**first, "id": f"{first['id']}-repeat"}
+
+        assert len(ensure_positions_for_delivered_entries(db, [first])) == 1
+        db.commit()
+        assert ensure_positions_for_delivered_entries(db, [repeated]) == []
+        assert db.scalar(select(func.count()).select_from(DayTradingPosition)) == 1
+        position = db.scalar(select(DayTradingPosition))
+        assert position is not None and position.quantity == 2
+
+
+def test_paused_dynamic_strategy_creates_no_new_positions() -> None:
+    with _session() as db:
+        created: list[DayTradingPosition] = []
+        for index in range(5):
+            signal = {
+                **_signal(),
+                "id": f"dynamic-{index}",
+                "symbol": f"99{index:02d}",
+                "price": 100.0,
+                "stopLoss": 99.0,
+                "target1": 102.0,
+                "target2": 103.0,
+            }
+            created.extend(ensure_positions_for_delivered_entries(db, [signal]))
+        db.commit()
+
+        dynamic_created = [
+            position for position in created
+            if position.user_id == DYNAMIC_AUTOMATION_USER_ID
+        ]
+        fixed_created = [
+            position for position in created
+            if position.user_id == AUTOMATION_USER_ID
+        ]
+        assert dynamic_created == []
+        assert [position.quantity for position in fixed_created] == [2.0] * 5
+        capital = automation_capital_state(db, datetime(2026, 7, 30, 3, 0, tzinfo=UTC))
+        assert capital["usedCapital"] == 0
+        assert capital["availableCapital"] == AUTOMATION_DAILY_CAPITAL
+
+
+def test_official_recommendation_history_is_deduplicated() -> None:
+    with _session() as db:
+        signal = _signal()
+        ensure_positions_for_delivered_entries(db, [signal])
+        first = record_official_recommendations(db, [signal])
+        db.commit()
+        second = record_official_recommendations(db, [signal])
+        db.commit()
+
+        assert first == 1
+        assert second == 0
+        row = db.scalar(select(DayTradingRecommendationHistory))
+        assert row is not None
+        assert row.signal_id == signal["id"]
+        assert row.trading_date.isoformat() == "2026-07-30"
+        payload = json.loads(row.payload_json)
+        assert payload["recommendedQuantityLots"] == 2
+        assert payload["strategyAllocations"][FIXED_STRATEGY_KEY]["quantityLots"] == 2
+        assert DYNAMIC_STRATEGY_KEY not in payload["strategyAllocations"]
+
+
+def test_fixed_two_lot_strategy_skips_excessive_stop_risk() -> None:
+    with _session() as db:
+        signal = {
+            **_signal(),
+            "price": 4_060.0,
+            "stopLoss": 4_025.0,
+            "target1": 4_110.0,
+            "target2": 4_150.0,
+        }
+
+        created = ensure_positions_for_delivered_entries(db, [signal])
+
         assert created == []
-        assert db.scalar(select(func.count()).select_from(DayTradingPosition)) == 0
+        allocation = signal["strategyAllocations"][FIXED_STRATEGY_KEY]
+        assert allocation["quantityLots"] == 0
+        assert "超過單筆上限 50,000 元" in allocation["status"]
 
 
 def test_background_stop_event_closes_position_and_records_trade() -> None:
@@ -141,6 +232,27 @@ def test_background_stop_event_closes_position_and_records_trade() -> None:
         assert finalized.exit_price == 2205
         assert db.scalar(select(func.count()).select_from(DayTradingAlert)) == 1
         assert db.scalar(select(func.count()).select_from(DayTradingTrade)) == 1
+
+
+def test_dynamic_strategy_exit_stays_in_dynamic_ledger() -> None:
+    with _session() as db:
+        position = _automatic_position(db, DYNAMIC_AUTOMATION_USER_ID)
+        event = pending_automatic_position_events(
+            db,
+            lambda symbol: 2205 if symbol == "2330" else None,
+            data_status="normal",
+        )[0]
+
+        finalize_automatic_position_event(db, event)
+        db.commit()
+
+        alert = db.scalar(select(DayTradingAlert))
+        trade = db.scalar(select(DayTradingTrade))
+        assert alert is not None and alert.user_id == DYNAMIC_AUTOMATION_USER_ID
+        assert trade is not None and trade.user_id == DYNAMIC_AUTOMATION_USER_ID
+        assert "新版 500 萬動態配置" in alert.title
+        assert "新版 500 萬動態配置" in trade.strategy_name
+        assert position.status == "closed"
 
 
 def test_partial_target_is_not_repeated_and_position_stays_open() -> None:

@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from .config import get_settings
-from .database import SessionLocal, create_tables
+from .database import SessionLocal, cleanup_expired_operational_data, create_tables
 from .routers import (
     adaptive_electronic,
     ai_stock,
@@ -16,8 +16,10 @@ from .routers import (
     day_trading,
     line_integration,
     large_holders,
+    long_term,
     market_data,
     portfolio,
+    rocket_radar,
     screener,
     stocks,
 )
@@ -27,6 +29,8 @@ from .services.chip_flow_alerts import electronic_chip_flow_alert_monitor
 from .services.day_trading_automation import day_trading_automation
 from .services.line_messaging import line_notification_dispatcher
 from .services.large_holder_automation import large_holder_automation
+from .services.long_term_automation import long_term_selection_automation
+from .services.rocket_automation import rocket_radar_automation
 
 settings = get_settings()
 
@@ -34,15 +38,20 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     create_tables()
+    cleanup_expired_operational_data(retention_days=7)
     await line_notification_dispatcher.start()
     await day_trading_automation.start()
     await ai_stock_automation.start()
     await adaptive_electronic_automation.start()
     await large_holder_automation.start()
     await electronic_chip_flow_alert_monitor.start()
+    await long_term_selection_automation.start()
+    await rocket_radar_automation.start()
     try:
         yield
     finally:
+        await rocket_radar_automation.stop()
+        await long_term_selection_automation.stop()
         await electronic_chip_flow_alert_monitor.stop()
         await large_holder_automation.stop()
         await adaptive_electronic_automation.stop()
@@ -75,6 +84,8 @@ app.include_router(ai_stock_line_integration.router, prefix=settings.api_prefix)
 app.include_router(ai_stock.router, prefix=settings.api_prefix)
 app.include_router(adaptive_electronic.router, prefix=settings.api_prefix)
 app.include_router(large_holders.router, prefix=settings.api_prefix)
+app.include_router(long_term.router, prefix=settings.api_prefix)
+app.include_router(rocket_radar.router, prefix=settings.api_prefix)
 app.include_router(market_data.router, prefix=settings.api_prefix)
 app.include_router(line_integration.webhook_router)
 app.include_router(ai_stock_line_integration.webhook_router)
@@ -97,6 +108,7 @@ def health() -> dict:
         "status": "ok" if database_status == "connected" else "degraded",
         "app": settings.app_name,
         "environment": settings.app_env,
+        "runtime_mode": settings.runtime_mode,
         "database": database_status,
         "mock_data": settings.mock_data_enabled,
         "checked_at": datetime.now(UTC),

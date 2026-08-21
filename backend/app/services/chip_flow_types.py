@@ -87,3 +87,27 @@ class ChipFlowSnapshotData:
     snapshot_time: datetime
     totals: ChipFlowTotals
     updated_at: datetime
+
+    @property
+    def large_buy_shares(self) -> int:
+        return self.totals.large_buy_shares
+
+    @property
+    def large_sell_shares(self) -> int:
+        return self.totals.large_sell_shares
+
+    @property
+    def large_net_shares(self) -> int:
+        return self.totals.large_net_shares
+
+    @property
+    def small_buy_shares(self) -> int:
+        return self.totals.small_buy_shares
+
+    @property
+    def small_sell_shares(self) -> int:
+        return self.totals.small_sell_shares
+
+    @property
+    def small_net_shares(self) -> int:
+        return self.totals.small_net_shares

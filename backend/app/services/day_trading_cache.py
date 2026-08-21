@@ -30,6 +30,19 @@ class DayTradingCache:
         except Exception:
             return False
 
+    @property
+    def ready_for_formal_signals(self) -> bool:
+        """Allow the in-memory fallback locally while keeping production strict."""
+        return self.healthy or get_settings().app_env.strip().lower() == "development"
+
+    @property
+    def status(self) -> str:
+        if self.healthy:
+            return "healthy"
+        if self.ready_for_formal_signals:
+            return "memory_fallback"
+        return "unavailable"
+
     def put(self, key: str, payload: Any, ttl: int = 120) -> None:
         encoded = json.dumps(payload, ensure_ascii=False)
         self._memory[key] = encoded

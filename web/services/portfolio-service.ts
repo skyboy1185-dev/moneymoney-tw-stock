@@ -1,6 +1,6 @@
 import { getDatabase } from "@/database/event-store";
 import type { HoldingItem, RankingRow, WatchlistItem, WatchStatus } from "@/lib/market-types";
-import { buildMarketSnapshot } from "@/services/market-snapshot-service";
+import { loadMarketSnapshot } from "@/services/scanner-worker-client";
 import { getOfficialQuote, mergeOfficialQuote } from "@/services/market-data/official-quote-provider";
 import { stockService } from "@/services/stock-service";
 
@@ -77,7 +77,7 @@ async function currentData(symbol: string, rankings: RankingRow[]) {
 
 export async function listWatchlist(userId: string): Promise<WatchlistItem[]> {
   const records = getDatabase().prepare("SELECT * FROM watchlist_items WHERE user_id = ? ORDER BY added_at DESC").all(userId) as unknown as WatchRecord[];
-  const snapshot = await buildMarketSnapshot(true);
+  const snapshot = await loadMarketSnapshot(true);
   return (await Promise.all(records.map(async (record) => {
     const current = await currentData(record.symbol, snapshot.rankings);
     if (!current) return null;
@@ -134,7 +134,7 @@ export function removeWatchlist(userId: string, symbol: string) {
 
 export async function listHoldings(userId: string): Promise<HoldingItem[]> {
   const records = getDatabase().prepare("SELECT * FROM holding_items WHERE user_id = ? ORDER BY added_at DESC").all(userId) as unknown as HoldingRecord[];
-  const snapshot = await buildMarketSnapshot(true);
+  const snapshot = await loadMarketSnapshot(true);
   return (await Promise.all(records.map(async (record) => {
     const current = await currentData(record.symbol, snapshot.rankings);
     if (!current) return null;

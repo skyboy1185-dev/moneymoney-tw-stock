@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Activity, AlertTriangle, BarChart3, Gauge, ShieldAlert, TrendingUp } from "lucide-react";
 import type { DailyPrice, TechnicalIndicator } from "@/lib/types";
 import { analyzeTechnicalData } from "@/lib/technical-analysis";
+import { calculateThreePeriodDeductionSignal, findThreePeriodDeductionPositions } from "@/lib/deduction-signals";
 import { formatPercent, formatVolume, safeNumber } from "@/lib/format";
 
 const MA_CONFIG = [
@@ -56,6 +57,46 @@ export function StockChart({
   const visibleIndexByDate = useMemo(() => new Map(prices.map((price, index) => [price.date, index])), [prices]);
   const tradeSignalByDate = useMemo(() => new Map(analysis.tradeSignals.map((signal) => [signal.date, signal])), [analysis.tradeSignals]);
   const latestIndicator = indicators.at(-1);
+  const shortDeductionSignal = useMemo(
+    () => calculateThreePeriodDeductionSignal(analysisPrices.map((price) => price.close), 5),
+    [analysisPrices],
+  );
+  const shortDeductionPositions = useMemo(
+    () => findThreePeriodDeductionPositions(analysisPrices, 5),
+    [analysisPrices],
+  );
+  const shortDeductionDirection = shortDeductionSignal?.matchesLow
+    ? "low"
+    : shortDeductionSignal?.matchesHigh
+      ? "high"
+      : "neutral";
+  const shortDeductionLabel = !shortDeductionSignal
+    ? "扣抵資料不足"
+    : shortDeductionDirection === "low"
+      ? "短線扣三低"
+      : shortDeductionDirection === "high"
+        ? "短線扣三高"
+        : "短線無扣三訊號";
+  const deductionSignal = useMemo(
+    () => calculateThreePeriodDeductionSignal(analysisPrices.map((price) => price.close), 20),
+    [analysisPrices],
+  );
+  const deductionPositions = useMemo(
+    () => findThreePeriodDeductionPositions(analysisPrices, 20),
+    [analysisPrices],
+  );
+  const deductionDirection = deductionSignal?.matchesLow
+    ? "low"
+    : deductionSignal?.matchesHigh
+      ? "high"
+      : "neutral";
+  const deductionLabel = !deductionSignal
+    ? "扣抵資料不足"
+    : deductionDirection === "low"
+      ? "日 K 扣三低"
+      : deductionDirection === "high"
+        ? "日 K 扣三高"
+        : "目前無扣三低／扣三高";
   const latestFullIndex = analysisPrices.length - 1;
   const latestVolume = analysis.volume[latestFullIndex];
   const visibleVolume = useMemo(
@@ -128,14 +169,32 @@ export function StockChart({
         }));
       });
       const visibleDates = new Set(prices.map((price) => price.date));
-      candleSeries.setMarkers(analysis.markers.filter((marker) => visibleDates.has(marker.date)).map((marker) => ({
-        time: marker.date as never,
-        position: marker.position,
-        color: marker.color,
-        shape: marker.shape,
-        text: marker.text,
-        size: 0.72,
-      })));
+      candleSeries.setMarkers([
+        ...analysis.markers.filter((marker) => visibleDates.has(marker.date)).map((marker) => ({
+          time: marker.date as never,
+          position: marker.position,
+          color: marker.color,
+          shape: marker.shape,
+          text: marker.text,
+          size: 0.72,
+        })),
+        ...shortDeductionPositions.filter((marker) => visibleDates.has(marker.date)).map((marker) => ({
+          time: marker.date as never,
+          position: "aboveBar" as const,
+          color: "#ffd166",
+          shape: "circle" as const,
+          text: `MA5扣${marker.order} ${safeNumber(marker.value)}`,
+          size: 0.82,
+        })),
+        ...deductionPositions.filter((marker) => visibleDates.has(marker.date)).map((marker) => ({
+          time: marker.date as never,
+          position: "belowBar" as const,
+          color: deductionDirection === "low" ? "#ff8293" : deductionDirection === "high" ? "#72bfff" : "#d7b76c",
+          shape: "circle" as const,
+          text: `MA20扣${marker.order} ${safeNumber(marker.value)}`,
+          size: 0.82,
+        })),
+      ].sort((left, right) => String(left.time).localeCompare(String(right.time))));
 
       const volumeSeries = volumeChart.addHistogramSeries({
         priceFormat: { type: "volume" }, priceLineVisible: false, lastValueVisible: false,
@@ -247,7 +306,7 @@ export function StockChart({
     });
 
     return () => { disposed = true; cleanup(); };
-  }, [activeMAs, analysis.markers, analysis.summary.resistance, analysis.summary.support, indicators, prices, visibleIndexByDate, visibleVolume]);
+  }, [activeMAs, analysis.markers, analysis.summary.resistance, analysis.summary.support, deductionDirection, deductionPositions, indicators, prices, shortDeductionPositions, visibleIndexByDate, visibleVolume]);
 
   const hoverIndex = hoverDate ? fullIndexByDate.get(hoverDate) : undefined;
   const hoverPrice = hoverIndex == null ? analysisPrices.at(-1) : analysisPrices[hoverIndex];
@@ -274,6 +333,26 @@ export function StockChart({
             <small>{safeNumber(latestIndicator?.[ma.key])}</small>
           </button>
         ))}
+        <div
+          className={`ma-deduction-status ${shortDeductionDirection}`}
+          title={shortDeductionSignal
+            ? `未來三期扣抵值：${shortDeductionSignal.deductionValues.map((value) => safeNumber(value)).join("／")}；假設現價維持不變，推估 MA5：${shortDeductionSignal.projectedMaValues.map((value) => safeNumber(value)).join(" → ")}`
+            : "至少需要 5 根有效日 K 才能計算扣抵"}
+        >
+          <span>MA5 扣抵</span>
+          <strong>{shortDeductionLabel}</strong>
+          <small>{shortDeductionSignal ? `未來三期 ${shortDeductionSignal.deductionValues.map((value) => safeNumber(value)).join("／")}` : "等待足夠日 K"}</small>
+        </div>
+        <div
+          className={`ma-deduction-status ${deductionDirection}`}
+          title={deductionSignal
+            ? `未來三期扣抵值：${deductionSignal.deductionValues.map((value) => safeNumber(value)).join("／")}；假設現價維持不變，推估 MA20：${deductionSignal.projectedMaValues.map((value) => safeNumber(value)).join(" → ")}`
+            : "至少需要 20 根有效日 K 才能計算扣抵"}
+        >
+          <span>MA20 扣抵</span>
+          <strong>{deductionLabel}</strong>
+          <small>{deductionSignal ? `未來三期 ${deductionSignal.deductionValues.map((value) => safeNumber(value)).join("／")}` : "等待足夠日 K"}</small>
+        </div>
         <span className={`close-confirmation ${marketOpen ? "pending" : "confirmed"}`}>
           {marketOpen ? "盤中訊號尚未確認" : "收盤資料確認"}
         </span>
@@ -297,6 +376,28 @@ export function StockChart({
             <div className="pane-title">
               <BarChart3 size={13} /><strong>日 K 線與均線</strong><span className={`trend-label ${signalClass(summary.signal)}`}>{summary.trend}</span>
               <span className="trade-legend entry"><i />綜合進場</span><span className="trade-legend exit"><i />綜合出場</span>
+              {shortDeductionPositions.length === 3 && <span className="deduction-position-legend short"><i />上方金色為 MA5 扣抵位置</span>}
+              {deductionPositions.length === 3 && <span className="deduction-position-legend"><i />扣1 → 扣2 → 扣3 為 MA20 扣抵位置</span>}
+            </div>
+            <div
+              className={`kline-deduction-badge short ${shortDeductionDirection}`}
+              title={shortDeductionSignal
+                ? `MA5 未來三期扣抵值：${shortDeductionSignal.deductionValues.map((value) => safeNumber(value)).join("／")}`
+                : "至少需要 5 根有效日 K 才能計算扣抵"}
+            >
+              <span>MA5 扣抵</span>
+              <strong>{shortDeductionDirection === "low" ? "扣3低" : shortDeductionDirection === "high" ? "扣3高" : "無扣3訊號"}</strong>
+              <small>{shortDeductionSignal ? shortDeductionSignal.deductionValues.map((value) => safeNumber(value)).join("／") : "資料不足"}</small>
+            </div>
+            <div
+              className={`kline-deduction-badge ${deductionDirection}`}
+              title={deductionSignal
+                ? `MA20 未來三期扣抵值：${deductionSignal.deductionValues.map((value) => safeNumber(value)).join("／")}`
+                : "至少需要 20 根有效日 K 才能計算扣抵"}
+            >
+              <span>MA20 扣抵</span>
+              <strong>{deductionDirection === "low" ? "扣3低" : deductionDirection === "high" ? "扣3高" : "無扣3訊號"}</strong>
+              <small>{deductionSignal ? deductionSignal.deductionValues.map((value) => safeNumber(value)).join("／") : "資料不足"}</small>
             </div>
             <div ref={priceRef} className="technical-price-chart" />
           </section>

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getUserId, validHoldingInput } from "@/lib/portfolio-api";
 import { clientKey, rateLimit } from "@/lib/server-utils";
 import { addHolding, convertWatchToHolding, listHoldings, removeHolding } from "@/services/portfolio-service";
-import { buildMarketSnapshot } from "@/services/market-snapshot-service";
+import { loadMarketSnapshot } from "@/services/scanner-worker-client";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,7 +32,7 @@ export async function POST(request: NextRequest) {
     const status = result === "created" ? 201 : result === "duplicate" ? 409 : 404;
     return NextResponse.json({ status: result }, { status });
   }
-  const snapshot = await buildMarketSnapshot(true);
+  const snapshot = await loadMarketSnapshot(true);
   const ranking = snapshot.rankings.find((item) => item.symbol === body.symbol);
   if (!ranking) return NextResponse.json({ error: "此股票目前不在 AI 選股結果中。" }, { status: 400 });
   const result = addHolding(userId, ranking, body.cost, body.lots, body.buyDate);

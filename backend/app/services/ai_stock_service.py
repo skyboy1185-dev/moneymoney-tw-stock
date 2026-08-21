@@ -23,7 +23,7 @@ from ..schemas import AIRecommendationSyncItem, PortfolioSettingsUpdate
 if TYPE_CHECKING:
     from .official_market_data import OfficialStockQuote
 
-from .theme_stock_universe import is_target_theme_symbol
+from .theme_stock_universe import is_ai_related_theme_symbol
 
 
 TAIPEI = ZoneInfo("Asia/Taipei")
@@ -366,7 +366,7 @@ def sync_recommendations(
     active_ids: set[str] = set()
     for candidate in items[:5]:
         if (
-            not is_target_theme_symbol(candidate.symbol)
+            not is_ai_related_theme_symbol(candidate.symbol)
             or candidate.total_score < 75
             or candidate.strategy_fit < 75
             or candidate.market_fit < 55

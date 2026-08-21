@@ -86,6 +86,25 @@ class DayTradingSignal(Base):
     quote_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class DayTradingRecommendationHistory(Base):
+    __tablename__ = "day_trading_recommendation_history"
+    __table_args__ = (
+        UniqueConstraint("signal_id", name="uq_day_recommendation_history_signal"),
+        Index("ix_day_recommendation_history_date", "trading_date", "recommended_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    signal_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    trading_date: Mapped[date] = mapped_column(Date, nullable=False)
+    symbol: Mapped[str] = mapped_column(String(12), nullable=False)
+    stock_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    market: Mapped[str] = mapped_column(String(20), nullable=False)
+    direction: Mapped[str] = mapped_column(String(12), nullable=False)
+    action: Mapped[str] = mapped_column(String(80), nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    recommended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class DayTradingPosition(Base):
     __tablename__ = "day_trading_positions"
     __table_args__ = (Index("ix_day_positions_user_status", "user_id", "status"),)
@@ -262,6 +281,30 @@ class LineDeliveryLog(Base):
     status: Mapped[str] = mapped_column(String(20), default="pending")
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     response_status: Mapped[int | None] = mapped_column(Integer)
+    error_message: Mapped[str | None] = mapped_column(String(500))
+    message_preview: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class GmailDeliveryLog(Base):
+    __tablename__ = "gmail_delivery_logs"
+    __table_args__ = (
+        UniqueConstraint("recipient", "dedupe_key", name="uq_gmail_delivery_recipient_dedupe"),
+        Index("ix_gmail_delivery_status_created", "status", "created_at"),
+        Index("ix_gmail_delivery_symbol_created", "symbol", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    recipient: Mapped[str] = mapped_column(String(254), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    signal_id: Mapped[str | None] = mapped_column(String(120))
+    symbol: Mapped[str | None] = mapped_column(String(12))
+    action: Mapped[str] = mapped_column(String(80), nullable=False)
+    dedupe_key: Mapped[str] = mapped_column(String(220), nullable=False)
+    subject: Mapped[str] = mapped_column(String(300), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
     error_message: Mapped[str | None] = mapped_column(String(500))
     message_preview: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -861,3 +904,391 @@ class AdaptivePaperTrade(Base):
     unrealized_profit: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("0"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class LongTermPosition(Base):
+    __tablename__ = "long_term_positions"
+    __table_args__ = (
+        UniqueConstraint("entry_key", name="uq_long_term_position_entry_key"),
+        Index("ix_long_term_position_mode_status", "portfolio_mode", "status"),
+        Index("ix_long_term_position_entry_date", "entry_date", "portfolio_mode"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    entry_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    portfolio_mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    stock_code: Mapped[str] = mapped_column(String(12), nullable=False)
+    stock_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    market_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    industry: Mapped[str] = mapped_column(String(80), nullable=False)
+    direction: Mapped[str] = mapped_column(String(10), nullable=False)
+    model_key: Mapped[str] = mapped_column(String(40), nullable=False)
+    model_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    entry_date: Mapped[date] = mapped_column(Date, nullable=False)
+    entry_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    minimum_exit_date: Mapped[date] = mapped_column(Date, nullable=False)
+    entry_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    last_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    selection_score: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False)
+    current_score: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False)
+    predicted_month_return_pct: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    allocation_weight_pct: Mapped[Decimal] = mapped_column(Numeric(9, 4), nullable=False, default=Decimal("10"))
+    allocated_capital: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("100000"))
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reasons_json: Mapped[str] = mapped_column(Text, default="[]")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
+    exit_date: Mapped[date | None] = mapped_column(Date)
+    exit_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    exit_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    exit_reason: Mapped[str | None] = mapped_column(Text)
+    actual_return_pct: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False, default=Decimal("0"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class LongTermPositionSnapshot(Base):
+    __tablename__ = "long_term_position_snapshots"
+    __table_args__ = (
+        UniqueConstraint("position_id", "trade_date", name="uq_long_term_snapshot_position_date"),
+        Index("ix_long_term_snapshot_date", "trade_date", "position_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    position_id: Mapped[int] = mapped_column(ForeignKey("long_term_positions.id"), nullable=False)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    actual_return_pct: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    predicted_month_return_pct: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class LongTermPortfolioRun(Base):
+    __tablename__ = "long_term_portfolio_runs"
+    __table_args__ = (
+        UniqueConstraint("portfolio_mode", "trade_date", name="uq_long_term_run_mode_date"),
+        Index("ix_long_term_run_date", "trade_date", "portfolio_mode"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    portfolio_mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    selected_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    opened_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    closed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    portfolio_nav: Mapped[Decimal] = mapped_column(Numeric(16, 6), nullable=False, default=Decimal("100"))
+    daily_return_pct: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False, default=Decimal("0"))
+    payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    ran_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class LongTermBenchmark(Base):
+    __tablename__ = "long_term_benchmarks"
+
+    symbol: Mapped[str] = mapped_column(String(12), primary_key=True)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    entry_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    last_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class LongTermBenchmarkSelection(Base):
+    """Daily snapshot of the stocks with the highest trailing 10-year CAGR."""
+
+    __tablename__ = "long_term_benchmark_selections"
+    __table_args__ = (
+        UniqueConstraint("selection_date", "rank", name="uq_long_term_benchmark_selection_rank"),
+        Index("ix_long_term_benchmark_selection_date", "selection_date", "rank"),
+    )
+
+    selection_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(12), primary_key=True)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    market: Mapped[str] = mapped_column(String(20), nullable=False)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    annualized_return_10y: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    history_start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    history_end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    history_start_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    history_end_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class LongTermBacktestCache(Base):
+    """Persist expensive strategy backtests so restarts and multiple users share one result."""
+
+    __tablename__ = "long_term_backtest_cache"
+
+    backtest_key: Mapped[str] = mapped_column(String(40), primary_key=True)
+    as_of_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    calculated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class LongTermTradeEvent(Base):
+    __tablename__ = "long_term_trade_events"
+    __table_args__ = (
+        UniqueConstraint("event_key", name="uq_long_term_trade_event_key"),
+        Index("ix_long_term_trade_event_mode_id", "portfolio_mode", "id"),
+        Index("ix_long_term_trade_event_created", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    event_key: Mapped[str] = mapped_column(String(140), nullable=False)
+    portfolio_mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    position_id: Mapped[int] = mapped_column(ForeignKey("long_term_positions.id"), nullable=False)
+    stock_code: Mapped[str] = mapped_column(String(12), nullable=False)
+    stock_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    direction: Mapped[str] = mapped_column(String(10), nullable=False, default="long")
+    event_type: Mapped[str] = mapped_column(String(12), nullable=False)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    allocation_weight_pct: Mapped[Decimal] = mapped_column(Numeric(9, 4), nullable=False)
+    allocated_capital: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pnl: Mapped[Decimal | None] = mapped_column(Numeric(20, 2))
+    pnl_percent: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    is_read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RocketAccount(Base):
+    __tablename__ = "rocket_accounts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    initial_capital: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("1000000"))
+    cash: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("1000000"))
+    realized_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("0"))
+    broker_fee_discount: Mapped[Decimal] = mapped_column(Numeric(7, 4), nullable=False, default=Decimal("0.6"))
+    slippage_rate: Mapped[Decimal] = mapped_column(Numeric(9, 6), nullable=False, default=Decimal("0.001"))
+    sound_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RocketMarketRegime(Base):
+    __tablename__ = "rocket_market_regime"
+    __table_args__ = (
+        UniqueConstraint("trade_date", name="uq_rocket_regime_date"),
+        Index("ix_rocket_regime_date", "trade_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    regime: Mapped[str] = mapped_column(String(30), nullable=False)
+    regime_label: Mapped[str] = mapped_column(String(40), nullable=False)
+    score: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False)
+    maximum_exposure_pct: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False)
+    strategy_label: Mapped[str] = mapped_column(String(120), nullable=False)
+    reasons_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    indicators_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    missing_fields_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RocketSectorStrength(Base):
+    __tablename__ = "rocket_sector_strength"
+    __table_args__ = (
+        UniqueConstraint("trade_date", "sector_name", name="uq_rocket_sector_date_name"),
+        Index("ix_rocket_sector_date_rank", "trade_date", "strength_rank"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    sector_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    strength_rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    strength_score: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False)
+    return_1d: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    return_3d: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    return_5d: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    return_20d: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    advance_ratio: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    new_high_ratio: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    volume_growth: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    breakdown_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RocketCandidate(Base):
+    __tablename__ = "rocket_candidates"
+    __table_args__ = (
+        UniqueConstraint("trade_date", "stock_code", name="uq_rocket_candidate_date_stock"),
+        Index("ix_rocket_candidate_date_rank", "trade_date", "rank"),
+        Index("ix_rocket_candidate_status", "trade_date", "candidate_status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    stock_code: Mapped[str] = mapped_column(String(12), nullable=False)
+    stock_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    market_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    sector_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    sector_rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_top5: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    candidate_status: Mapped[str] = mapped_column(String(30), nullable=False)
+    pattern_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    market_regime: Mapped[str] = mapped_column(String(30), nullable=False)
+    current_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    change_pct: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    rocket_score: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False)
+    chase_risk_score: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False)
+    sector_score: Mapped[Decimal | None] = mapped_column(Numeric(7, 2))
+    momentum_score: Mapped[Decimal | None] = mapped_column(Numeric(7, 2))
+    volume_score: Mapped[Decimal | None] = mapped_column(Numeric(7, 2))
+    pattern_score: Mapped[Decimal | None] = mapped_column(Numeric(7, 2))
+    chip_score: Mapped[Decimal | None] = mapped_column(Numeric(7, 2))
+    institutional_score: Mapped[Decimal | None] = mapped_column(Numeric(7, 2))
+    quality_score: Mapped[Decimal | None] = mapped_column(Numeric(7, 2))
+    data_availability_pct: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False)
+    volume_ratio: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    breakout_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    stop_loss_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    target_price_1: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    target_price_2: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    risk_reward_ratio: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    atr: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    ma5: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    ma10: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    ma20: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    reasons_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    missing_data_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    score_breakdown_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RocketSignal(Base):
+    __tablename__ = "rocket_signals"
+    __table_args__ = (
+        UniqueConstraint("signal_key", name="uq_rocket_signal_key"),
+        Index("ix_rocket_signal_created", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    signal_key: Mapped[str] = mapped_column(String(180), nullable=False)
+    stock_code: Mapped[str | None] = mapped_column(String(12))
+    stock_name: Mapped[str | None] = mapped_column(String(80))
+    signal_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    previous_status: Mapped[str | None] = mapped_column(String(30))
+    new_status: Mapped[str] = mapped_column(String(30), nullable=False)
+    price: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    rocket_score: Mapped[Decimal | None] = mapped_column(Numeric(7, 2))
+    chase_risk: Mapped[Decimal | None] = mapped_column(Numeric(7, 2))
+    strategy_type: Mapped[str | None] = mapped_column(String(40))
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RocketPosition(Base):
+    __tablename__ = "rocket_positions"
+    __table_args__ = (
+        Index("ix_rocket_position_status", "status", "updated_at"),
+        Index("ix_rocket_position_stock", "stock_code", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    stock_code: Mapped[str] = mapped_column(String(12), nullable=False)
+    stock_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    sector_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    strategy_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    market_regime: Mapped[str] = mapped_column(String(30), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="open")
+    entry_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    entry_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    average_cost: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    current_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    target_allocation: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    original_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    remaining_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    add_stage: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    take_profit_stage: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    stop_loss_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    trailing_stop_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    target_price_1: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    target_price_2: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    highest_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    lowest_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    rocket_score_entry: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False)
+    rocket_score_current: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False)
+    chase_risk_current: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False)
+    invested_cost: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    realized_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("0"))
+    unrealized_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("0"))
+    max_favorable_excursion: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("0"))
+    max_adverse_excursion: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("0"))
+    latest_action: Mapped[str] = mapped_column(String(80), nullable=False, default="持有")
+    exit_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    exit_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    exit_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RocketTrade(Base):
+    __tablename__ = "rocket_trades"
+    __table_args__ = (Index("ix_rocket_trade_time", "executed_at", "stock_code"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    position_id: Mapped[int] = mapped_column(ForeignKey("rocket_positions.id"), nullable=False)
+    stock_code: Mapped[str] = mapped_column(String(12), nullable=False)
+    stock_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    action: Mapped[str] = mapped_column(String(30), nullable=False)
+    strategy_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    gross_amount: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    fee: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    tax: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    slippage: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    net_amount: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    realized_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("0"))
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    executed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RocketDailyPortfolio(Base):
+    __tablename__ = "rocket_daily_portfolio"
+    __table_args__ = (UniqueConstraint("trade_date", name="uq_rocket_portfolio_date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    cash: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    market_value: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    total_equity: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    daily_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    cumulative_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    realized_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    unrealized_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    drawdown_pct: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RocketNotification(Base):
+    __tablename__ = "rocket_notifications"
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_rocket_notification_dedupe"),
+        Index("ix_rocket_notification_created", "created_at"),
+        Index("ix_rocket_notification_unread", "is_read", "priority"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    dedupe_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    stock_code: Mapped[str | None] = mapped_column(String(12))
+    stock_name: Mapped[str | None] = mapped_column(String(80))
+    notification_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=4)
+    title: Mapped[str] = mapped_column(String(160), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    price: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    rocket_score: Mapped[Decimal | None] = mapped_column(Numeric(7, 2))
+    chase_risk: Mapped[Decimal | None] = mapped_column(Numeric(7, 2))
+    quantity: Mapped[int | None] = mapped_column(Integer)
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 2))
+    pnl: Mapped[Decimal | None] = mapped_column(Numeric(20, 2))
+    pnl_percent: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    strategy_type: Mapped[str | None] = mapped_column(String(40))
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    is_read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

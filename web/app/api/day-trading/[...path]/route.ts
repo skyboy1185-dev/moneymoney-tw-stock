@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getBackendBaseUrl } from "@/lib/runtime-config";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 function endpoint(request: NextRequest, path: string[]) {
-  const backend = process.env.FASTAPI_URL ?? "http://127.0.0.1:8000";
+  const backend = getBackendBaseUrl();
   return `${backend}/api/v1/day-trading/${path.join("/")}${request.nextUrl.search}`;
 }
 

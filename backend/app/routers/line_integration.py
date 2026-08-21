@@ -14,15 +14,18 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..database import get_db
 from ..models import (
+    GmailDeliveryLog,
     LineDeliveryLog,
     LineNotificationGroup,
     LineNotificationSettings,
     LineWebhookEvent,
 )
+from ..services.gmail_messaging import gmail_notification_dispatcher
 from ..schemas import LineNotificationSettingsUpdate
 from ..services.line_messaging import (
     LINE_GROUP_DISCLAIMER,
     OFFICIAL_ACCOUNT_NAME,
+    TRADE_NOTIFICATION_EVENT_TYPES,
     LineNotificationEvent,
     get_line_notification_settings,
     line_notification_dispatcher,
@@ -59,6 +62,33 @@ def _group_payload(item: LineNotificationGroup) -> dict[str, Any]:
         "active": item.active,
         "boundAt": item.bound_at.isoformat(),
         "lastPushAt": item.last_push_at.isoformat() if item.last_push_at else None,
+    }
+
+
+def _trade_delivery_payload(item: LineDeliveryLog) -> dict[str, Any]:
+    event_type = item.event_type
+    if event_type == "long_entry":
+        side = "buy"
+        label = "買進"
+    elif event_type == "short_entry":
+        side = "short"
+        label = "放空"
+    elif event_type == "short_cover" or "回補" in item.action:
+        side = "cover"
+        label = "回補"
+    else:
+        side = "sell"
+        label = "賣出"
+    return {
+        "id": item.id,
+        "eventType": event_type,
+        "side": side,
+        "sideLabel": label,
+        "signalId": item.signal_id,
+        "symbol": item.symbol,
+        "action": item.action,
+        "messagePreview": item.message_preview,
+        "sentAt": item.sent_at.isoformat() if item.sent_at else None,
     }
 
 
@@ -169,7 +199,7 @@ async def line_webhook(
 
 
 @router.get("/status")
-def line_status(db: Session = Depends(get_db)) -> dict[str, Any]:
+async def line_status(db: Session = Depends(get_db)) -> dict[str, Any]:
     groups = db.scalars(
         select(LineNotificationGroup)
         .where(LineNotificationGroup.active.is_(True))
@@ -181,9 +211,44 @@ def line_status(db: Session = Depends(get_db)) -> dict[str, Any]:
         LineDeliveryLog.status == "sent",
         LineDeliveryLog.sent_at >= start,
     )) or 0)
+    today_trade_count = int(db.scalar(select(func.count()).select_from(LineDeliveryLog).where(
+        LineDeliveryLog.status == "sent",
+        LineDeliveryLog.event_type.in_(TRADE_NOTIFICATION_EVENT_TYPES),
+        LineDeliveryLog.sent_at >= start,
+    )) or 0)
+    today_gmail_count = int(db.scalar(select(func.count()).select_from(GmailDeliveryLog).where(
+        GmailDeliveryLog.status == "sent",
+        GmailDeliveryLog.sent_at >= start,
+    )) or 0)
+    today_gmail_failed_count = int(db.scalar(select(func.count()).select_from(GmailDeliveryLog).where(
+        GmailDeliveryLog.status == "failed",
+        GmailDeliveryLog.created_at >= start,
+    )) or 0)
+    last_gmail_push = db.scalar(select(func.max(GmailDeliveryLog.sent_at)).where(
+        GmailDeliveryLog.status == "sent",
+    ))
     last_push = db.scalar(select(func.max(LineDeliveryLog.sent_at)).where(
         LineDeliveryLog.status == "sent",
     ))
+    recent_rows = db.scalars(
+        select(LineDeliveryLog)
+        .where(
+            LineDeliveryLog.status == "sent",
+            LineDeliveryLog.event_type.in_(TRADE_NOTIFICATION_EVENT_TYPES),
+            LineDeliveryLog.sent_at >= start,
+        )
+        .order_by(LineDeliveryLog.sent_at.desc(), LineDeliveryLog.id.desc())
+        .limit(100)
+    ).all()
+    recent_deliveries: list[dict[str, Any]] = []
+    seen_delivery_keys: set[str] = set()
+    for item in recent_rows:
+        if item.dedupe_key in seen_delivery_keys:
+            continue
+        seen_delivery_keys.add(item.dedupe_key)
+        recent_deliveries.append(_trade_delivery_payload(item))
+        if len(recent_deliveries) == 20:
+            break
     target_configured = bool(settings.line_target_group_id)
     has_group = bool(groups or target_configured)
     credentials_ready = bool(settings.line_channel_access_token and settings.line_channel_secret)
@@ -205,6 +270,12 @@ def line_status(db: Session = Depends(get_db)) -> dict[str, Any]:
             "boundAt": None,
             "lastPushAt": last_push.isoformat() if last_push else None,
         })
+    notification_settings = _settings_payload(get_line_notification_settings(db))
+    # LINE's quota API is an external network call and can take several seconds
+    # to time out. Release the request-scoped DB connection before awaiting it,
+    # otherwise concurrent dashboard polling can exhaust the entire SQL pool.
+    db.close()
+    quota = await line_notification_dispatcher.quota_status()
     return {
         "officialAccountName": OFFICIAL_ACCOUNT_NAME,
         "enabled": settings.line_notifications_enabled,
@@ -213,11 +284,22 @@ def line_status(db: Session = Depends(get_db)) -> dict[str, Any]:
         "groups": payload_groups,
         "lastPushAt": last_push.isoformat() if last_push else None,
         "todayPushCount": today_count,
+        "todayTradePushCount": today_trade_count,
+        "gmailEnabled": gmail_notification_dispatcher.enabled,
+        "gmailConfigured": gmail_notification_dispatcher.configured,
+        "gmailTransport": gmail_notification_dispatcher.transport,
+        "gmailRecipients": gmail_notification_dispatcher.masked_recipients,
+        "todayGmailPushCount": today_gmail_count,
+        "todayGmailFailedCount": today_gmail_failed_count,
+        "lastGmailPushAt": last_gmail_push.isoformat() if last_gmail_push else None,
+        "recentTradeDeliveries": recent_deliveries,
+        "dailyTradeMessageLimit": quota["effectiveDailyTradeMessageLimit"],
+        **quota,
         "publicWebhookUrl": (
             f"{settings.public_web_url.rstrip('/')}/api/integrations/line/webhook"
             if settings.public_web_url else "/api/integrations/line/webhook"
         ),
-        "settings": _settings_payload(get_line_notification_settings(db)),
+        "settings": notification_settings,
     }
 
 
@@ -268,6 +350,28 @@ async def test_line_notification(db: Session = Depends(get_db)) -> dict[str, Any
     if sent == 0:
         raise HTTPException(status_code=502, detail="LINE 測試通知推送失敗，請檢查推送紀錄與 Channel 設定")
     return {"ok": True, "sentGroups": sent}
+
+
+@router.post("/gmail/test")
+async def test_gmail_notification() -> dict[str, Any]:
+    if not gmail_notification_dispatcher.configured:
+        raise HTTPException(
+            status_code=409,
+            detail="Gmail 尚未設定寄件帳號、應用程式密碼或收件地址",
+        )
+    sent = await gmail_notification_dispatcher.dispatch(
+        event_type="test",
+        action="Gmail 測試通知",
+        message=(
+            "【AI當沖機器人｜Gmail 測試】\n\n"
+            "Gmail 備援通知已連線成功。\n"
+            "正式買進、減碼、賣出與停損事件將與 LINE 獨立發送。"
+        ),
+        dedupe_key=f"gmail-manual-test:{uuid4()}",
+    )
+    if sent == 0:
+        raise HTTPException(status_code=502, detail="Gmail 測試寄送失敗，請檢查應用程式密碼與 SMTP 設定")
+    return {"ok": True, "sentRecipients": sent}
 
 
 @router.delete("/groups/{group_record_id}")

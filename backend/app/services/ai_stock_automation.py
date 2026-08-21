@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 
 from ..config import get_settings
-from ..database import SessionLocal
+from ..database import BackgroundSessionLocal as SessionLocal
 from ..models import AIStockAlert, AIStockMonitor, AIStockPosition
 from .ai_stock_line import (
     add_on_message,

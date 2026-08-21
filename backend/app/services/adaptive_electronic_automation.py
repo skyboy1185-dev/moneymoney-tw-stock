@@ -13,7 +13,7 @@ from sqlalchemy import select
 
 from ..adaptive_schemas import AdaptiveScanPayload
 from ..config import get_settings
-from ..database import SessionLocal
+from ..database import BackgroundSessionLocal as SessionLocal
 from ..models import AdaptiveSignal, AdaptiveStockCandidate, MarketRegime
 from .adaptive_electronic_service import STRATEGY_NAMES, process_adaptive_scan
 from .adaptive_entry_window import adaptive_entry_window_open
@@ -28,6 +28,20 @@ from .line_messaging import (
 
 logger = logging.getLogger(__name__)
 TAIPEI = ZoneInfo("Asia/Taipei")
+
+
+def _normalize_scan_payload(raw: object) -> object:
+    """Keep one missing industry code from invalidating the entire market scan."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("stocks"), list):
+        return raw
+    normalized = 0
+    for stock in raw["stocks"]:
+        if isinstance(stock, dict) and not str(stock.get("industry_code") or "").strip():
+            stock["industry_code"] = "00"
+            normalized += 1
+    if normalized:
+        logger.warning("Normalized %s stocks with a missing industry code", normalized)
+    return raw
 
 
 def _session(now: datetime) -> str:
@@ -53,6 +67,26 @@ def _list(value: str) -> list[str]:
         return [str(item) for item in parsed] if isinstance(parsed, list) else []
     except ValueError:
         return []
+
+
+async def fetch_adaptive_scan_payload() -> AdaptiveScanPayload:
+    settings = get_settings()
+    url = settings.adaptive_electronic_scanner_url.strip()
+    if not url or urlparse(url).scheme not in {"http", "https"}:
+        raise RuntimeError("ADAPTIVE_ELECTRONIC_SCANNER_URL 尚未正確設定")
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "TWSE-Adaptive-Electronic-Automation/1.0",
+    }
+    if settings.adaptive_electronic_scanner_token:
+        headers["X-Adaptive-Scanner-Token"] = settings.adaptive_electronic_scanner_token
+    async with httpx.AsyncClient(
+        timeout=settings.adaptive_electronic_scanner_timeout_seconds,
+        follow_redirects=True,
+    ) as client:
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
+        return AdaptiveScanPayload.model_validate(_normalize_scan_payload(response.json()))
 
 
 class AdaptiveElectronicAutomation:
@@ -84,23 +118,7 @@ class AdaptiveElectronicAutomation:
         self._state["status"] = "stopped"
 
     async def _fetch_payload(self) -> AdaptiveScanPayload:
-        settings = get_settings()
-        url = settings.adaptive_electronic_scanner_url.strip()
-        if not url or urlparse(url).scheme not in {"http", "https"}:
-            raise RuntimeError("ADAPTIVE_ELECTRONIC_SCANNER_URL 尚未正確設定")
-        headers = {
-            "Accept": "application/json",
-            "User-Agent": "TWSE-Adaptive-Electronic-Automation/1.0",
-        }
-        if settings.adaptive_electronic_scanner_token:
-            headers["X-Adaptive-Scanner-Token"] = settings.adaptive_electronic_scanner_token
-        async with httpx.AsyncClient(
-            timeout=settings.adaptive_electronic_scanner_timeout_seconds,
-            follow_redirects=True,
-        ) as client:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            return AdaptiveScanPayload.model_validate(response.json())
+        return await fetch_adaptive_scan_payload()
 
     async def run_once(
         self,

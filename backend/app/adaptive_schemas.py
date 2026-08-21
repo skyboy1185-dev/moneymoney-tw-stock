@@ -109,8 +109,13 @@ class AdaptiveStockInput(BaseModel):
     average_turnover_20d: float = Field(ge=0)
     illiquid_days_5d: int = Field(default=0, ge=0, le=5)
     return_1d: float = 0
+    return_3d: float = 0
     return_5d: float = 0
     return_20d: float = 0
+    gap_percent: float = 0
+    consecutive_strong_up_days: int = 0
+    consecutive_long_bullish_days: int = 0
+    is_highest_volume_20d: bool = False
     market_return_20d: float = 0
     electronic_return_20d: float = 0
     relative_strength_market: float = 0

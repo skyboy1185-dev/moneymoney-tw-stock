@@ -3,6 +3,7 @@ import type { StockMeta } from "@/lib/types";
 import {
   mergeOfficialHistoryWithQuote,
   parseFinMindHistory,
+  parseYahooDailyHistory,
   parseTpexMonthlyHistory,
   parseTwseMonthlyHistory,
   validateOfficialHistoryContinuity,
@@ -29,6 +30,21 @@ describe("official historical price parsers", () => {
     expect(prices).toEqual([{
       symbol: "2330", name: "台積電", date: "2026-07-24",
       open: 2355, high: 2365, low: 2345, close: 2350, volume: 24_810_509,
+    }]);
+  });
+
+  it("parses Yahoo daily candles used by the broad-market scanner fallback", () => {
+    const prices = parseYahooDailyHistory({
+      chart: { result: [{
+        timestamp: [1_785_984_600],
+        indicators: { quote: [{
+          open: [1_400], high: [1_420], low: [1_390], close: [1_415], volume: [25_000_000],
+        }] },
+      }] },
+    }, listed);
+    expect(prices).toEqual([{
+      symbol: "2330", name: listed.name, date: "2026-08-06",
+      open: 1_400, high: 1_420, low: 1_390, close: 1_415, volume: 25_000_000,
     }]);
   });
 

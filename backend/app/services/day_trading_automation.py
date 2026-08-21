@@ -9,13 +9,14 @@ from typing import Any
 from sqlalchemy import func, select, text
 
 from ..config import get_settings
-from ..database import SessionLocal
+from ..database import BackgroundSessionLocal as SessionLocal
 from ..models import DayTradingPosition
 from .automated_position_tracker import (
-    AUTOMATION_USER_ID,
-    ensure_positions_for_delivered_entries,
+    AUTOMATION_USER_IDS,
+    ensure_positions_for_official_recommendations,
     finalize_automatic_position_event,
     pending_automatic_position_events,
+    record_official_recommendations,
 )
 from .day_trading import day_trading_engine
 from .chip_flow_alerts import (
@@ -35,6 +36,12 @@ from .official_market_data import StockQuoteRequest, official_market_data_provid
 
 
 logger = logging.getLogger(__name__)
+QUOTE_HISTORY_CACHE_KEY = "day-trading-official-quote-history"
+BASELINE_QUOTE_REFRESH_SECONDS = 30
+PRIORITY_QUOTE_REFRESH_SECONDS = 5
+ACTIVE_QUOTE_PHASES = frozenset({
+    "loading", "health_check", "warmup", "scanning", "entry_closed", "closing",
+})
 
 
 class DayTradingAutomationSupervisor:
@@ -44,13 +51,19 @@ class DayTradingAutomationSupervisor:
         self._task: asyncio.Task[None] | None = None
         self._started_at: datetime | None = None
         self._last_scan_at: datetime | None = None
-        self._last_quote_refresh_at: datetime | None = None
+        self._last_baseline_quote_refresh_at: datetime | None = None
+        self._last_priority_quote_refresh_at: datetime | None = None
+        self._last_quote_snapshot_at: datetime | None = None
         self._recommendations: list[dict[str, Any]] = []
         self._restored_signal_count = 0
+        self._restored_quote_samples = 0
         self._last_phase: str | None = None
         self._last_data_status: str | None = None
         self._trading_date: str | None = None
         self._today_signal_ids: set[str] = set()
+        self._quote_coverage_count = 0
+        self._warmed_symbol_count = 0
+        self._universe_signature: tuple[str, ...] = ()
         self._state: dict[str, Any] = {"status": "stopped"}
 
     def _config(self) -> TradingScheduleConfig:
@@ -87,10 +100,10 @@ class DayTradingAutomationSupervisor:
         recommendations = day_trading_restrictions.filter_candidates(recommendations)
         if not recommendations:
             return 0
-        sent = await line_notification_dispatcher.send_recommendations(recommendations)
         try:
             with SessionLocal() as db:
-                created = ensure_positions_for_delivered_entries(db, recommendations)
+                created = ensure_positions_for_official_recommendations(db, recommendations)
+                record_official_recommendations(db, recommendations)
                 db.commit()
             if created:
                 logger.info(
@@ -100,7 +113,11 @@ class DayTradingAutomationSupervisor:
                 )
         except Exception:
             logger.exception("Failed to persist automatic day-trading positions")
-        return sent
+        try:
+            return await line_notification_dispatcher.send_recommendations(recommendations)
+        except Exception:
+            logger.exception("Automatic recommendation LINE notification failed")
+            return 0
 
     async def _monitor_automatic_positions(
         self,
@@ -130,13 +147,6 @@ class DayTradingAutomationSupervisor:
                 if not key.startswith("_")
             }
             try:
-                sent += await line_notification_dispatcher.send_position_event(outbound)
-            except Exception:
-                logger.exception(
-                    "Automatic position LINE notification failed for %s",
-                    outbound.get("position", {}).get("symbol"),
-                )
-            try:
                 with SessionLocal() as db:
                     finalize_automatic_position_event(db, event)
                     db.commit()
@@ -145,6 +155,13 @@ class DayTradingAutomationSupervisor:
                     "Failed to finalize automatic position event for position %s",
                     event.get("_positionId"),
                 )
+            try:
+                sent += await line_notification_dispatcher.send_position_event(outbound)
+            except Exception:
+                logger.exception(
+                    "Automatic position LINE notification failed for %s",
+                    outbound.get("position", {}).get("symbol"),
+                )
         return len(events), sent
 
     async def start(self) -> None:
@@ -152,6 +169,12 @@ class DayTradingAutomationSupervisor:
             return
         self._started_at = datetime.now(UTC)
         await day_trading_restrictions.refresh(self._started_at, force=True)
+        self._restored_quote_samples = day_trading_engine.restore_official_quote_history(
+            day_trading_cache.get(QUOTE_HISTORY_CACHE_KEY),
+            self._started_at,
+        )
+        self._quote_coverage_count = day_trading_engine.quote_coverage_count
+        self._warmed_symbol_count = day_trading_engine.warmed_symbol_count
         restored = day_trading_cache.get("automation-recommendations")
         if isinstance(restored, list):
             self._recommendations = day_trading_restrictions.filter_candidates(restored)
@@ -170,10 +193,18 @@ class DayTradingAutomationSupervisor:
         while True:
             now = datetime.now(UTC)
             config = self._config()
+            momentum_universe = electronic_chip_flow_alert_monitor.stock_universe_snapshot()
+            day_trading_engine.set_stock_universe(momentum_universe)
+            universe_signature = day_trading_engine.stock_universe_symbols
+            if universe_signature != self._universe_signature:
+                self._universe_signature = universe_signature
+                self._quote_coverage_count = day_trading_engine.quote_coverage_count
+                self._warmed_symbol_count = day_trading_engine.warmed_symbol_count
             await day_trading_restrictions.refresh(now)
             database_ok = False
             open_positions = 0
             automatic_open_positions = 0
+            open_position_symbols: set[str] = set()
             try:
                 with SessionLocal() as db:
                     db.execute(text("SELECT 1"))
@@ -185,33 +216,69 @@ class DayTradingAutomationSupervisor:
                         .select_from(DayTradingPosition)
                         .where(
                             DayTradingPosition.status == "open",
-                            DayTradingPosition.user_id == AUTOMATION_USER_ID,
+                            DayTradingPosition.user_id.in_(AUTOMATION_USER_IDS),
                         )
                     ) or 0)
+                    open_position_symbols = {
+                        str(symbol) for symbol in db.scalars(
+                            select(DayTradingPosition.symbol).where(
+                                DayTradingPosition.status == "open",
+                            )
+                        ).all()
+                        if symbol
+                    }
                     database_ok = True
             except Exception:
                 database_ok = False
 
-            quote_refresh_due = (
-                self._last_quote_refresh_at is None
-                or now - self._last_quote_refresh_at >= timedelta(
-                    # TWSE MIS is a shared public source. Polling a 30-stock batch
-                    # every second causes throttling and turns a healthy feed stale.
-                    seconds=max(5.0, get_settings().quote_refresh_seconds),
-                )
+            electronic_chip_flow_alert_monitor.set_day_trading_priority_symbols({
+                *(str(item.get("symbol")) for item in self._recommendations),
+                *open_position_symbols,
+            })
+            priority_symbols = set(
+                electronic_chip_flow_alert_monitor.high_frequency_symbols_snapshot()
             )
+            clock_session = trading_session_state(
+                config,
+                now,
+                data_status="normal",
+                quote_samples=day_trading_engine.sample_count,
+                infrastructure_ok=True,
+            )
+            quote_monitoring_active = str(clock_session["phase"]) in ACTIVE_QUOTE_PHASES
+            baseline_quote_due = quote_monitoring_active and (
+                self._last_baseline_quote_refresh_at is None
+                or now - self._last_baseline_quote_refresh_at
+                >= timedelta(seconds=BASELINE_QUOTE_REFRESH_SECONDS)
+            )
+            priority_quote_due = quote_monitoring_active and (
+                self._last_priority_quote_refresh_at is None
+                or now - self._last_priority_quote_refresh_at
+                >= timedelta(seconds=max(
+                    PRIORITY_QUOTE_REFRESH_SECONDS,
+                    get_settings().quote_refresh_seconds,
+                ))
+            )
+            quote_refresh_due = baseline_quote_due or priority_quote_due
             if quote_refresh_due:
                 try:
-                    seed_candidates = day_trading_restrictions.filter_candidates(
-                        day_trading_engine.signals(),
+                    selected_stocks = (
+                        momentum_universe
+                        if baseline_quote_due
+                        else tuple(
+                            stock for stock in momentum_universe
+                            if stock.symbol in priority_symbols
+                        )
                     )
                     quote_requests = [
                         StockQuoteRequest(
-                            symbol=str(item["symbol"]),
-                            name=str(item["stockName"]),
-                            market=str(item["market"]),
+                            symbol=stock.symbol,
+                            name=stock.name,
+                            market=stock.market,
                         )
-                        for item in seed_candidates
+                        for stock in selected_stocks
+                        if not day_trading_restrictions.is_disposed(stock.symbol)
+                        and day_trading_restrictions.market_restrictions_available(stock.market)
                     ]
                     quote_requests.append(StockQuoteRequest(
                         symbol="t00",
@@ -223,9 +290,27 @@ class DayTradingAutomationSupervisor:
                         force_refresh=True,
                     )
                     day_trading_engine.update_official_quotes(quotes)
+                    self._quote_coverage_count = day_trading_engine.quote_coverage_count
+                    if baseline_quote_due:
+                        self._warmed_symbol_count = day_trading_engine.warmed_symbol_count
+                    snapshot_due = (
+                        self._last_quote_snapshot_at is None
+                        or now - self._last_quote_snapshot_at >= timedelta(minutes=1)
+                    )
+                    if quotes and snapshot_due:
+                        day_trading_cache.put(
+                            QUOTE_HISTORY_CACHE_KEY,
+                            day_trading_engine.export_official_quote_history(now),
+                            ttl=28_800,
+                        )
+                        self._last_quote_snapshot_at = now
                 except Exception:
                     logger.exception("TWSE MIS quote refresh failed")
-                self._last_quote_refresh_at = now
+                if baseline_quote_due:
+                    self._last_baseline_quote_refresh_at = now
+                    self._last_priority_quote_refresh_at = now
+                elif priority_quote_due:
+                    self._last_priority_quote_refresh_at = now
 
             regime = day_trading_engine.market_regime()
             recovering = day_trading_engine.sample_count < config.minimum_live_samples
@@ -234,7 +319,7 @@ class DayTradingAutomationSupervisor:
                 now,
                 data_status=regime["dataStatus"],
                 quote_samples=day_trading_engine.sample_count,
-                infrastructure_ok=database_ok and day_trading_cache.healthy,
+                infrastructure_ok=database_ok and day_trading_cache.ready_for_formal_signals,
                 recovering=recovering,
             )
             trading_date = str(session["tradingDate"])
@@ -247,8 +332,10 @@ class DayTradingAutomationSupervisor:
             )
             if scan_due and session["phase"] in {"warmup", "scanning"}:
                 candidates = self._confirm_continuous_large_orders(
-                    day_trading_restrictions.filter_candidates(
-                        day_trading_engine.signals(),
+                    day_trading_restrictions.enrich_short_eligibility(
+                        day_trading_restrictions.filter_candidates(
+                            day_trading_engine.signals(),
+                        ),
                     ),
                     now,
                 )
@@ -257,7 +344,7 @@ class DayTradingAutomationSupervisor:
                     now,
                     data_status=regime["dataStatus"],
                     quote_samples=day_trading_engine.sample_count,
-                    infrastructure_ok=database_ok and day_trading_cache.healthy,
+                    infrastructure_ok=database_ok and day_trading_cache.ready_for_formal_signals,
                     recovering=False,
                 )
                 self._recommendations, _ranked_candidates = stable_recommendation_selector.select(
@@ -279,26 +366,32 @@ class DayTradingAutomationSupervisor:
                 "checkedAt": now.isoformat(),
                 "session": session,
                 "database": "healthy" if database_ok else "unavailable",
-                "redis": "healthy" if day_trading_cache.healthy else "unavailable",
+                "redis": day_trading_cache.status,
+                "cacheMode": day_trading_cache.mode,
+                "cacheReadyForFormalSignals": day_trading_cache.ready_for_formal_signals,
                 "restoredOpenPositions": open_positions,
                 "automaticOpenPositions": automatic_open_positions,
                 "restoredSignalCount": self._restored_signal_count,
+                "restoredQuoteSamples": self._restored_quote_samples,
                 "recommendedCount": len(self._recommendations),
+                "candidateUniverseCount": len(day_trading_engine.stock_universe_symbols),
+                "candidateUniverseSource": "large-order-momentum-radar",
+                "quoteCoverageCount": self._quote_coverage_count,
+                "warmedSymbolCount": self._warmed_symbol_count,
+                "highFrequencyTrackingCount": len(priority_symbols),
+                "baselineQuoteRefreshSeconds": BASELINE_QUOTE_REFRESH_SECONDS,
+                "priorityQuoteRefreshSeconds": PRIORITY_QUOTE_REFRESH_SECONDS,
                 "disposalRestrictions": day_trading_restrictions.state,
             }
             day_trading_cache.put("automation-supervisor", self._state, ttl=180)
             line_tasks: list[Any] = []
             phase = str(session["phase"])
             data_status = str(regime["dataStatus"])
-            if phase == "scanning" and self._last_phase != "scanning":
-                line_tasks.append(line_notification_dispatcher.send_system_event(
-                    "opening",
-                    "09:15 當沖機器人啟動",
-                    "09:00～09:14 已累積 5 分 K、量能與大單資料；現在開始掃描強勢電子股，10:30 後停止新進場。",
-                    f"system:{trading_date}:opening",
-                    priority=3,
-                ))
-            if data_status != self._last_data_status and data_status in {"severe_delay", "disconnected", "source_error"}:
+            if (
+                phase in ACTIVE_QUOTE_PHASES
+                and data_status != self._last_data_status
+                and data_status in {"severe_delay", "disconnected", "source_error"}
+            ):
                 disconnected = data_status in {"disconnected", "source_error"}
                 line_tasks.append(line_notification_dispatcher.send_system_event(
                     "data_alert",
@@ -308,22 +401,13 @@ class DayTradingAutomationSupervisor:
                     priority=2,
                 ))
             if phase == "summary" and self._last_phase != "summary":
-                line_tasks.extend([
-                    line_notification_dispatcher.send_system_event(
-                        "robot_stopped",
-                        "機器人停止運作",
-                        "今日新進場訊號已停止，請確認所有當沖部位均已處理。",
-                        f"system:{trading_date}:stopped",
-                        priority=2,
-                    ),
-                    line_notification_dispatcher.send_system_event(
-                        "closing_summary",
-                        "每日收盤摘要",
-                        f"今日 AI 正式推薦 {len(self._today_signal_ids)} 檔；系統已停止產生當日新訊號。",
-                        f"system:{trading_date}:summary",
-                        priority=3,
-                    ),
-                ])
+                line_tasks.append(line_notification_dispatcher.send_system_event(
+                    "closing_summary",
+                    "每日收盤摘要",
+                    f"今日 AI 正式推薦 {len(self._today_signal_ids)} 檔；系統已停止產生當日新訊號。",
+                    f"system:{trading_date}:summary",
+                    priority=3,
+                ))
             if session["formalSignalsAllowed"] and self._recommendations:
                 line_tasks.append(
                     self._send_recommendations_and_track(self._recommendations[:5]),

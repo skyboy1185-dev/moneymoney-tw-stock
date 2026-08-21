@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
@@ -15,6 +16,7 @@ from ..database import SessionLocal, get_db
 from ..models import (
     DayTradingAlert,
     DayTradingPosition,
+    DayTradingRecommendationHistory,
     DayTradingScheduleSettings,
     DayTradingSettings,
     DayTradingSignal,
@@ -37,6 +39,17 @@ from ..services.chip_flow_repository import ChipFlowRepository
 from ..services.day_trading_cache import day_trading_cache
 from ..services.day_trading_restrictions import day_trading_restrictions
 from ..services.day_trading_automation import day_trading_automation
+from ..services.automated_position_tracker import (
+    AUTOMATION_PERFORMANCE_START,
+    AUTOMATION_QUANTITY_LOTS,
+    AUTOMATION_USER_ID,
+    DYNAMIC_AUTOMATION_PERFORMANCE_START,
+    DYNAMIC_AUTOMATION_USER_ID,
+    DYNAMIC_STRATEGY_KEY,
+    FIXED_STRATEGY_KEY,
+    automation_capital_state,
+    automation_strategy,
+)
 from ..services.day_trading_schedule import (
     DAY_TRADING_CLOSE_REMINDER,
     DAY_TRADING_ENTRY_CUTOFF,
@@ -81,6 +94,14 @@ def _daily_period() -> tuple[str, datetime, datetime]:
     return local_today.isoformat(), start_local.astimezone(UTC), end_local.astimezone(UTC)
 
 
+def _performance_start(user_id: str, period_start: datetime) -> datetime:
+    if user_id == AUTOMATION_USER_ID:
+        return max(period_start, AUTOMATION_PERFORMANCE_START)
+    if user_id == DYNAMIC_AUTOMATION_USER_ID:
+        return max(period_start, DYNAMIC_AUTOMATION_PERFORMANCE_START)
+    return period_start
+
+
 def _performance_summary(
     items: list[DayTradingTrade],
     open_positions: list[DayTradingPosition],
@@ -91,11 +112,24 @@ def _performance_summary(
     gross_losses = abs(sum(item.profit for item in losses))
     realized_profit = round(sum(item.profit for item in items), 2)
     unrealized_profit = 0.0
+    long_unrealized_profit = 0.0
+    short_unrealized_profit = 0.0
     for position in open_positions:
         direction_factor = 1 if position.direction == "long" else -1
-        unrealized_profit += (
+        position_unrealized = (
             position.current_price - position.entry_price
         ) * position.quantity * 1000 * direction_factor
+        unrealized_profit += position_unrealized
+        if position.direction == "long":
+            long_unrealized_profit += position_unrealized
+        else:
+            short_unrealized_profit += position_unrealized
+    long_realized_profit = round(sum(
+        item.profit for item in items if item.direction == "long"
+    ), 2)
+    short_realized_profit = round(sum(
+        item.profit for item in items if item.direction == "short"
+    ), 2)
     unrealized_profit = round(unrealized_profit, 2)
     fee = round(sum(item.fee for item in items), 2)
     tax = round(sum(item.tax for item in items), 2)
@@ -118,8 +152,19 @@ def _performance_summary(
         "averageProfit": round(realized_profit / len(items), 2) if items else 0,
         "maxLoss": min([item.profit for item in items], default=0),
         "maxConsecutiveLosses": maximum_consecutive_losses,
-        "longProfit": round(sum(item.profit for item in items if item.direction == "long"), 2),
-        "shortProfit": round(sum(item.profit for item in items if item.direction == "short"), 2),
+        # Keep the original realized-only fields for older clients.
+        "longProfit": long_realized_profit,
+        "shortProfit": short_realized_profit,
+        "longRealizedProfit": long_realized_profit,
+        "longUnrealizedProfit": round(long_unrealized_profit, 2),
+        "longTotalPnl": round(long_realized_profit + long_unrealized_profit, 2),
+        "longTradeCount": sum(1 for item in items if item.direction == "long"),
+        "longOpenPositionCount": sum(1 for item in open_positions if item.direction == "long"),
+        "shortRealizedProfit": short_realized_profit,
+        "shortUnrealizedProfit": round(short_unrealized_profit, 2),
+        "shortTotalPnl": round(short_realized_profit + short_unrealized_profit, 2),
+        "shortTradeCount": sum(1 for item in items if item.direction == "short"),
+        "shortOpenPositionCount": sum(1 for item in open_positions if item.direction == "short"),
         "profitFactor": round(gross_wins / gross_losses, 2) if gross_losses else (gross_wins if gross_wins else 0),
     }
 
@@ -130,8 +175,20 @@ def _sync_signals(db: Session, signals: list[dict[str, Any]] | None = None) -> l
     for payload in signals:
         item = db.get(DayTradingSignal, payload["id"])
         if item is None:
-            item = DayTradingSignal(id=payload["id"])
-            db.add(item)
+            try:
+                # A browser can open the regime, signal and ranking endpoints at
+                # the same time. Keep a concurrent insert inside a savepoint so
+                # one request cannot poison the whole transaction when another
+                # request creates the same signal first.
+                with db.begin_nested():
+                    candidate = DayTradingSignal(id=payload["id"])
+                    db.add(candidate)
+                    db.flush()
+                item = candidate
+            except IntegrityError:
+                item = db.get(DayTradingSignal, payload["id"])
+        if item is None:
+            continue
         item.symbol = payload["symbol"]
         item.stock_name = payload["stockName"]
         item.market = payload["market"]
@@ -265,19 +322,19 @@ def _selection(
     schedule_settings = _schedule_settings(db, user_id)
     config = _schedule_config(risk, schedule_settings)
     regime = day_trading_engine.market_regime()
-    candidates = enrich_day_trading_large_order_confirmation(
-        _sync_signals(db, raw_signals),
-        ChipFlowRepository(db),
-        electronic_chip_flow_alert_monitor.rules,
-        as_of=now or datetime.now(UTC),
-    )
     infrastructure = {
-        "quoteSource": "healthy" if regime["dataStatus"] == "normal" else "error",
-        "redis": "healthy" if day_trading_cache.healthy else "unavailable",
+        "quoteSource": (
+            "healthy" if regime["dataStatus"] == "normal"
+            else "closed" if regime["dataStatus"] == "closed"
+            else "error"
+        ),
+        "redis": day_trading_cache.status,
         "database": "healthy",
         "stream": "healthy",
     }
-    infrastructure_ok = all(value == "healthy" for value in infrastructure.values())
+    infrastructure_ok = all(
+        value in {"healthy", "closed", "memory_fallback"} for value in infrastructure.values()
+    )
     session = trading_session_state(
         config,
         now,
@@ -285,19 +342,39 @@ def _selection(
         quote_samples=day_trading_engine.sample_count,
         infrastructure_ok=infrastructure_ok,
     )
-    open_ids = set(db.scalars(select(DayTradingPosition.signal_id).where(
-        DayTradingPosition.user_id == user_id,
-        DayTradingPosition.status == "open",
-        DayTradingPosition.signal_id.is_not(None),
-    )).all())
-    official, _ranked_candidates = stable_recommendation_selector.select(
-        user_id,
-        candidates,
-        config,
-        session,
-        open_signal_ids={str(value) for value in open_ids if value},
-        now=now,
-    )
+    # When risk controls already block formal signals (for example a stale or
+    # disconnected quote feed), candidate generation cannot affect the public
+    # result. Avoid the expensive 276-symbol signal and chip-history scan so
+    # status pages stay responsive while the upstream feed is unavailable.
+    if session["formalSignalsAllowed"]:
+        # Selection endpoints are read paths. Persisting every temporary candidate
+        # here caused concurrent page requests to race on the signal primary key.
+        filtered_signals = day_trading_restrictions.enrich_short_eligibility(
+            day_trading_restrictions.filter_candidates(
+                day_trading_engine.signals() if raw_signals is None else raw_signals,
+            ),
+        )
+        candidates = enrich_day_trading_large_order_confirmation(
+            filtered_signals,
+            ChipFlowRepository(db),
+            electronic_chip_flow_alert_monitor.rules,
+            as_of=now or datetime.now(UTC),
+        )
+        open_ids = set(db.scalars(select(DayTradingPosition.signal_id).where(
+            DayTradingPosition.user_id == user_id,
+            DayTradingPosition.status == "open",
+            DayTradingPosition.signal_id.is_not(None),
+        )).all())
+        official, _ranked_candidates = stable_recommendation_selector.select(
+            user_id,
+            candidates,
+            config,
+            session,
+            open_signal_ids={str(value) for value in open_ids if value},
+            now=now,
+        )
+    else:
+        official = []
     summary = (
         f"已選出 {len(official)} 檔當沖機會"
         if official
@@ -323,6 +400,7 @@ def _position_payload(item: DayTradingPosition) -> dict[str, Any]:
     direction_factor = 1 if item.direction == "long" else -1
     gross = (item.current_price - item.entry_price) * item.quantity * 1000 * direction_factor
     opened_at = item.opened_at if item.opened_at.tzinfo else item.opened_at.replace(tzinfo=UTC)
+    strategy = automation_strategy(item.user_id) if item.user_id in {AUTOMATION_USER_ID, DYNAMIC_AUTOMATION_USER_ID} else None
     return {
         "id": item.id, "signalId": item.signal_id, "symbol": item.symbol,
         "stockName": item.stock_name, "direction": item.direction,
@@ -339,6 +417,8 @@ def _position_payload(item: DayTradingPosition) -> dict[str, Any]:
         "exitPrice": item.exit_price, "realizedProfit": item.realized_profit,
         "holdingSeconds": max(0, round((datetime.now(UTC) - opened_at).total_seconds())),
         "updatedAt": datetime.now(UTC).isoformat(),
+        "automationStrategy": strategy["key"] if strategy else None,
+        "automationStrategyLabel": strategy["label"] if strategy else None,
     }
 
 
@@ -407,6 +487,103 @@ def get_signals(
         "disclaimer": DISCLAIMER,
         "updatedAt": datetime.now(UTC).isoformat(),
     }
+
+
+@router.get("/signals/today")
+def get_today_signals(db: Session = Depends(get_db)) -> dict[str, Any]:
+    trading_date, _, _ = _daily_period()
+    rows = db.scalars(
+        select(DayTradingRecommendationHistory)
+        .where(DayTradingRecommendationHistory.trading_date == date.fromisoformat(trading_date))
+        .order_by(DayTradingRecommendationHistory.recommended_at.desc())
+    ).all()
+    signal_ids = [row.signal_id for row in rows]
+    strategy_positions = list(db.scalars(
+        select(DayTradingPosition).where(
+            DayTradingPosition.user_id.in_((AUTOMATION_USER_ID, DYNAMIC_AUTOMATION_USER_ID)),
+            DayTradingPosition.signal_id.in_(signal_ids),
+        )
+    ).all()) if signal_ids else []
+    positions_by_strategy_signal = {
+        (position.user_id, str(position.signal_id)): position
+        for position in strategy_positions
+        if position.signal_id
+    }
+    items: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        try:
+            payload = json.loads(row.payload_json)
+        except (TypeError, json.JSONDecodeError):
+            payload = {}
+        stored_allocations = payload.get("strategyAllocations")
+        if not isinstance(stored_allocations, dict):
+            stored_allocations = {}
+        fixed_position = positions_by_strategy_signal.get((AUTOMATION_USER_ID, row.signal_id))
+        dynamic_position = positions_by_strategy_signal.get((DYNAMIC_AUTOMATION_USER_ID, row.signal_id))
+        fixed_stored = stored_allocations.get(FIXED_STRATEGY_KEY, {})
+        dynamic_stored = stored_allocations.get(DYNAMIC_STRATEGY_KEY, {})
+        fixed_quantity = (
+            float(fixed_stored.get("quantityLots", 0))
+            if isinstance(fixed_stored, dict) and "quantityLots" in fixed_stored
+            else float(fixed_position.quantity) if fixed_position is not None
+            else float(payload.get("recommendedQuantityLots", AUTOMATION_QUANTITY_LOTS))
+        )
+        dynamic_quantity = (
+            float(dynamic_stored.get("quantityLots", 0))
+            if isinstance(dynamic_stored, dict) and "quantityLots" in dynamic_stored
+            else float(dynamic_position.quantity) if dynamic_position is not None
+            else 0.0
+        )
+        fixed_status = (
+            "已建立模擬持倉" if fixed_position is not None
+            else str(fixed_stored.get("status", payload.get("trackingStatus", "重複確認，未加碼")))
+            if isinstance(fixed_stored, dict) else "重複確認，未加碼"
+        )
+        dynamic_status = (
+            "已建立模擬持倉" if dynamic_position is not None
+            else str(dynamic_stored.get("status", "當時新版策略尚未啟用"))
+            if isinstance(dynamic_stored, dict) else "當時新版策略尚未啟用"
+        )
+        strategy_allocations = {
+            FIXED_STRATEGY_KEY: {
+                "key": FIXED_STRATEGY_KEY,
+                "label": "原版固定 2 張",
+                "quantityLots": fixed_quantity if fixed_position is not None or fixed_quantity > 0 else 0,
+                "allocatedCapital": (
+                    float(fixed_stored.get("allocatedCapital", 0))
+                    if isinstance(fixed_stored, dict) and "allocatedCapital" in fixed_stored
+                    else round(float(payload.get("price", 0)) * fixed_quantity * 1000, 2)
+                ) if fixed_position is not None or fixed_quantity > 0 else 0,
+                "status": fixed_status,
+            },
+            DYNAMIC_STRATEGY_KEY: {
+                "key": DYNAMIC_STRATEGY_KEY,
+                "label": "新版 500 萬動態配置",
+                "quantityLots": dynamic_quantity if dynamic_position is not None or dynamic_quantity > 0 else 0,
+                "allocatedCapital": (
+                    float(dynamic_stored.get("allocatedCapital", 0))
+                    if isinstance(dynamic_stored, dict) and "allocatedCapital" in dynamic_stored
+                    else round(float(payload.get("price", 0)) * dynamic_quantity * 1000, 2)
+                ) if dynamic_position is not None or dynamic_quantity > 0 else 0,
+                "status": dynamic_status,
+            },
+        }
+        items.append({
+            **payload,
+            "id": row.signal_id,
+            "symbol": row.symbol,
+            "stockName": row.stock_name,
+            "market": row.market,
+            "direction": row.direction,
+            "action": row.action,
+            "recommendedQuantityLots": fixed_quantity,
+            "trackedQuantityLots": strategy_allocations[FIXED_STRATEGY_KEY]["quantityLots"],
+            "trackingStatus": fixed_status,
+            "strategyAllocations": strategy_allocations,
+            "recommendedAt": row.recommended_at.isoformat(),
+            "rank": index + 1,
+        })
+    return {"tradingDate": trading_date, "items": items, "total": len(items)}
 
 
 @router.get("/signals/{signal_id}")
@@ -541,7 +718,8 @@ def close_position(
     gross = (exit_price - item.entry_price) * close_quantity * 1000 * factor
     turnover = (exit_price + item.entry_price) * close_quantity * 1000
     fee = round(turnover * 0.001425 * 0.6, 2)
-    tax = round(exit_price * close_quantity * 1000 * 0.0015, 2)
+    sell_price = exit_price if item.direction == "long" else item.entry_price
+    tax = round(sell_price * close_quantity * 1000 * 0.0015, 2)
     slippage = round(exit_price * close_quantity * 1000 * 0.0002, 2)
     profit = round(gross - fee - tax - slippage, 2)
     trade = DayTradingTrade(
@@ -595,6 +773,7 @@ def get_trades(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     period, start, end = _monthly_period(month)
+    start = _performance_start(user_id, start)
     items = db.scalars(
         select(DayTradingTrade).where(
             DayTradingTrade.user_id == user_id,
@@ -612,6 +791,7 @@ def get_performance(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     period, start, end = _monthly_period(month)
+    start = _performance_start(user_id, start)
     items = db.scalars(select(DayTradingTrade).where(
         DayTradingTrade.user_id == user_id,
         DayTradingTrade.exit_time >= start,
@@ -637,7 +817,23 @@ def get_performance(
     )).all()
     return {
         "period": period,
+        "performanceStartDate": (
+            AUTOMATION_PERFORMANCE_START.astimezone(TAIPEI).date().isoformat()
+            if user_id == AUTOMATION_USER_ID
+            else DYNAMIC_AUTOMATION_PERFORMANCE_START.astimezone(TAIPEI).date().isoformat()
+            if user_id == DYNAMIC_AUTOMATION_USER_ID else None
+        ),
         **_performance_summary(list(items), list(open_positions)),
+        "strategy": (
+            {"key": FIXED_STRATEGY_KEY, "label": "原版固定 2 張", "description": "每次正式訊號固定建立 2 張，不套用 500 萬資金上限。"}
+            if user_id == AUTOMATION_USER_ID
+            else {"key": DYNAMIC_STRATEGY_KEY, "label": "新版 500 萬動態配置", "description": "每日 500 萬，依停損距離與剩餘資金自動計算張數。"}
+            if user_id == DYNAMIC_AUTOMATION_USER_ID else None
+        ),
+        "capitalPlan": (
+            automation_capital_state(db, user_id=user_id)
+            if user_id == DYNAMIC_AUTOMATION_USER_ID else None
+        ),
         "today": {
             "tradeDate": daily_date,
             **_performance_summary(list(today_items), list(today_positions)),
@@ -769,20 +965,6 @@ async def trigger_scenario(
             session,
             now=simulated_at,
         )
-        opening_sent = await line_notification_dispatcher.send_system_event(
-            "opening",
-            "週五開盤模擬｜機器人啟動",
-            (
-                "【展示模式，非即時行情】\n"
-                f"模擬日期：{friday.isoformat()}\n"
-                f"{config.health_check_time} 系統與行情來源檢查完成\n"
-                f"{config.market_open_time} 開盤，暖機 {config.warmup_minutes} 分鐘\n"
-                f"{simulated_at.strftime('%H:%M')} 暖機完成，即時掃描中\n"
-                f"本小時 AI 當沖精選：{len(official)}／{config.maximum_recommendations} 檔"
-            ),
-            f"simulation:friday-open:{nonce}",
-            priority=2,
-        )
         recommendation_sent = await line_notification_dispatcher.send_recommendations(
             official[:config.maximum_recommendations],
         )
@@ -797,7 +979,7 @@ async def trigger_scenario(
             "recommended": official,
             "candidates": official,
             "maximumRecommendations": config.maximum_recommendations,
-            "lineMessagesSent": opening_sent + recommendation_sent,
+            "lineMessagesSent": recommendation_sent,
         }
     day_trading_engine.trigger(scenario)
     return {"accepted": True, "scenario": scenario, "mode": "demo"}
@@ -915,27 +1097,32 @@ async def _stream_events(request: Request, user_id: str):
                 },
             ])
             db.commit()
-            for event in prioritize_events(events):
-                event_type = event["type"]
-                payload = event.get("data", event)
-                if event_type in {"emergency_exit", "exit_warning"}:
-                    await line_notification_dispatcher.send_position_event({
-                        **payload,
-                        "createdAt": datetime.now(UTC).isoformat(),
-                    })
-                elif event_type == "position_update" and str(payload.get("latestAction", "")).startswith("續抱"):
-                    await line_notification_dispatcher.send_position_event({
-                        "type": "position_status",
-                        "level": "normal",
-                        "action": payload["latestAction"],
-                        "reason": "原始條件仍有效",
-                        "price": payload["currentPrice"],
-                        "position": payload,
-                        "createdAt": datetime.now(UTC).isoformat(),
-                    })
-                day_trading_cache.put(f"latest-event:{event_type}", payload)
-                day_trading_cache.publish(event_type, payload)
-                yield f"id: {event['id']}\nevent: {event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            outbound_events = prioritize_events(events)
+
+        # Never suspend an SSE generator while a database connection is checked
+        # out. Slow clients and network backpressure may leave the generator at
+        # a yield for an arbitrary amount of time, exhausting the entire pool.
+        for event in outbound_events:
+            event_type = event["type"]
+            payload = event.get("data", event)
+            if event_type in {"emergency_exit", "exit_warning"}:
+                await line_notification_dispatcher.send_position_event({
+                    **payload,
+                    "createdAt": datetime.now(UTC).isoformat(),
+                })
+            elif event_type == "position_update" and str(payload.get("latestAction", "")).startswith("續抱"):
+                await line_notification_dispatcher.send_position_event({
+                    "type": "position_status",
+                    "level": "normal",
+                    "action": payload["latestAction"],
+                    "reason": "原始條件仍有效",
+                    "price": payload["currentPrice"],
+                    "position": payload,
+                    "createdAt": datetime.now(UTC).isoformat(),
+                })
+            day_trading_cache.put(f"latest-event:{event_type}", payload)
+            day_trading_cache.publish(event_type, payload)
+            yield f"id: {event['id']}\nevent: {event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
         await asyncio.sleep(max(1.0, min(settings.day_trading_stream_seconds, 3.0)))
 
 

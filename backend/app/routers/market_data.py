@@ -8,6 +8,7 @@ from ..services.official_market_data import (
     StockQuoteRequest,
     official_market_data_provider,
 )
+from ..services.day_trading import day_trading_engine
 
 
 router = APIRouter(prefix="/market-data", tags=["market-data"])
@@ -55,5 +56,19 @@ async def get_official_quotes(body: OfficialQuoteBatchRequest) -> dict[str, obje
             _quote_payload(quotes[item.symbol])
             for item in body.items
             if item.symbol in quotes
+        ],
+    }
+
+
+@router.post("/quote-history")
+async def get_official_quote_history(body: OfficialQuoteBatchRequest) -> dict[str, object]:
+    """Serve the shared in-memory intraday samples without extra MIS requests."""
+    return {
+        "items": [
+            {
+                "symbol": item.symbol,
+                "points": day_trading_engine.quote_history_for(item.symbol),
+            }
+            for item in body.items
         ],
     }

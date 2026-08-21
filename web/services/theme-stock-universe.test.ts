@@ -14,6 +14,9 @@ describe("AI supply-chain and LEO theme stock universe", () => {
     expect(themesForSymbol("1303")).toEqual(["玻纖布"]);
     expect(themesForSymbol("2404")).toEqual(["廠務工程"]);
     expect(themesForSymbol("3661")).toEqual(["AI", "IC設計"]);
+    expect(TARGET_STOCK_THEMES).toContain("CPO／矽光子");
+    expect(TARGET_STOCK_THEMES).toContain("半導體封測");
+    expect(TARGET_STOCK_THEMES).toContain("電源／電力");
   });
 
   it("excludes unrelated stocks from both robot scans", () => {

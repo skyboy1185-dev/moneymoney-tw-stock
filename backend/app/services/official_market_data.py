@@ -14,6 +14,8 @@ TAIPEI = ZoneInfo("Asia/Taipei")
 logger = logging.getLogger(__name__)
 LIVE_QUOTE_CACHE_SECONDS = 5
 MIS_ENDPOINT = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
+MIS_BATCH_SIZE = 35
+MIS_REQUEST_ATTEMPTS = 3
 
 
 @dataclass(frozen=True)
@@ -178,6 +180,14 @@ class TwseMisMarketDataProvider:
         if not stocks:
             return {}
         now = datetime.now(UTC)
+        # Keep the last verified quote as a fallback even when callers request a
+        # forced refresh. Its timestamp still drives the stale-data safety gate,
+        # so a transient MIS failure cannot erase market state or enable trading.
+        verified_cache = {
+            stock.symbol: entry[0]
+            for stock in stocks
+            if (entry := self._cache.get(stock.symbol)) is not None
+        }
         cached: dict[str, OfficialStockQuote] = {}
         for stock in stocks:
             entry = self._cache.get(stock.symbol)
@@ -195,12 +205,14 @@ class TwseMisMarketDataProvider:
             missing = [stock for stock in missing if stock.symbol not in cached]
             if not missing:
                 return cached
-            channels = "|".join(
-                f"{'tse' if stock.market == '上市' else 'otc'}_{stock.symbol}.tw"
-                for stock in missing
-            )
-            try:
-                async with httpx.AsyncClient(timeout=8.0) as client:
+            rows: list[dict[str, Any]] = []
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                for batch_start in range(0, len(missing), MIS_BATCH_SIZE):
+                    batch = missing[batch_start:batch_start + MIS_BATCH_SIZE]
+                    channels = "|".join(
+                        f"{'tse' if stock.market == '上市' else 'otc'}_{stock.symbol}.tw"
+                        for stock in batch
+                    )
                     request_params = {
                         "ex_ch": channels,
                         "json": "1",
@@ -213,20 +225,39 @@ class TwseMisMarketDataProvider:
                         "User-Agent": "Mozilla/5.0 Moneymoney-TWSE-Dashboard",
                         "Cache-Control": "no-cache",
                     }
-                    response = await client.get(
-                        MIS_ENDPOINT, params=request_params, headers=request_headers,
-                    )
-                    if response.status_code == 429:
-                        await asyncio.sleep(0.5)
-                        request_params["_"] = str(round(datetime.now(UTC).timestamp() * 1000))
-                        response = await client.get(
-                            MIS_ENDPOINT, params=request_params, headers=request_headers,
+                    batch_rows: list[dict[str, Any]] | None = None
+                    last_error: Exception | None = None
+                    for attempt in range(MIS_REQUEST_ATTEMPTS):
+                        try:
+                            request_params["_"] = str(round(datetime.now(UTC).timestamp() * 1000))
+                            response = await client.get(
+                                MIS_ENDPOINT,
+                                params=request_params,
+                                headers=request_headers,
+                            )
+                            response.raise_for_status()
+                            payload = response.json()
+                            parsed_rows = payload.get("msgArray", [])
+                            if not isinstance(parsed_rows, list):
+                                raise TypeError("TWSE MIS msgArray is not a list")
+                            batch_rows = parsed_rows
+                            break
+                        except (httpx.HTTPError, ValueError, TypeError) as error:
+                            last_error = error
+                            if attempt + 1 < MIS_REQUEST_ATTEMPTS:
+                                await asyncio.sleep(0.25 * (attempt + 1))
+                    if batch_rows is None:
+                        logger.warning(
+                            "TWSE MIS quote batch %s-%s failed after %s attempts; retaining verified cache: %s",
+                            batch_start + 1,
+                            batch_start + len(batch),
+                            MIS_REQUEST_ATTEMPTS,
+                            last_error,
                         )
-                    response.raise_for_status()
-                rows = response.json().get("msgArray", [])
-            except (httpx.HTTPError, ValueError, TypeError) as error:
-                logger.warning("TWSE MIS quote request failed; retaining verified cache: %s", error)
-                return cached
+                    else:
+                        rows.extend(batch_rows)
+                    if batch_start + MIS_BATCH_SIZE < len(missing):
+                        await asyncio.sleep(0.1)
             requests = {stock.symbol: stock for stock in missing}
             for row in rows:
                 symbol = str(row.get("c") or "")
@@ -250,7 +281,7 @@ class TwseMisMarketDataProvider:
                     datetime.fromtimestamp(now.timestamp() + ttl_seconds, UTC),
                 )
                 cached[symbol] = quote
-            return cached
+            return {**verified_cache, **cached}
 
 
 official_market_data_provider = TwseMisMarketDataProvider()

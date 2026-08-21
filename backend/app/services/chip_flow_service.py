@@ -2,6 +2,8 @@ import asyncio
 from dataclasses import dataclass
 from datetime import date, datetime, time
 import logging
+from collections.abc import Awaitable, Callable
+from typing import cast
 from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
@@ -11,6 +13,7 @@ from .chip_flow_accumulator import ChipFlowAccumulator
 from .chip_flow_provider import FugleRealtimeTradeProvider, RealtimeTradeProvider
 from .chip_flow_repository import ChipFlowRepository
 from .chip_flow_types import NormalizedTradeTick
+from .chip_flow_types import ChipFlowSnapshotData
 from .dynamic_order_threshold import (
     DynamicOrderThreshold,
     DynamicOrderThresholdCalculator,
@@ -115,6 +118,9 @@ class ChipFlowService:
             max_pages=settings.fugle_chip_flow_max_pages,
             include_odd_lot=settings.fugle_chip_flow_include_odd_lot,
             timeout_seconds=settings.fugle_chip_flow_timeout_seconds,
+            min_request_interval_seconds=(
+                settings.fugle_chip_flow_min_request_interval_seconds
+            ),
         )
         self.large_order_amount = settings.chip_flow_large_order_amount
         self.small_order_amount = settings.chip_flow_small_order_amount
@@ -127,8 +133,49 @@ class ChipFlowService:
         )
         self._accumulators: dict[tuple[str, date], ChipFlowAccumulator] = {}
         self._thresholds: dict[tuple[str, date], DynamicOrderThreshold] = {}
+        self._threshold_warmup_ticks: dict[tuple[str, date], list[NormalizedTradeTick]] = {}
         self._excluded_stats: dict[tuple[str, date], ExcludedTradeStats] = {}
         self._locks: dict[tuple[str, date], asyncio.Lock] = {}
+
+    def alert_snapshots_snapshot(
+        self,
+        stock_ids: list[str],
+        trade_date: date,
+    ) -> dict[str, list[ChipFlowSnapshotData]]:
+        """Copy live accumulators for the ticker without checking out a DB connection."""
+        result: dict[str, list[ChipFlowSnapshotData]] = {}
+        for stock_id in stock_ids:
+            accumulator = self._accumulators.get((stock_id, trade_date))
+            if accumulator is None:
+                result[stock_id] = []
+                continue
+            # process() mutates one OrderedDict synchronously. A browser thread can
+            # exceptionally meet that tiny mutation window, so retry the copy.
+            for _ in range(3):
+                try:
+                    result[stock_id] = list(accumulator.snapshots.values())
+                    break
+                except RuntimeError:
+                    continue
+            else:
+                result[stock_id] = []
+        return result
+
+    def threshold_snapshot(
+        self,
+        stock_id: str,
+        trade_date: date,
+    ) -> DynamicOrderThreshold:
+        """Return the active per-stock large-order threshold without touching the DB."""
+        return self._thresholds.get(
+            (stock_id, trade_date),
+            DynamicOrderThreshold(
+                amount=self.large_order_amount,
+                mode="fixed_floor",
+                percentile=self.threshold_calculator.percentile,
+                sample_count=0,
+            ),
+        )
 
     async def get_intraday(
         self,
@@ -149,55 +196,99 @@ class ChipFlowService:
             for stale_key in stale_keys:
                 self._accumulators.pop(stale_key, None)
                 self._thresholds.pop(stale_key, None)
+                self._threshold_warmup_ticks.pop(stale_key, None)
                 self._excluded_stats.pop(stale_key, None)
                 self._locks.pop(stale_key, None)
             try:
                 async with self._locks.setdefault(key, asyncio.Lock()):
+                    incremental_loader = cast(
+                        Callable[[str, date], Awaitable[list[NormalizedTradeTick]]] | None,
+                        getattr(self.provider, "drain_trade_ticks", None),
+                    )
                     ticks = sorted(
-                        await self.provider.get_trade_ticks(stock_id, current_date),
+                        await incremental_loader(stock_id, current_date)
+                        if callable(incremental_loader)
+                        else await self.provider.get_trade_ticks(stock_id, current_date),
                         key=lambda tick: (tick.timestamp, tick.id),
                     )
                     active_ticks, excluded_stats = _split_session_ticks(ticks)
-                    threshold = self.threshold_calculator.calculate(active_ticks)
-                    accumulator = ChipFlowAccumulator(
-                        stock_id,
-                        current_date,
-                        self.direction_classifier,
-                        OrderSizeClassifier(
-                            threshold.amount,
-                            self.small_order_amount,
-                        ),
-                    )
-                    for tick in active_ticks:
-                        accumulator.process(tick)
+                    incremental = callable(incremental_loader)
+                    accumulator = self._accumulators.get(key) if incremental else None
+                    previous_threshold = self._thresholds.get(key)
+                    rebuild_ticks: list[NormalizedTradeTick] | None = None
+                    if incremental and self.threshold_calculator.enabled and (
+                        previous_threshold is None
+                        or previous_threshold.mode != "dynamic_percentile"
+                    ):
+                        warmup_ticks = self._threshold_warmup_ticks.setdefault(key, [])
+                        warmup_ticks.extend(active_ticks)
+                        threshold = self.threshold_calculator.calculate(warmup_ticks)
+                        if (
+                            accumulator is None
+                            or previous_threshold is None
+                            or threshold.amount != previous_threshold.amount
+                        ):
+                            rebuild_ticks = list(warmup_ticks)
+                        if threshold.mode == "dynamic_percentile":
+                            self._threshold_warmup_ticks.pop(key, None)
+                    else:
+                        threshold = previous_threshold or self.threshold_calculator.calculate(active_ticks)
+
+                    if accumulator is None or rebuild_ticks is not None:
+                        accumulator = ChipFlowAccumulator(
+                            stock_id,
+                            current_date,
+                            self.direction_classifier,
+                            OrderSizeClassifier(
+                                threshold.amount,
+                                self.small_order_amount,
+                            ),
+                        )
+                        for tick in rebuild_ticks if rebuild_ticks is not None else active_ticks:
+                            accumulator.process(tick)
+                    else:
+                        for tick in active_ticks:
+                            accumulator.process(tick)
                     snapshots = list(accumulator.snapshots.values())
                     if snapshots:
-                        repository.replace_day(snapshots)
+                        await asyncio.to_thread(repository.replace_day, snapshots)
                     else:
-                        repository.delete_day(stock_id, current_date)
+                        await asyncio.to_thread(repository.delete_day, stock_id, current_date)
                     self._accumulators[key] = accumulator
                     self._thresholds[key] = threshold
-                    self._excluded_stats[key] = excluded_stats
+                    if incremental:
+                        prior_excluded = self._excluded_stats.get(key, ExcludedTradeStats())
+                        self._excluded_stats[key] = ExcludedTradeStats(
+                            before_open_shares=(
+                                prior_excluded.before_open_shares + excluded_stats.before_open_shares
+                            ),
+                            closing_auction_shares=(
+                                prior_excluded.closing_auction_shares + excluded_stats.closing_auction_shares
+                            ),
+                            after_hours_shares=(
+                                prior_excluded.after_hours_shares + excluded_stats.after_hours_shares
+                            ),
+                        )
+                        # The provider cursor already guarantees incremental delivery.
+                        # Releasing IDs prevents 300 active symbols growing without bound.
+                        accumulator.seen_trade_ids.clear()
+                    else:
+                        self._excluded_stats[key] = excluded_stats
             except Exception as error:
+                await asyncio.to_thread(db.rollback)
                 provider_error = str(error)
                 logger.exception(
                     "chip-flow provider refresh failed",
                     extra={"stock_id": stock_id, "trade_date": current_date.isoformat()},
                 )
 
-        rows = repository.list_for_day(stock_id, current_date)
+        # SQLAlchemy is synchronous. Keep pool waits and large snapshot reads off
+        # the asyncio loop so the health checks and in-memory radar stay responsive.
+        rows = await asyncio.to_thread(repository.list_for_day, stock_id, current_date)
         series = [_snapshot_payload(row) for row in rows]
         latest = series[-1] if series else None
         key = (stock_id, current_date)
-        threshold = self._thresholds.get(
-            key,
-            DynamicOrderThreshold(
-                amount=self.large_order_amount,
-                mode="fixed_floor",
-                percentile=self.threshold_calculator.percentile,
-                sample_count=0,
-            ),
-        )
+        threshold = self.threshold_snapshot(stock_id, current_date)
         excluded_stats = self._excluded_stats.get(key, ExcludedTradeStats())
         status = (
             "disconnected" if provider_error

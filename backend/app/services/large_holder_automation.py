@@ -4,7 +4,7 @@ import asyncio
 import logging
 
 from ..config import get_settings
-from ..database import SessionLocal
+from ..database import BackgroundSessionLocal as SessionLocal
 from .large_holders import fetch_latest_distribution_bundle, persist_latest_distribution
 
 

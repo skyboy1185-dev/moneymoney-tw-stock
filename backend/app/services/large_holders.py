@@ -81,6 +81,9 @@ def _date(value: Any) -> date:
     return date(int(text[:4]), int(text[4:6]), int(text[6:8]))
 
 
+_directory_cache: tuple[float, dict[str, dict[str, Any]]] | None = None
+
+
 class TdccOpenDataProvider:
     """Official latest-week adapter. Historical weeks are accumulated in PostgreSQL."""
 
@@ -120,13 +123,16 @@ class TdccOpenDataProvider:
             raise ValueError("TDCC 未回傳可用的股權分散資料")
         return rows
 
-    async def fetch_stock_directory(self) -> dict[str, dict[str, str]]:
+    async def fetch_stock_directory(self) -> dict[str, dict[str, Any]]:
+        global _directory_cache
+        if _directory_cache is not None and _directory_cache[0] > time.monotonic():
+            return _directory_cache[1]
         async with httpx.AsyncClient(timeout=20.0) as client:
             listed_response, otc_response = await asyncio.gather(
                 client.get(TWSE_STOCK_DIRECTORY_URL, headers={"Accept": "application/json"}),
                 client.get(TPEX_STOCK_DIRECTORY_URL, headers={"Accept": "application/json"}),
             )
-        directory: dict[str, dict[str, str]] = {}
+        directory: dict[str, dict[str, Any]] = {}
         for response, market in ((listed_response, "上市"), (otc_response, "上櫃")):
             response.raise_for_status()
             rows = response.json()
@@ -134,14 +140,20 @@ class TdccOpenDataProvider:
                 if market == "上市":
                     symbol = str(item.get("Code") or item.get("證券代號") or "").strip()
                     name = str(item.get("Name") or item.get("證券名稱") or "").strip()
+                    close_price = _decimal(item.get("ClosingPrice") or item.get("收盤價"))
                 else:
                     symbol = str(item.get("SecuritiesCompanyCode") or item.get("Code") or "").strip()
                     name = str(item.get("CompanyName") or item.get("Name") or "").strip()
+                    close_price = _decimal(item.get("Close") or item.get("收盤價"))
                 if not symbol.isdigit() or len(symbol) != 4 or symbol.startswith("00"):
                     continue
                 if any(marker in name.upper() for marker in ("-DR", "特別", "特")):
                     continue
-                directory[symbol] = {"name": name or symbol, "market": market, "industry": "未分類"}
+                directory[symbol] = {
+                    "name": name or symbol, "market": market, "industry": "未分類",
+                    "price": float(close_price) if close_price > 0 else None,
+                }
+        _directory_cache = (time.monotonic() + 60, directory)
         return directory
 
 
@@ -222,7 +234,7 @@ def calculate_weekly_change(
 def persist_latest_distribution(
     db: Session,
     rows: list[DistributionRow],
-    directory: dict[str, dict[str, str]] | None = None,
+    directory: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     summaries = aggregate_distribution(rows)
     if not summaries:
@@ -333,7 +345,7 @@ DEMO_STOCKS = [
 
 
 def _demo_fridays(weeks: int = 12) -> list[date]:
-    current = date(2026, 7, 24)
+    current = date(2026, 8, 7)
     return [current - timedelta(days=7 * offset) for offset in reversed(range(weeks))]
 
 
@@ -344,12 +356,18 @@ def _demo_history(stock: tuple[str, str, str, str, float]) -> list[dict[str, Any
     ratio1000 = Decimal(str(15 + rng.random() * 55))
     total_shares = int(300_000_000 + rng.random() * 2_000_000_000)
     price = Decimal(str(base_price * (0.88 + rng.random() * 0.08)))
+    middle_large_ratio = Decimal(str(4 + rng.random() * 10))
+    retail_ratio = Decimal(str(18 + rng.random() * 25))
+    total_shareholders = int(20_000 + rng.random() * 180_000)
     history: list[dict[str, Any]] = []
     trend = Decimal(str(0.10 + (int(symbol[-2:]) % 11) * 0.045))
     for index, report_date in enumerate(_demo_fridays()):
         shock = Decimal(str((rng.random() - 0.35) * 0.55))
         ratio400 = max(Decimal(".1"), min(Decimal("10"), ratio400 + trend * Decimal(".2") + shock * Decimal(".12")))
         ratio1000 = max(Decimal("1"), min(Decimal("90"), ratio1000 + trend * Decimal("0.58") + shock * Decimal("0.45")))
+        middle_large_ratio = max(Decimal("1"), middle_large_ratio + trend * Decimal(".12") + shock * Decimal(".08"))
+        retail_ratio = max(Decimal("2"), retail_ratio - trend * Decimal(".32") - shock * Decimal(".12"))
+        total_shareholders = max(500, total_shareholders + round((rng.random() - .58) * 1_400))
         weekly_price_change = Decimal(str((rng.random() - 0.42) * 6))
         price = max(Decimal("5"), price * (Decimal("1") + weekly_price_change / Decimal("100")))
         volume = int(2_000_000 + rng.random() * 42_000_000)
@@ -361,6 +379,9 @@ def _demo_history(stock: tuple[str, str, str, str, float]) -> list[dict[str, Any
             "reportDate": report_date.isoformat(), "stockCode": symbol, "stockName": name,
             "market": market, "industry": industry,
             "ratioOver400": round(float(ratio400), 4), "ratioOver1000": round(float(ratio1000), 4),
+            "ratioOver400All": round(float(min(Decimal("99.9"), ratio400 + ratio1000 + middle_large_ratio)), 4),
+            "retailRatio": round(float(retail_ratio), 4),
+            "totalShareholders": total_shareholders, "totalShares": total_shares,
             "holdersOver400": holder400, "holdersOver1000": holder1000,
             "lotsOver400": _lots(shares400), "lotsOver1000": _lots(shares1000),
             "price": round(float(price), 2), "volume": volume,
@@ -670,7 +691,7 @@ tdcc_large_holder_provider = TdccOpenDataProvider()
 
 async def fetch_latest_distribution_bundle() -> tuple[
     list[DistributionRow],
-    dict[str, dict[str, str]],
+    dict[str, dict[str, Any]],
 ]:
     """Fetch required TDCC rows and best-effort stock metadata enrichment."""
     rows = await tdcc_large_holder_provider.fetch_latest()

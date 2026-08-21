@@ -10,11 +10,11 @@ from .theme_stock_universe import is_target_theme_symbol
 
 
 TAIPEI = ZoneInfo("Asia/Taipei")
-MAX_LONG_CHASE_CHANGE_PERCENT = 7.0
+MAX_LONG_CHASE_CHANGE_PERCENT = 5.0
 MIN_DAY_TRADING_VOLUME_SHARES = 1_000_000
 MIN_DAY_TRADING_TURNOVER = 100_000_000
 MIN_LIQUIDITY_PROGRESS = 0.10
-DAY_TRADING_SIGNAL_START = "09:15"
+DAY_TRADING_SIGNAL_START = "09:05"
 DAY_TRADING_ENTRY_CUTOFF = "10:30"
 DAY_TRADING_CLOSE_REMINDER = "13:25"
 DAY_TRADING_FORCED_EXIT = "13:30"
@@ -109,8 +109,8 @@ def trading_session_state(
             or recovering
         ):
             phase, robot_status, message, next_transition = (
-                "warmup", "開盤暖機中",
-                f"09:00～{config.signal_start_time} 收集 5 分 K、量能與大單資料，暫不產生正式進場訊號。",
+                "warmup", "多空動能掃描中",
+                f"09:00 已開始多空動能掃描；至 {config.signal_start_time} 收集首根完整 5 分 K、量能與大單資料，暫不產生正式進場訊號。",
                 warmup_end,
             )
             if local_now >= warmup_end and (quote_samples < config.minimum_live_samples or recovering):
@@ -197,8 +197,12 @@ def recommendation_qualification(
 ) -> tuple[bool, list[str]]:
     current = now or datetime.now(UTC)
     failures: list[str] = []
-    if not is_target_theme_symbol(str(candidate.get("symbol", ""))):
-        failures.append("不屬於 AI 或低軌衛星主題股票池")
+    in_momentum_universe = bool(candidate.get(
+        "momentumUniverseMember",
+        is_target_theme_symbol(str(candidate.get("symbol", ""))),
+    ))
+    if not in_momentum_universe:
+        failures.append("不屬於大單動能雷達股票池")
     if not session["formalSignalsAllowed"]:
         failures.append(str(session["statusMessage"]))
     if candidate.get("dataStatus", "normal") != "normal":
@@ -235,6 +239,7 @@ def recommendation_qualification(
     if (
         candidate.get("direction") == "long"
         and float(candidate.get("changePercent", 0)) >= MAX_LONG_CHASE_CHANGE_PERCENT
+        and float(candidate.get("rangePositionPercent", 50)) >= 90
     ):
         failures.append(
             f"今日漲幅已達 {MAX_LONG_CHASE_CHANGE_PERCENT:g}%，禁止追價"
@@ -245,8 +250,11 @@ def recommendation_qualification(
         failures.append("處置股或交易受限股票禁止列入當沖")
     if not candidate.get("largeOrderDataAvailable", False):
         failures.append("等待逐筆成交大單資料完成暖機")
+    elif candidate.get("direction") == "short":
+        if not candidate.get("largeOrderContinuousSell", False):
+            failures.append("大戶尚未持續加空")
     elif not candidate.get("largeOrderContinuousBuy", False):
-        failures.append("大單尚未持續敲進")
+        failures.append("大戶尚未持續加多")
     if not candidate.get("tradingEligible", False):
         failures.append("不符合當沖交易資格")
     if float(candidate.get("marketAlignment", 0)) < 30:

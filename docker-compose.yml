@@ -29,6 +29,7 @@ services:
   backend:
     build: ./backend
     environment:
+      APP_RUNTIME_MODE: local
       APP_ENV: production
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-moneymoney}:${POSTGRES_PASSWORD:-moneymoney}@postgres:5432/${POSTGRES_DB:-moneymoney}
       CORS_ORIGINS: http://localhost:${WEB_PORT:-3000}
@@ -38,6 +39,12 @@ services:
       LINE_CHANNEL_SECRET: ${LINE_CHANNEL_SECRET:-}
       LINE_TARGET_GROUP_ID: ${LINE_TARGET_GROUP_ID:-}
       LINE_NOTIFICATIONS_ENABLED: ${LINE_NOTIFICATIONS_ENABLED:-true}
+      GMAIL_NOTIFICATIONS_ENABLED: ${GMAIL_NOTIFICATIONS_ENABLED:-true}
+      GMAIL_SENDER_EMAIL: ${GMAIL_SENDER_EMAIL:-}
+      GMAIL_APP_PASSWORD: ${GMAIL_APP_PASSWORD:-}
+      GMAIL_RECIPIENT_EMAILS: ${GMAIL_RECIPIENT_EMAILS:-}
+      GMAIL_APPS_SCRIPT_URL: ${GMAIL_APPS_SCRIPT_URL:-}
+      GMAIL_APPS_SCRIPT_SECRET: ${GMAIL_APPS_SCRIPT_SECRET:-}
       PUBLIC_WEB_URL: ${PUBLIC_WEB_URL:-http://localhost:8000}
     ports:
       - "${API_PORT:-8000}:8000"
@@ -55,9 +62,8 @@ services:
   web:
     build:
       context: ./web
-      args:
-        FASTAPI_URL: http://backend:8000
     environment:
+      APP_RUNTIME_MODE: local
       FASTAPI_URL: http://backend:8000
       DATABASE_URL: file:./data/moneymoney.db
     volumes:

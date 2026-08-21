@@ -18,6 +18,7 @@ async function request<T>(base: string, path: string, init?: RequestInit): Promi
 export const lineNotificationClient = {
   status: () => request<LineIntegrationStatus>("/api/integrations/line", "status"),
   test: () => request<{ ok: boolean; sentGroups: number }>("/api/integrations/line", "test", { method: "POST" }),
+  testGmail: () => request<{ ok: boolean; sentRecipients: number }>("/api/integrations/line", "gmail/test", { method: "POST" }),
   unbind: (groupRecordId: number) => request<{ ok: boolean }>("/api/integrations/line", `groups/${groupRecordId}`, { method: "DELETE" }),
   saveSettings: (settings: LineNotificationSettings) => request<LineNotificationSettings>("/api/integrations/line", "settings", {
     method: "PUT",
@@ -37,5 +38,6 @@ export const lineNotificationClient = {
 export const aiStockLineNotificationClient = {
   status: () => request<AIStockLineIntegrationStatus>("/api/integrations/ai-stock-line", "status"),
   test: () => request<{ ok: boolean; sentGroups: number }>("/api/integrations/ai-stock-line", "test", { method: "POST" }),
+  testGmail: () => request<{ ok: boolean; sentRecipients: number }>("/api/integrations/ai-stock-line", "gmail/test", { method: "POST" }),
   unbind: (groupRecordId: number) => request<{ ok: boolean }>("/api/integrations/ai-stock-line", `groups/${groupRecordId}`, { method: "DELETE" }),
 };

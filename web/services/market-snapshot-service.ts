@@ -7,9 +7,11 @@ import { marketRegimeDetector } from "@/market/MarketRegimeDetector";
 import { strategySelector } from "@/market/StrategySelector";
 import { marketDataProvider } from "@/services/market-data/mock-provider";
 import { officialMarketDirectionProvider as marketDirectionProvider } from "@/services/market-direction/official-provider";
+import { withScanLoadLock } from "@/services/scan-load-coordinator";
 
 let cachedSnapshot: MarketSnapshot | null = null;
 let cachedAt = 0;
+let refreshPromise: Promise<MarketSnapshot> | null = null;
 let lockedManualStrategies = ["sideways-breakout"];
 
 const directionLabel: Record<string, string> = {
@@ -64,13 +66,29 @@ function buildTimeline(context: MarketContext, count: number): TimelinePoint[] {
 export async function buildMarketSnapshot(autoMode = true, forceRefresh = false): Promise<MarketSnapshot> {
   const now = Date.now();
   const ttl = cachedSnapshot?.marketOpen
-    ? Number(process.env.MARKET_FORCE_REFRESH_SECONDS ?? 10) * 1000 - 1_000
+    ? Math.max(30, Number(process.env.MARKET_FORCE_REFRESH_SECONDS ?? 30)) * 1000 - 1_000
     : cachedSnapshot?.futuresMarketOpen
       ? Math.max(30, Number(process.env.FUTURES_REFRESH_SECONDS ?? 30)) * 1000 - 1_000
       : Number(process.env.MARKET_SCAN_SECONDS ?? 60) * 1000 - 5_000;
-  if (!forceRefresh && cachedSnapshot && now - cachedAt < ttl && autoMode) {
+  // A forced automation refresh may skip a stale cache, but it must not make
+  // the CPU-heavy ranking scan run continuously and starve normal web traffic.
+  const minimumRefreshTtl = Math.min(ttl, 29_000);
+  if (cachedSnapshot && now - cachedAt < (forceRefresh ? minimumRefreshTtl : ttl) && autoMode) {
     return { ...cachedSnapshot, nextUpdateSeconds: Math.max(0, Math.ceil((ttl - (now - cachedAt)) / 1000)) };
   }
+  // Coalesce simultaneous refreshes from browser streams and automation jobs.
+  // A single frontend instance must not run the full market scan once per tab.
+  if (refreshPromise) return refreshPromise;
+  refreshPromise = withScanLoadLock(() => computeMarketSnapshot(autoMode));
+  try {
+    return await refreshPromise;
+  } finally {
+    refreshPromise = null;
+  }
+}
+
+async function computeMarketSnapshot(autoMode: boolean): Promise<MarketSnapshot> {
+  const now = Date.now();
   const [status, index, futures, orders, breadth] = await Promise.all([
     marketDataProvider.getMarketStatus(),
     marketDirectionProvider.getMarketIndex(),
@@ -189,7 +207,7 @@ export async function buildMarketSnapshot(autoMode = true, forceRefresh = false)
         : status.label,
     updatedAt,
     delaySeconds: status.open ? 2 : futuresMarketOpen ? 30 : 0,
-    nextUpdateSeconds: status.open ? 10 : futuresMarketOpen ? Math.max(30, Number(process.env.FUTURES_REFRESH_SECONDS ?? 30)) : 60,
+    nextUpdateSeconds: status.open ? Math.max(30, Number(process.env.MARKET_FORCE_REFRESH_SECONDS ?? 30)) : futuresMarketOpen ? Math.max(30, Number(process.env.FUTURES_REFRESH_SECONDS ?? 30)) : 60,
     force, context, recommendations, activeStrategyIds, rankings, featured, metrics,
     timeline: buildTimeline(context, 36), events: recentEvents(12),
   };

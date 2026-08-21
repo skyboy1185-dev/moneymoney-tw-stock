@@ -58,9 +58,12 @@ describe("FormalRecommendationEngine", () => {
     expect(new FormalRecommendationEngine().select([candidate], { ...market, marketOpen: false })).toHaveLength(0);
   });
 
-  it("非 AI 或低軌衛星主題不得進入正式推薦", () => {
+  it("AI 相關供應鏈題材皆可進入正式推薦，無題材仍排除", () => {
+    const cpo = row("4979", 90, { themes: ["CPO／矽光子"] });
+    expect(formalQualification(cpo, market)).toEqual([]);
+    expect(new FormalRecommendationEngine().select([cpo], market)).toHaveLength(1);
     const candidate = row("2603", 90, { themes: [] });
-    expect(formalQualification(candidate, market)).toContain("不屬於 AI 或低軌衛星主題股票池");
+    expect(formalQualification(candidate, market)).toContain("不屬於 AI 相關題材股票池");
     expect(new FormalRecommendationEngine().select([candidate], market)).toHaveLength(0);
   });
 });

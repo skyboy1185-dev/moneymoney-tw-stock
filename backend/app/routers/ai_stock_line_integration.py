@@ -19,6 +19,7 @@ from ..services.ai_stock_line_messaging import (
     ai_stock_line_dispatcher,
 )
 from ..services.ai_stock_line import friday_replay_messages
+from ..services.gmail_messaging import gmail_notification_dispatcher
 from ..services.line_messaging import LineNotificationEvent, mask_group_id, verify_line_signature
 
 
@@ -196,11 +197,40 @@ def ai_stock_line_status(db: Session = Depends(get_db)) -> dict[str, Any]:
         "groups": payload_groups,
         "lastPushAt": last_push.isoformat() if last_push else None,
         "todayPushCount": today_count,
+        "gmailEnabled": gmail_notification_dispatcher.enabled,
+        "gmailConfigured": gmail_notification_dispatcher.configured,
+        "gmailTransport": gmail_notification_dispatcher.transport,
+        "gmailRecipients": gmail_notification_dispatcher.masked_recipients,
         "publicWebhookUrl": (
             f"{settings.public_web_url.rstrip('/')}/api/integrations/ai-stock-line/webhook"
             if settings.public_web_url else "/api/integrations/ai-stock-line/webhook"
         ),
     }
+
+
+@router.post("/gmail/test")
+async def test_ai_stock_gmail_notification() -> dict[str, Any]:
+    if not gmail_notification_dispatcher.configured:
+        raise HTTPException(status_code=409, detail="AI選股 Gmail 尚未完成設定")
+    sent = await gmail_notification_dispatcher.dispatch(
+        event_type="ai_stock_test",
+        action="AI選股 Gmail 測試通知",
+        message=(
+            "【AI選股機器人｜Gmail 測試】\n\n"
+            "這是一封 AI 選股機器人測試信，不是真實選股訊號。\n\n"
+            "測試標的：2330 台積電\n"
+            "測試策略：預測即將翻紅\n"
+            "測試狀態：等待確認\n\n"
+            "正式選股的買進、加碼、減碼、賣出、停損與資料異常事件，"
+            "都會透過 Gmail 獨立發送。"
+        ),
+        dedupe_key=f"ai-stock-gmail-manual-test:{uuid4()}",
+        symbol="2330",
+        channel_name=AI_STOCK_OFFICIAL_ACCOUNT_NAME,
+    )
+    if sent == 0:
+        raise HTTPException(status_code=502, detail="AI選股 Gmail 測試寄送失敗，請查看 Gmail 傳送紀錄")
+    return {"ok": True, "sentRecipients": sent}
 
 
 @router.post("/test")

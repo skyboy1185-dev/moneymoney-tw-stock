@@ -12,20 +12,43 @@ type FinMindRow = {
   close?: unknown;
 };
 type FinMindPayload = { status?: number; msg?: string; data?: FinMindRow[] };
+type YahooDailyPayload = {
+  chart?: {
+    result?: Array<{
+      timestamp?: number[];
+      indicators?: {
+        quote?: Array<{
+          open?: Array<number | null>;
+          high?: Array<number | null>;
+          low?: Array<number | null>;
+          close?: Array<number | null>;
+          volume?: Array<number | null>;
+        }>;
+      };
+    }>;
+  };
+};
 
 const HISTORY_MONTHS = 62;
 const HISTORY_CALENDAR_DAYS = 1_900;
 const HISTORY_CACHE_MS = 6 * 60 * 60 * 1_000;
-const HISTORY_CONCURRENCY = 4;
+const HISTORY_CONCURRENCY = 2;
+// Broad-market scans can cover hundreds of symbols. A conservative limit keeps
+// enough sockets and CPU available for interactive page/API requests.
+const SCAN_HISTORY_CONCURRENCY = 2;
 const SCAN_HISTORY_MONTHS = 8;
 const SCAN_HISTORY_CALENDAR_DAYS = 400;
 const historyCache = new Map<string, { value: DailyPrice[]; expiresAt: number }>();
 const scanHistoryCache = new Map<string, { value: DailyPrice[]; expiresAt: number }>();
+const deductionHistoryCache = new Map<string, { value: DailyPrice[]; expiresAt: number }>();
 const historySourceCache = new Map<string, string>();
 const inFlight = new Map<string, Promise<DailyPrice[]>>();
 const scanInFlight = new Map<string, Promise<DailyPrice[]>>();
+const deductionInFlight = new Map<string, Promise<DailyPrice[]>>();
 const historyQueue: (() => void)[] = [];
+const scanHistoryQueue: (() => void)[] = [];
 let activeHistoryLoads = 0;
+let activeScanHistoryLoads = 0;
 
 function numberValue(value: unknown): number | null {
   const text = String(value ?? "").replaceAll(",", "").replaceAll("+", "").trim();
@@ -113,6 +136,45 @@ export function parseFinMindHistory(payload: FinMindPayload, meta: StockMeta): D
   }).filter((row): row is DailyPrice => row !== null);
 }
 
+function taipeiIsoDate(timestampSeconds: number): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Taipei",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(timestampSeconds * 1_000));
+}
+
+export function parseYahooDailyHistory(payload: YahooDailyPayload, meta: StockMeta): DailyPrice[] {
+  const result = payload.chart?.result?.[0];
+  const timestamps = result?.timestamp;
+  const quote = result?.indicators?.quote?.[0];
+  if (!Array.isArray(timestamps) || !quote) return [];
+  return timestamps.map((timestamp, index) => {
+    const open = numberValue(quote.open?.[index]);
+    const high = numberValue(quote.high?.[index]);
+    const low = numberValue(quote.low?.[index]);
+    const close = numberValue(quote.close?.[index]);
+    const volume = numberValue(quote.volume?.[index]);
+    if (
+      !Number.isFinite(timestamp) || timestamp <= 0
+      || open == null || high == null || low == null || close == null || volume == null
+      || open <= 0 || high <= 0 || low <= 0 || close <= 0 || volume < 0
+      || high < Math.max(open, close) || low > Math.min(open, close)
+    ) return null;
+    return {
+      symbol: meta.symbol,
+      name: meta.name,
+      date: taipeiIsoDate(timestamp),
+      open,
+      high,
+      low,
+      close,
+      volume: Math.round(volume),
+    } satisfies DailyPrice;
+  }).filter((row): row is DailyPrice => row !== null);
+}
+
 function isoDaysAgo(days: number) {
   const date = new Date();
   date.setUTCDate(date.getUTCDate() - days);
@@ -140,6 +202,44 @@ async function fetchFinMindHistory(
   if (!response.ok) throw new Error(`FinMind 歷史行情回應 ${response.status}`);
   const prices = parseFinMindHistory(await response.json() as FinMindPayload, meta);
   validateOfficialHistoryContinuity(prices, minimumTradingDays);
+  return prices;
+}
+
+async function fetchYahooRecentHistory(meta: StockMeta): Promise<DailyPrice[]> {
+  const suffix = meta.market === "上市" ? "TW" : "TWO";
+  const response = await fetch(
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(meta.symbol)}.${suffix}?interval=1d&range=1y&events=history`,
+    {
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "Mozilla/5.0 Moneymoney-TWSE-Dashboard",
+      },
+      signal: AbortSignal.timeout(10_000),
+      cache: "no-store",
+    },
+  );
+  if (!response.ok) throw new Error(`Yahoo Finance daily history ${response.status}`);
+  const prices = parseYahooDailyHistory(await response.json() as YahooDailyPayload, meta);
+  validateOfficialHistoryContinuity(prices, 60);
+  return prices;
+}
+
+async function fetchYahooDeductionHistory(meta: StockMeta): Promise<DailyPrice[]> {
+  const suffix = meta.market === "上市" ? "TW" : "TWO";
+  const response = await fetch(
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(meta.symbol)}.${suffix}?interval=1d&range=2y&events=history`,
+    {
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "Mozilla/5.0 Moneymoney-TWSE-Dashboard",
+      },
+      signal: AbortSignal.timeout(10_000),
+      cache: "no-store",
+    },
+  );
+  if (!response.ok) throw new Error(`Yahoo Finance deduction history ${response.status}`);
+  const prices = parseYahooDailyHistory(await response.json() as YahooDailyPayload, meta);
+  validateOfficialHistoryContinuity(prices, 300);
   return prices;
 }
 
@@ -203,12 +303,21 @@ export function validateOfficialHistoryContinuity(prices: DailyPrice[], minimumT
 }
 
 async function loadRecentOfficialHistory(meta: StockMeta): Promise<DailyPrice[]> {
+  if (process.env.FINMIND_API_TOKEN?.trim()) {
+    try {
+      const prices = await fetchFinMindHistory(meta, SCAN_HISTORY_CALENDAR_DAYS, 60);
+      historySourceCache.set(meta.symbol, "FinMind TaiwanStockPrice（彙整市場日成交資料）");
+      return prices;
+    } catch {
+      // Continue with the single-request market-history adapter below.
+    }
+  }
   try {
-    const prices = await fetchFinMindHistory(meta, SCAN_HISTORY_CALENDAR_DAYS, 60);
-    historySourceCache.set(meta.symbol, "FinMind TaiwanStockPrice（彙整市場日成交資料）");
+    const prices = await fetchYahooRecentHistory(meta);
+    historySourceCache.set(meta.symbol, "Yahoo Finance 台股日線（掃描備援）");
     return prices;
   } catch {
-    // The full-market scanner only needs enough history for its 60-day rules.
+    // Exchange monthly reports remain the final source when the range adapter fails.
   }
   const months = recentMonths(SCAN_HISTORY_MONTHS);
   const rows: DailyPrice[] = [];
@@ -273,6 +382,19 @@ async function withHistoryConcurrency<T>(task: () => Promise<T>): Promise<T> {
   }
 }
 
+async function withScanHistoryConcurrency<T>(task: () => Promise<T>): Promise<T> {
+  if (activeScanHistoryLoads >= SCAN_HISTORY_CONCURRENCY) {
+    await new Promise<void>((resolve) => scanHistoryQueue.push(resolve));
+  }
+  activeScanHistoryLoads += 1;
+  try {
+    return await task();
+  } finally {
+    activeScanHistoryLoads -= 1;
+    scanHistoryQueue.shift()?.();
+  }
+}
+
 export async function getOfficialHistory(meta: StockMeta): Promise<DailyPrice[]> {
   const cached = historyCache.get(meta.symbol);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
@@ -295,13 +417,41 @@ export async function getOfficialRecentHistory(meta: StockMeta): Promise<DailyPr
   if (cached && cached.expiresAt > Date.now()) return cached.value;
   const pending = scanInFlight.get(meta.symbol);
   if (pending) return pending;
-  const request = withHistoryConcurrency(() => loadRecentOfficialHistory(meta))
+  const request = withScanHistoryConcurrency(() => loadRecentOfficialHistory(meta))
     .then((prices) => {
       scanHistoryCache.set(meta.symbol, { value: prices, expiresAt: Date.now() + HISTORY_CACHE_MS });
       return prices;
     })
     .finally(() => scanInFlight.delete(meta.symbol));
   scanInFlight.set(meta.symbol, request);
+  return request;
+}
+
+/**
+ * Load enough daily candles for the 20-month deduction model with one compact
+ * range request. Fall back to the full official history adapter when the range
+ * source is unavailable. Results are cached separately from broad scans.
+ */
+export async function getOfficialDeductionHistory(meta: StockMeta): Promise<DailyPrice[]> {
+  const full = historyCache.get(meta.symbol);
+  if (full && full.expiresAt > Date.now()) return full.value;
+  const cached = deductionHistoryCache.get(meta.symbol);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const pending = deductionInFlight.get(meta.symbol);
+  if (pending) return pending;
+  const request = withScanHistoryConcurrency(async () => {
+    try {
+      const prices = await fetchYahooDeductionHistory(meta);
+      historySourceCache.set(meta.symbol, "Yahoo Finance 台股日線（扣抵計算）");
+      return prices;
+    } catch {
+      return getOfficialHistory(meta);
+    }
+  }).then((prices) => {
+    deductionHistoryCache.set(meta.symbol, { value: prices, expiresAt: Date.now() + HISTORY_CACHE_MS });
+    return prices;
+  }).finally(() => deductionInFlight.delete(meta.symbol));
+  deductionInFlight.set(meta.symbol, request);
   return request;
 }
 
@@ -328,11 +478,11 @@ export function mergeOfficialHistoryWithQuote(
     .sort((a, b) => a.date.localeCompare(b.date));
 }
 
-export async function buildOfficialStockPayload(
+function stockPayloadFromHistory(
   meta: StockMeta,
   quote: StockQuote | null,
-): Promise<StockPayload> {
-  const history = await getOfficialHistory(meta);
+  history: DailyPrice[],
+): StockPayload {
   // MIS intraday volume and the official end-of-day volume can differ because
   // the daily report includes the completed market sessions. Only use MIS to
   // build the unfinished current-day candle while the market is open.
@@ -373,10 +523,26 @@ export async function buildOfficialStockPayload(
   };
 }
 
+export async function buildOfficialStockPayload(
+  meta: StockMeta,
+  quote: StockQuote | null,
+): Promise<StockPayload> {
+  return stockPayloadFromHistory(meta, quote, await getOfficialHistory(meta));
+}
+
+export async function buildOfficialRecentStockPayload(
+  meta: StockMeta,
+  quote: StockQuote | null,
+): Promise<StockPayload> {
+  return stockPayloadFromHistory(meta, quote, await getOfficialRecentHistory(meta));
+}
+
 export function resetOfficialHistoryCacheForTests() {
   historyCache.clear();
   scanHistoryCache.clear();
+  deductionHistoryCache.clear();
   historySourceCache.clear();
   inFlight.clear();
   scanInFlight.clear();
+  deductionInFlight.clear();
 }

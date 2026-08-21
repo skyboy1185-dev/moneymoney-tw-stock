@@ -1,24 +1,26 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Activity, BarChart3, Bot, Flame, Landmark, Newspaper, Search, SlidersHorizontal, Star, TrendingUp, UsersRound, Waves, Wifi, WifiOff } from "lucide-react";
+import { Activity, BarChart3, Bot, Fish, Flame, Landmark, Newspaper, Rocket, Search, SlidersHorizontal, Telescope, TrendingUp, Waves, Wifi, WifiOff } from "lucide-react";
 import { StockAnalysis } from "@/components/StockAnalysis";
 import { Screener } from "@/components/Screener";
 import { PortfolioPage } from "@/components/PortfolioPage";
 import { IndustryHotspots } from "@/components/IndustryHotspots";
 import { NewsPage } from "@/components/NewsPage";
-import { LargeHolderRankingPage } from "@/components/LargeHolderRankingPage";
 import { InstitutionalInvestorsPage } from "@/components/InstitutionalInvestorsPage";
 import { ChipFlowPage } from "@/components/ChipFlowPage";
 import { DayTradingDashboard } from "@/components/day-trading/DayTradingDashboard";
 import { ElectronicChipFlowTicker } from "@/components/ElectronicChipFlowTicker";
 import { AdaptiveElectronicPage } from "@/components/AdaptiveElectronicPage";
+import { LongTermSelectionPage } from "@/components/LongTermSelectionPage";
+import { RocketRadarPage } from "@/components/RocketRadarPage";
+import { WhaleAccumulationPage } from "@/components/WhaleAccumulationPage";
 import { LegalTermsButton } from "@/components/LegalTermsGate";
 import { PrivateSiteLogoutButton } from "@/components/PrivateSiteLogoutButton";
 import type { MarketSnapshot } from "@/lib/market-types";
 import type { StockPayload } from "@/lib/types";
 
-type Tab = "analysis" | "screener" | "day-trading" | "adaptive-electronic" | "large-holders" | "institutional-investors" | "chip-flow" | "portfolio" | "industries" | "news";
+type Tab = "analysis" | "screener" | "day-trading" | "adaptive-electronic" | "rocket-radar" | "long-term" | "whale-accumulation" | "institutional-investors" | "chip-flow" | "portfolio" | "industries" | "news";
 type Connection = "connecting" | "connected" | "disconnected";
 
 async function fetchStock(query: string): Promise<StockPayload> {
@@ -38,6 +40,7 @@ export default function Home() {
   const [connection, setConnection] = useState<Connection>("connecting");
   const [autoMode] = useState(true);
   const [userId, setUserId] = useState("");
+  const [rocketUnread, setRocketUnread] = useState(0);
 
   const loadStock = useCallback(async (keyword: string) => {
     const normalized = keyword.trim();
@@ -64,7 +67,7 @@ export default function Home() {
     void loadStock(initial).then(() => {
       if (requestedView === "ai") {
         setTab("adaptive-electronic");
-      } else if (requestedView && ["analysis", "screener", "day-trading", "adaptive-electronic", "large-holders", "institutional-investors", "chip-flow", "portfolio", "industries", "news"].includes(requestedView)) {
+      } else if (requestedView && ["analysis", "screener", "day-trading", "adaptive-electronic", "rocket-radar", "long-term", "whale-accumulation", "institutional-investors", "chip-flow", "portfolio", "industries", "news"].includes(requestedView)) {
         setTab(requestedView);
       }
     });
@@ -91,6 +94,18 @@ export default function Home() {
     return () => source.close();
   }, [autoMode]);
 
+  useEffect(() => {
+    const loadUnread = async () => {
+      try {
+        const response = await fetch("/api/rocket-radar/notifications/unread", { cache: "no-store" });
+        if (response.ok) setRocketUnread((await response.json()).count ?? 0);
+      } catch { /* badge retries on the next interval */ }
+    };
+    void loadUnread();
+    const timer = window.setInterval(() => void loadUnread(), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   const connectionLabel = connection === "connected"
     ? snapshot?.marketOpen
       ? "行情已連線"
@@ -102,6 +117,7 @@ export default function Home() {
   return (
     <div className="app-shell">
       <ElectronicChipFlowTicker
+        marketSnapshot={snapshot}
         onSelectStock={(symbol) => {
           setQuery(symbol);
           void loadStock(symbol);
@@ -131,10 +147,11 @@ export default function Home() {
         <button className={tab === "screener" ? "active" : ""} onClick={() => setTab("screener")}><SlidersHorizontal size={17} />AI 選股</button>
         <button className={tab === "day-trading" ? "active ai-nav" : "ai-nav"} onClick={() => setTab("day-trading")}><Bot size={17} />當沖機器人<span>LIVE</span></button>
         <button className={tab === "adaptive-electronic" ? "active" : ""} onClick={() => setTab("adaptive-electronic")}><TrendingUp size={17} />AI選股機器人</button>
-        <button className={tab === "large-holders" ? "active" : ""} onClick={() => setTab("large-holders")}><UsersRound size={17} />大戶持股變化榜</button>
+        <button className={tab === "rocket-radar" ? "active rocket-nav" : "rocket-nav"} onClick={() => setTab("rocket-radar")}><Rocket size={17} />飆股雷達{rocketUnread > 0 && <span className="rocket-unread-badge">{rocketUnread > 99 ? "99+" : rocketUnread}</span>}</button>
+        <button className={tab === "long-term" ? "active" : ""} onClick={() => setTab("long-term")}><Telescope size={17} />長線選股</button>
+        <button className={tab === "whale-accumulation" ? "active whale-nav" : "whale-nav"} onClick={() => setTab("whale-accumulation")}><Fish size={17} />大戶偷掃貨</button>
         <button className={tab === "institutional-investors" ? "active" : ""} onClick={() => setTab("institutional-investors")}><Landmark size={17} />三大法人</button>
         <button className={tab === "chip-flow" ? "active" : ""} onClick={() => setTab("chip-flow")}><Waves size={17} />盤中籌碼</button>
-        <button className={tab === "portfolio" ? "active" : ""} onClick={() => setTab("portfolio")}><Star size={17} />觀察清單</button>
         <button className={tab === "industries" ? "active" : ""} onClick={() => setTab("industries")}><Flame size={17} />產業熱點</button>
         <button className={tab === "news" ? "active" : ""} onClick={() => setTab("news")}><Newspaper size={17} />新聞</button>
       </nav>
@@ -158,8 +175,12 @@ export default function Home() {
           <DayTradingDashboard />
         ) : tab === "adaptive-electronic" ? (
           <AdaptiveElectronicPage userId={userId} onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }} />
-        ) : tab === "large-holders" ? (
-          <LargeHolderRankingPage userId={userId} onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }} />
+        ) : tab === "rocket-radar" ? (
+          <RocketRadarPage onUnreadChange={setRocketUnread} onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }} />
+        ) : tab === "long-term" ? (
+          <LongTermSelectionPage onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }} />
+        ) : tab === "whale-accumulation" ? (
+          <WhaleAccumulationPage onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }} />
         ) : tab === "institutional-investors" ? (
           <InstitutionalInvestorsPage />
         ) : tab === "chip-flow" ? (

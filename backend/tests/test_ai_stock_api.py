@@ -31,6 +31,14 @@ def test_ai_stock_settings_and_dashboard_api() -> None:
         assert automation.status_code == 200
         assert "lastScanStatus" in automation.json()
 
+        universe = client.get("/api/v1/ai-stock-universe")
+        assert universe.status_code == 200
+        assert universe.json()["total"] == 169
+        by_symbol = {item["symbol"]: item for item in universe.json()["items"]}
+        assert "CPO／矽光子" in by_symbol["4979"]["themes"]
+        assert "半導體封測" in by_symbol["6239"]["themes"]
+        assert "電源／電力" in by_symbol["2301"]["themes"]
+
         settings = client.get("/api/v1/portfolio/settings", headers=headers)
         assert settings.status_code == 200
         assert settings.json()["totalCapital"] == 1_000_000

@@ -30,7 +30,9 @@ async function proxy(request: NextRequest, context: RouteContext) {
         ...(body ? { "Content-Type": "application/json" } : {}),
         ...(userId ? { "x-user-id": userId } : {}),
       },
-    }, request.nextUrl.searchParams.get("refresh") === "true" || suffix === "sync" ? 90_000 : 12_000);
+    }, request.nextUrl.searchParams.get("refresh") === "true" || suffix === "sync"
+      ? 90_000
+      : suffix.startsWith("accumulation") ? 30_000 : 12_000);
     return request.method === "DELETE"
       ? new NextResponse(null, { status: 204 })
       : NextResponse.json(payload, { status: request.method === "POST" ? 201 : 200 });

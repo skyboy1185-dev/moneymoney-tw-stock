@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time, timedelta
+import json
+import math
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -10,14 +13,36 @@ from sqlalchemy.orm import Session
 from ..models import (
     DayTradingAlert,
     DayTradingPosition,
+    DayTradingRecommendationHistory,
     DayTradingTrade,
-    LineDeliveryLog,
 )
 from .day_trading import evaluate_position
 
 
 AUTOMATION_USER_ID = "system-automation"
+DYNAMIC_AUTOMATION_USER_ID = "system-automation-5m"
+# Keep the ledger and its existing open positions for safe historical cleanup,
+# but do not create any new dynamic-capital positions while the strategy is paused.
+DYNAMIC_AUTOMATION_ENABLED = False
+AUTOMATION_USER_IDS = (AUTOMATION_USER_ID, DYNAMIC_AUTOMATION_USER_ID)
+FIXED_STRATEGY_KEY = "fixed_2_lots"
+DYNAMIC_STRATEGY_KEY = "dynamic_5m"
+# Legacy fallback used only by recommendation history created before dynamic sizing.
 AUTOMATION_QUANTITY_LOTS = 2.0
+AUTOMATION_FIXED_MAX_STOP_RISK = 50_000.0
+AUTOMATION_DAILY_CAPITAL = 5_000_000.0
+AUTOMATION_MAX_POSITION_PERCENT = 30.0
+AUTOMATION_RISK_PER_TRADE_PERCENT = 0.5
+AUTOMATION_DAILY_LOSS_LIMIT_PERCENT = 2.0
+AUTOMATION_PERFORMANCE_START = datetime(2026, 8, 4, tzinfo=ZoneInfo("Asia/Taipei")).astimezone(UTC)
+DYNAMIC_AUTOMATION_PERFORMANCE_START = datetime(2026, 8, 17, tzinfo=ZoneInfo("Asia/Taipei")).astimezone(UTC)
+TAIPEI = ZoneInfo("Asia/Taipei")
+
+
+def automation_strategy(user_id: str) -> dict[str, str]:
+    if user_id == DYNAMIC_AUTOMATION_USER_ID:
+        return {"key": DYNAMIC_STRATEGY_KEY, "label": "新版 500 萬動態配置"}
+    return {"key": FIXED_STRATEGY_KEY, "label": "原版固定 2 張"}
 
 
 def _as_datetime(value: Any, fallback: datetime) -> datetime:
@@ -32,6 +57,7 @@ def _as_datetime(value: Any, fallback: datetime) -> datetime:
 
 
 def _position_payload(position: DayTradingPosition) -> dict[str, Any]:
+    strategy = automation_strategy(position.user_id)
     return {
         "id": position.id,
         "signalId": position.signal_id,
@@ -50,16 +76,130 @@ def _position_payload(position: DayTradingPosition) -> dict[str, Any]:
         "latestAction": position.latest_action,
         "status": position.status,
         "automaticTracking": True,
+        "automationStrategy": strategy["key"],
+        "automationStrategyLabel": strategy["label"],
     }
 
 
-def ensure_positions_for_delivered_entries(
+def automation_capital_state(
+    db: Session,
+    now: datetime | None = None,
+    user_id: str = DYNAMIC_AUTOMATION_USER_ID,
+) -> dict[str, Any]:
+    current = now or datetime.now(UTC)
+    local_day = current.astimezone(TAIPEI).date()
+    day_start = datetime.combine(local_day, time.min, tzinfo=TAIPEI).astimezone(UTC)
+    day_end = day_start + timedelta(days=1)
+    open_positions = list(db.scalars(select(DayTradingPosition).where(
+        DayTradingPosition.user_id == user_id,
+        DayTradingPosition.status == "open",
+    )).all())
+    today_trades = list(db.scalars(select(DayTradingTrade).where(
+        DayTradingTrade.user_id == user_id,
+        DayTradingTrade.exit_time >= day_start,
+        DayTradingTrade.exit_time < day_end,
+    )).all())
+    used_capital = sum(
+        float(position.entry_price) * float(position.quantity) * 1000
+        for position in open_positions
+    )
+    unrealized_profit = sum(
+        (float(position.current_price) - float(position.entry_price))
+        * float(position.quantity) * 1000
+        * (1 if position.direction == "long" else -1)
+        for position in open_positions
+    )
+    realized_profit = sum(float(trade.profit) for trade in today_trades)
+    daily_pnl = realized_profit + unrealized_profit
+    daily_loss_limit = AUTOMATION_DAILY_CAPITAL * AUTOMATION_DAILY_LOSS_LIMIT_PERCENT / 100
+    return {
+        "strategyKey": DYNAMIC_STRATEGY_KEY,
+        "strategyLabel": "新版 500 萬動態配置",
+        "dailyCapital": AUTOMATION_DAILY_CAPITAL,
+        "usedCapital": round(used_capital, 2),
+        "availableCapital": round(max(0.0, AUTOMATION_DAILY_CAPITAL - used_capital), 2),
+        "maxPositionCapital": round(AUTOMATION_DAILY_CAPITAL * AUTOMATION_MAX_POSITION_PERCENT / 100, 2),
+        "maxPositionPercent": AUTOMATION_MAX_POSITION_PERCENT,
+        "riskPerTradeBudget": round(AUTOMATION_DAILY_CAPITAL * AUTOMATION_RISK_PER_TRADE_PERCENT / 100, 2),
+        "riskPerTradePercent": AUTOMATION_RISK_PER_TRADE_PERCENT,
+        "dailyLossLimit": round(daily_loss_limit, 2),
+        "dailyLossLimitPercent": AUTOMATION_DAILY_LOSS_LIMIT_PERCENT,
+        "realizedProfit": round(realized_profit, 2),
+        "unrealizedProfit": round(unrealized_profit, 2),
+        "dailyPnl": round(daily_pnl, 2),
+        "lossLimitReached": daily_pnl <= -daily_loss_limit,
+        "openPositionCount": len(open_positions),
+        "sizingMethod": "停損風險與可用資金兩者取較小值；支援零股，張數不設固定上限",
+    }
+
+
+def calculate_automation_quantity_lots(
+    entry_price: float,
+    stop_loss: float,
+    available_capital: float,
+) -> float:
+    if entry_price <= 0 or stop_loss <= 0 or available_capital <= 0:
+        return 0.0
+    stop_distance = abs(entry_price - stop_loss)
+    if stop_distance <= 0:
+        return 0.0
+    position_budget = min(
+        available_capital,
+        AUTOMATION_DAILY_CAPITAL * AUTOMATION_MAX_POSITION_PERCENT / 100,
+    )
+    risk_budget = AUTOMATION_DAILY_CAPITAL * AUTOMATION_RISK_PER_TRADE_PERCENT / 100
+    capital_limited_shares = math.floor(position_budget / entry_price)
+    risk_limited_shares = math.floor(risk_budget / stop_distance)
+    shares = max(0, min(capital_limited_shares, risk_limited_shares))
+    return round(shares / 1000, 3)
+
+
+def record_official_recommendations(
+    db: Session,
+    recommendations: list[dict[str, Any]],
+    *,
+    now: datetime | None = None,
+) -> int:
+    current = now or datetime.now(UTC)
+    created = 0
+    for signal in recommendations:
+        if not signal.get("isOfficialRecommendation"):
+            continue
+        signal_id = str(signal.get("id", ""))
+        if not signal_id or db.scalar(select(DayTradingRecommendationHistory.id).where(
+            DayTradingRecommendationHistory.signal_id == signal_id,
+        ).limit(1)) is not None:
+            continue
+        recommended_at = _as_datetime(
+            signal.get("recommendedAt") or signal.get("generatedAt"),
+            current,
+        )
+        history_payload = {
+            **signal,
+            "recommendedQuantityLots": float(signal.get("recommendedQuantityLots", 0)),
+        }
+        db.add(DayTradingRecommendationHistory(
+            signal_id=signal_id,
+            trading_date=recommended_at.astimezone(TAIPEI).date(),
+            symbol=str(signal.get("symbol", "")),
+            stock_name=str(signal.get("stockName", signal.get("symbol", ""))),
+            market=str(signal.get("market", "")),
+            direction=str(signal.get("direction", "")),
+            action=str(signal.get("action", "")),
+            payload_json=json.dumps(history_payload, ensure_ascii=False, default=str),
+            recommended_at=recommended_at,
+        ))
+        created += 1
+    return created
+
+
+def ensure_positions_for_official_recommendations(
     db: Session,
     recommendations: list[dict[str, Any]],
     *,
     now: datetime | None = None,
 ) -> list[DayTradingPosition]:
-    """Create one persisted virtual position for every delivered formal entry."""
+    """Create independent fixed-lot and dynamic-capital virtual positions."""
     current = now or datetime.now(UTC)
     created: list[DayTradingPosition] = []
     for signal in recommendations:
@@ -72,70 +212,133 @@ def ensure_positions_for_delivered_entries(
         symbol = str(signal.get("symbol", ""))
         if not signal_id or not symbol:
             continue
-        event_type = "long_entry" if direction == "long" else "short_entry"
-        delivered = db.scalar(
-            select(LineDeliveryLog)
-            .where(
-                LineDeliveryLog.signal_id == signal_id,
-                LineDeliveryLog.event_type == event_type,
-                LineDeliveryLog.status == "sent",
-            )
-            .order_by(LineDeliveryLog.sent_at.desc())
-            .limit(1)
-        )
-        if delivered is None:
-            continue
-        already_tracked = db.scalar(
-            select(DayTradingPosition.id)
-            .where(
-                DayTradingPosition.user_id == AUTOMATION_USER_ID,
-                DayTradingPosition.signal_id == signal_id,
-            )
-            .limit(1)
-        )
-        if already_tracked is not None:
-            continue
-        open_symbol_position = db.scalar(
-            select(DayTradingPosition.id)
-            .where(
-                DayTradingPosition.user_id == AUTOMATION_USER_ID,
-                DayTradingPosition.symbol == symbol,
-                DayTradingPosition.status == "open",
-            )
-            .limit(1)
-        )
-        if open_symbol_position is not None:
-            continue
         try:
             entry_price = float(signal["price"])
             stop_loss = float(signal["stopLoss"])
             target_1 = float(signal["target1"])
             target_2 = float(signal["target2"])
         except (KeyError, TypeError, ValueError):
+            signal["strategyAllocations"] = {
+                FIXED_STRATEGY_KEY: {"quantityLots": 0, "status": "價格資料不完整，未建倉"},
+            }
             continue
-        opened_at = delivered.sent_at or _as_datetime(signal.get("generatedAt"), current)
-        position = DayTradingPosition(
-            user_id=AUTOMATION_USER_ID,
-            signal_id=signal_id,
-            symbol=symbol,
-            stock_name=str(signal.get("stockName", symbol)),
-            direction=direction,
-            entry_price=entry_price,
-            quantity=AUTOMATION_QUANTITY_LOTS,
-            opened_at=opened_at,
-            stop_loss=stop_loss,
-            target_1=target_1,
-            target_2=target_2,
-            current_price=entry_price,
-            unrealized_profit=0,
-            health_score=float(signal.get("healthScore", 0)),
-            latest_action="自動追蹤多單" if direction == "long" else "自動追蹤空單",
-            status="open",
+        opened_at = _as_datetime(
+            signal.get("recommendedAt") or signal.get("generatedAt"),
+            current,
         )
-        db.add(position)
-        db.flush()
-        created.append(position)
+        allocations: dict[str, dict[str, Any]] = {}
+        strategy_accounts = [(AUTOMATION_USER_ID, FIXED_STRATEGY_KEY)]
+        if DYNAMIC_AUTOMATION_ENABLED:
+            strategy_accounts.append((DYNAMIC_AUTOMATION_USER_ID, DYNAMIC_STRATEGY_KEY))
+        for user_id, strategy_key in strategy_accounts:
+            existing_position = db.scalar(
+                select(DayTradingPosition)
+                .where(
+                    DayTradingPosition.user_id == user_id,
+                    DayTradingPosition.signal_id == signal_id,
+                )
+                .limit(1)
+            )
+            if existing_position is not None:
+                allocations[strategy_key] = {
+                    "quantityLots": float(existing_position.quantity),
+                    "allocatedCapital": round(
+                        float(existing_position.entry_price) * float(existing_position.quantity) * 1000,
+                        2,
+                    ),
+                    "status": "已建立模擬持倉",
+                }
+                continue
+            open_symbol_position = db.scalar(
+                select(DayTradingPosition.id)
+                .where(
+                    DayTradingPosition.user_id == user_id,
+                    DayTradingPosition.symbol == symbol,
+                    DayTradingPosition.status == "open",
+                )
+                .limit(1)
+            )
+            if open_symbol_position is not None:
+                allocations[strategy_key] = {
+                    "quantityLots": 0,
+                    "allocatedCapital": 0,
+                    "status": "重複確認，未加碼",
+                }
+                continue
+            if user_id == AUTOMATION_USER_ID:
+                quantity_lots = AUTOMATION_QUANTITY_LOTS
+                estimated_stop_risk = abs(entry_price - stop_loss) * quantity_lots * 1000
+                blocked_status = (
+                    f"固定 2 張預估停損 {estimated_stop_risk:,.0f} 元，"
+                    f"超過單筆上限 {AUTOMATION_FIXED_MAX_STOP_RISK:,.0f} 元，未建倉"
+                    if estimated_stop_risk > AUTOMATION_FIXED_MAX_STOP_RISK else ""
+                )
+                if blocked_status:
+                    quantity_lots = 0.0
+            else:
+                capital = automation_capital_state(db, current, user_id)
+                if bool(capital["lossLimitReached"]):
+                    quantity_lots = 0.0
+                    blocked_status = "已達每日虧損上限，停止建倉"
+                else:
+                    quantity_lots = calculate_automation_quantity_lots(
+                        entry_price,
+                        stop_loss,
+                        float(capital["availableCapital"]),
+                    )
+                    blocked_status = "可用資金或風險額度不足，未建倉"
+            if quantity_lots <= 0:
+                allocations[strategy_key] = {
+                    "quantityLots": 0,
+                    "allocatedCapital": 0,
+                    "status": blocked_status,
+                }
+                continue
+            allocated_capital = round(entry_price * quantity_lots * 1000, 2)
+            allocations[strategy_key] = {
+                "quantityLots": quantity_lots,
+                "allocatedCapital": allocated_capital,
+                "estimatedStopRisk": round(
+                    abs(entry_price - stop_loss) * quantity_lots * 1000,
+                    2,
+                ),
+                "status": "已建立模擬持倉",
+            }
+            strategy = automation_strategy(user_id)
+            position = DayTradingPosition(
+                user_id=user_id,
+                signal_id=signal_id,
+                symbol=symbol,
+                stock_name=str(signal.get("stockName", symbol)),
+                direction=direction,
+                entry_price=entry_price,
+                quantity=quantity_lots,
+                opened_at=opened_at,
+                stop_loss=stop_loss,
+                target_1=target_1,
+                target_2=target_2,
+                current_price=entry_price,
+                unrealized_profit=0,
+                health_score=float(signal.get("healthScore", 0)),
+                latest_action=(
+                    f"{strategy['label']}・自動追蹤多單 {quantity_lots:g} 張"
+                    if direction == "long"
+                    else f"{strategy['label']}・自動追蹤空單 {quantity_lots:g} 張"
+                ),
+                status="open",
+            )
+            db.add(position)
+            db.flush()
+            created.append(position)
+        signal["strategyAllocations"] = allocations
+        fixed_allocation = allocations.get(FIXED_STRATEGY_KEY, {})
+        signal["recommendedQuantityLots"] = float(fixed_allocation.get("quantityLots", 0))
+        signal["trackingStatus"] = str(fixed_allocation.get("status", "未建倉"))
     return created
+
+
+# Backward-compatible import for callers outside this module.
+ensure_positions_for_delivered_entries = ensure_positions_for_official_recommendations
 
 
 def pending_automatic_position_events(
@@ -153,7 +356,7 @@ def pending_automatic_position_events(
         return []
     positions = db.scalars(
         select(DayTradingPosition).where(
-            DayTradingPosition.user_id == AUTOMATION_USER_ID,
+            DayTradingPosition.user_id.in_(AUTOMATION_USER_IDS),
             DayTradingPosition.status == "open",
         )
     ).all()
@@ -255,14 +458,15 @@ def finalize_automatic_position_event(
         return position
     exit_time = now or datetime.now(UTC)
     exit_price = float(event["price"])
+    strategy = automation_strategy(position.user_id)
     db.add(DayTradingAlert(
-        user_id=AUTOMATION_USER_ID,
+        user_id=position.user_id,
         position_id=position.id,
         signal_id=position.signal_id,
         alert_level=str(event["level"]),
         alert_type=str(event["type"]),
-        title="自動持倉出場通知",
-        message=f"{position.symbol} {position.stock_name}：{event['action']}",
+        title=f"{strategy['label']}出場通知",
+        message=f"{strategy['label']}｜{position.symbol} {position.stock_name}：{event['action']}",
         action=str(event["action"]),
         reason=str(event["reason"]),
         price=exit_price,
@@ -276,7 +480,8 @@ def finalize_automatic_position_event(
     ) * close_quantity * 1000 * factor
     turnover = (exit_price + position.entry_price) * close_quantity * 1000
     fee = round(turnover * 0.001425 * 0.6, 2)
-    tax = round(exit_price * close_quantity * 1000 * 0.0015, 2)
+    sell_price = exit_price if position.direction == "long" else position.entry_price
+    tax = round(sell_price * close_quantity * 1000 * 0.0015, 2)
     slippage = round(exit_price * close_quantity * 1000 * 0.0002, 2)
     profit = round(gross - fee - tax - slippage, 2)
     capital = position.entry_price * close_quantity * 1000
@@ -285,7 +490,7 @@ def finalize_automatic_position_event(
         if position.quantity else 0
     )
     db.add(DayTradingTrade(
-        user_id=AUTOMATION_USER_ID,
+        user_id=position.user_id,
         symbol=position.symbol,
         stock_name=position.stock_name,
         direction=position.direction,
@@ -301,9 +506,9 @@ def finalize_automatic_position_event(
         return_percentage=round(profit / capital * 100, 2) if capital else 0,
         max_profit=max(0, unrealized_share),
         max_loss=min(0, unrealized_share),
-        entry_reason="LINE 正式訊號自動建立虛擬追蹤持倉",
+        entry_reason=f"{automation_strategy(position.user_id)['label']}依正式訊號建立模擬持倉",
         exit_reason=str(event["reason"]),
-        strategy_name="AI 當沖機器人自動追蹤",
+        strategy_name=f"AI 當沖機器人・{automation_strategy(position.user_id)['label']}",
         followed_signal=True,
     ))
     position.realized_profit = round((position.realized_profit or 0) + profit, 2)

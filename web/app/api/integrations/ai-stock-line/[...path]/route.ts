@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getBackendBaseUrl } from "@/lib/runtime-config";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 async function proxy(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
   const { path } = await context.params;
-  const backend = process.env.FASTAPI_URL ?? "http://127.0.0.1:8000";
+  const backend = getBackendBaseUrl();
   const endpoint = `${backend}/api/v1/integrations/ai-stock-line/${path.join("/")}${request.nextUrl.search}`;
   try {
     const body = request.method === "GET" || request.method === "HEAD"

@@ -1,9 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Activity, AlertTriangle, Database, Radio, RefreshCw, Users } from "lucide-react";
+import { Activity, AlertTriangle, CalendarDays, Database, Radio, RefreshCw, ShieldCheck, Users } from "lucide-react";
+import { calculateChipDefense, type ChipDefenseLevel, type ChipDefenseResult } from "@/lib/chip-defense";
 import type { ChipFlowPoint, ChipFlowResponse } from "@/lib/chip-flow-types";
 import { toTaipeiChartTimestamp } from "@/lib/chip-flow-time";
+import type { MarketIndexDefenseResponse } from "@/lib/market-index-defense";
+import type { StockPayload } from "@/lib/types";
 
 const BUY_COLOR = "#ff5964";
 const SELL_COLOR = "#31c48d";
@@ -140,6 +143,46 @@ const STATUS_LABELS: Record<string, string> = {
   disconnected: "行情中斷",
 };
 
+function defensePrice(value: number) {
+  return value.toLocaleString("zh-TW", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function DefenseCard({
+  level,
+  scope,
+  marketLabel = "大盤指數",
+}: {
+  level: ChipDefenseLevel;
+  scope: "stock" | "market";
+  marketLabel?: string;
+}) {
+  const distanceClass = level.distancePct >= 0 ? "text-up" : "text-down";
+  const isMarket = scope === "market";
+  return (
+    <article className={`chip-defense-card ${level.status}`}>
+      <header>
+        <div>
+          <span>{level.timeframe === "week" ? "WEEKLY DEFENSE" : "MONTHLY DEFENSE"}</span>
+          <h3>{isMarket ? marketLabel : "個股"}{level.label}</h3>
+        </div>
+        <b>{level.statusLabel}</b>
+      </header>
+      <div className="chip-defense-price">
+        <strong>{isMarket ? "" : "NT$ "}{defensePrice(level.defensePrice)}{isMarket ? " 點" : ""}</strong>
+        <span className={distanceClass}>
+          現價距離 {level.distancePct >= 0 ? "+" : ""}{level.distancePct.toFixed(2)}%
+        </span>
+      </div>
+      <dl>
+        <div><dt>主要防守區</dt><dd>{defensePrice(level.zoneLow)} ～ {defensePrice(level.zoneHigh)}</dd></div>
+        <div><dt>{isMarket ? "成交金額占比" : "區間量占比"}</dt><dd>{level.zoneVolumePct.toFixed(1)}%</dd></div>
+        <div><dt>計算期間</dt><dd>{level.startDate} ～ {level.endDate}</dd></div>
+        <div><dt>有效交易日</dt><dd>{level.tradingDays} 日</dd></div>
+      </dl>
+    </article>
+  );
+}
+
 export function ChipFlowPanel({
   stockId,
   stockName = "",
@@ -151,6 +194,12 @@ export function ChipFlowPanel({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [retryKey, setRetryKey] = useState(0);
+  const [defense, setDefense] = useState<ChipDefenseResult | null>(null);
+  const [defenseLoading, setDefenseLoading] = useState(true);
+  const [defenseError, setDefenseError] = useState("");
+  const [marketDefense, setMarketDefense] = useState<MarketIndexDefenseResponse | null>(null);
+  const [marketDefenseLoading, setMarketDefenseLoading] = useState(true);
+  const [marketDefenseError, setMarketDefenseError] = useState("");
 
   useEffect(() => {
     if (!/^\d{4,6}$/.test(stockId)) return;
@@ -183,6 +232,53 @@ export function ChipFlowPanel({
       source.close();
     };
   }, [retryKey, stockId]);
+
+  useEffect(() => {
+    if (!/^\d{4,6}$/.test(stockId)) return;
+    const controller = new AbortController();
+    setDefenseLoading(true);
+    setDefenseError("");
+    setDefense(null);
+    void fetch(`/api/stocks?q=${encodeURIComponent(stockId)}`, {
+      signal: controller.signal,
+      cache: "no-store",
+    })
+      .then(async (response) => {
+        const payload = await response.json() as StockPayload & { error?: string };
+        if (!response.ok) throw new Error(payload.error || "無法取得日線資料");
+        const latestClose = payload.prices.at(-1)?.close ?? 0;
+        const currentPrice = payload.quote?.price || latestClose;
+        setDefense(calculateChipDefense(payload.prices, currentPrice));
+      })
+      .catch((reason: unknown) => {
+        if (reason instanceof DOMException && reason.name === "AbortError") return;
+        setDefenseError(reason instanceof Error ? reason.message : "週月防守計算失敗");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setDefenseLoading(false);
+      });
+    return () => controller.abort();
+  }, [stockId]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setMarketDefenseLoading(true);
+    setMarketDefenseError("");
+    void fetch("/api/market-index/defense", { signal: controller.signal, cache: "no-store" })
+      .then(async (response) => {
+        const payload = await response.json() as MarketIndexDefenseResponse & { error?: string };
+        if (!response.ok) throw new Error(payload.error || "無法取得大盤指數防守點");
+        setMarketDefense(payload);
+      })
+      .catch((reason: unknown) => {
+        if (reason instanceof DOMException && reason.name === "AbortError") return;
+        setMarketDefenseError(reason instanceof Error ? reason.message : "大盤指數防守點計算失敗");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setMarketDefenseLoading(false);
+      });
+    return () => controller.abort();
+  }, []);
 
   const latest = data?.latest ?? null;
   const status = error ? "disconnected" : data?.status ?? "no_data";
@@ -278,6 +374,79 @@ export function ChipFlowPanel({
           </div>
         </>
       )}
+
+      <section className="chip-defense-panel" aria-labelledby="chip-defense-title">
+        <header>
+          <div>
+            <span><ShieldCheck /> CHIP COST DEFENSE</span>
+            <h2 id="chip-defense-title">個股＋加權／櫃買週防守／月防守</h2>
+            <p>個股採成交量成本分布；大盤採證交所／櫃買中心近 5／20 日指數區間與全市場成交金額加權。</p>
+          </div>
+          <small><CalendarDays /> 日線資料隨股票切換重新計算</small>
+        </header>
+        <div className="chip-defense-scope-title"><b>{stockId} {stockName || "個股"}</b><span>個股籌碼防守</span></div>
+        {defenseLoading ? (
+          <div className="chip-defense-state"><span className="spinner" />正在計算籌碼防守價…</div>
+        ) : defenseError ? (
+          <div className="chip-defense-state error"><AlertTriangle />{defenseError}</div>
+        ) : defense?.week || defense?.month ? (
+          <div className="chip-defense-grid">
+            {defense.week && <DefenseCard level={defense.week} scope="stock" />}
+            {defense.month && <DefenseCard level={defense.month} scope="stock" />}
+          </div>
+        ) : (
+          <div className="chip-defense-state"><Database />歷史成交資料不足，暫時無法計算防守價。</div>
+        )}
+        <div className="chip-defense-scope-title market"><b>TAIEX 加權指數</b><span>大盤指數防守點</span></div>
+        {marketDefenseLoading ? (
+          <div className="chip-defense-state"><span className="spinner" />正在計算大盤週月防守點…</div>
+        ) : marketDefenseError ? (
+          <div className="chip-defense-state error"><AlertTriangle />{marketDefenseError}</div>
+        ) : marketDefense?.defense.week || marketDefense?.defense.month ? (
+          <>
+            <div className="chip-defense-grid market">
+              {marketDefense.defense.week && <DefenseCard level={marketDefense.defense.week} scope="market" />}
+              {marketDefense.defense.month && <DefenseCard level={marketDefense.defense.month} scope="market" />}
+            </div>
+            <div className="chip-defense-market-source">
+              <span>目前指數 {defensePrice(marketDefense.currentPrice)} 點</span>
+              <span>{marketDefense.quoteAt}</span>
+              <span>{marketDefense.source}</span>
+            </div>
+          </>
+        ) : (
+          <div className="chip-defense-state"><Database />大盤歷史資料不足，暫時無法計算防守點。</div>
+        )}
+        <div className="chip-defense-scope-title market"><b>TPEx 櫃買指數</b><span>櫃買指數防守點</span></div>
+        {marketDefenseLoading ? (
+          <div className="chip-defense-state"><span className="spinner" />正在計算櫃買週月防守點…</div>
+        ) : marketDefenseError ? (
+          <div className="chip-defense-state error"><AlertTriangle />{marketDefenseError}</div>
+        ) : marketDefense?.otc ? (
+          <>
+            <div className="chip-defense-grid market">
+              {marketDefense.otc.defense.week && (
+                <DefenseCard level={marketDefense.otc.defense.week} scope="market" marketLabel="櫃買指數" />
+              )}
+              {marketDefense.otc.defense.month && (
+                <DefenseCard level={marketDefense.otc.defense.month} scope="market" marketLabel="櫃買指數" />
+              )}
+            </div>
+            <div className="chip-defense-market-source">
+              <span>目前指數 {defensePrice(marketDefense.otc.currentPrice)} 點</span>
+              <span>{marketDefense.otc.quoteAt}</span>
+              <span>{marketDefense.otc.source}</span>
+            </div>
+          </>
+        ) : (
+          <div className="chip-defense-state error">
+            <AlertTriangle />{marketDefense?.otcError || "櫃買歷史資料不足，暫時無法計算防守點。"}
+          </div>
+        )}
+        <p className="chip-defense-note">
+          「守住」代表現價高於主要成交成本區；進入區間為測試中；跌破區間下緣則標示失守。此為籌碼成本參考，不是保證支撐。
+        </p>
+      </section>
 
       <footer>
         <AlertTriangle />

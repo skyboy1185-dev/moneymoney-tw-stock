@@ -53,6 +53,15 @@ export interface MarketRegime {
   recommendationSummary: string;
   recommendedCount: number;
   maximumRecommendations: number;
+  supervisor?: {
+    candidateUniverseCount?: number;
+    candidateUniverseSource?: string;
+    quoteCoverageCount?: number;
+    warmedSymbolCount?: number;
+    highFrequencyTrackingCount?: number;
+    baselineQuoteRefreshSeconds?: number;
+    priorityQuoteRefreshSeconds?: number;
+  };
   mode?: "official" | "warming_up" | "demo";
   dataNotice?: string;
   disclaimer?: string;
@@ -84,11 +93,14 @@ export interface DayTradingSignal {
   largeOrderForce: number;
   largeOrderDataAvailable?: boolean;
   largeOrderContinuousBuy?: boolean;
+  largeOrderContinuousSell?: boolean;
   largeOrderStatus?: string;
   largeOrderNetLots?: number;
   largeOrderRecentNetLots?: number;
   largeOrderBuySellRatio?: number | null;
   largeOrderPositiveSteps?: number;
+  largeOrderNegativeSteps?: number;
+  largeOrderDirectionalSteps?: number;
   largeOrderUpdatedAt?: string | null;
   largeOrderIsEstimate?: boolean;
   industryStrength: string;
@@ -114,6 +126,16 @@ export interface DayTradingSignal {
   confirmationScore: number;
   isOfficialRecommendation: boolean;
   recommendationLabel: string;
+  recommendedQuantityLots?: number;
+  trackedQuantityLots?: number;
+  trackingStatus?: string;
+  strategyAllocations?: Record<string, {
+    key: string;
+    label: string;
+    quantityLots: number;
+    allocatedCapital: number;
+    status: string;
+  }>;
   qualificationFailures: string[];
   recommendedAt?: string;
 }
@@ -141,6 +163,9 @@ export interface DayTradingPosition {
   soundEnabled: boolean;
   holdingSeconds: number;
   updatedAt: string;
+  automaticTracking?: boolean;
+  automationStrategy?: string;
+  automationStrategyLabel?: string;
 }
 
 export interface DayTradingAlert {
@@ -156,6 +181,9 @@ export interface DayTradingAlert {
   price: number;
   createdAt: string;
   readAt?: string | null;
+  automaticTracking?: boolean;
+  automationStrategy?: string;
+  automationStrategyLabel?: string;
 }
 
 export interface DayTradingTrade {
@@ -202,6 +230,16 @@ export interface DayTradingPerformanceSummary {
   maxConsecutiveLosses: number;
   longProfit: number;
   shortProfit: number;
+  longRealizedProfit: number;
+  longUnrealizedProfit: number;
+  longTotalPnl: number;
+  longTradeCount: number;
+  longOpenPositionCount: number;
+  shortRealizedProfit: number;
+  shortUnrealizedProfit: number;
+  shortTotalPnl: number;
+  shortTradeCount: number;
+  shortOpenPositionCount: number;
   profitFactor: number;
 }
 
@@ -211,7 +249,27 @@ export interface DayTradingDailyPerformance extends DayTradingPerformanceSummary
 
 export interface DayTradingPerformance extends DayTradingPerformanceSummary {
   period: string;
+  performanceStartDate: string | null;
   today: DayTradingDailyPerformance;
+  strategy?: {
+    key: string;
+    label: string;
+    description: string;
+  };
+  capitalPlan?: {
+    dailyCapital: number;
+    usedCapital: number;
+    availableCapital: number;
+    maxPositionCapital: number;
+    maxPositionPercent: number;
+    riskPerTradeBudget: number;
+    riskPerTradePercent: number;
+    dailyLossLimit: number;
+    dailyLossLimitPercent: number;
+    dailyPnl: number;
+    lossLimitReached: boolean;
+    sizingMethod: string;
+  };
 }
 
 export interface DayTradingSettings {
@@ -282,6 +340,18 @@ export interface LineNotificationGroup {
   lastPushAt: string | null;
 }
 
+export interface LineTradeDelivery {
+  id: number;
+  eventType: "long_entry" | "short_entry" | "long_exit" | "short_cover" | "stop_loss";
+  side: "buy" | "sell" | "short" | "cover";
+  sideLabel: "買進" | "賣出" | "放空" | "回補";
+  signalId: string | null;
+  symbol: string | null;
+  action: string;
+  messagePreview: string;
+  sentAt: string;
+}
+
 export interface LineIntegrationStatus {
   officialAccountName: string;
   enabled: boolean;
@@ -290,6 +360,24 @@ export interface LineIntegrationStatus {
   groups: LineNotificationGroup[];
   lastPushAt: string | null;
   todayPushCount: number;
+  todayTradePushCount: number;
+  gmailEnabled: boolean;
+  gmailConfigured: boolean;
+  gmailTransport: "apps_script" | "smtp" | "unconfigured";
+  gmailRecipients: string[];
+  todayGmailPushCount: number;
+  todayGmailFailedCount: number;
+  lastGmailPushAt: string | null;
+  recentTradeDeliveries: LineTradeDelivery[];
+  dailyTradeMessageLimit: number;
+  monthlyMessageLimit: number | null;
+  monthlyMessageUsage: number | null;
+  monthlyMessageRemaining: number | null;
+  remainingTradingDays: number;
+  baseDailyTradeMessageLimit: number;
+  effectiveDailyTradeMessageLimit: number;
+  quotaResetAt: string;
+  quotaCheckedAt: string;
   publicWebhookUrl: string;
   settings: LineNotificationSettings;
 }
