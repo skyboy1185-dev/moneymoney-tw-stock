@@ -33,6 +33,7 @@ from .day_trading_schedule import (
 )
 from .line_messaging import line_notification_dispatcher
 from .official_market_data import StockQuoteRequest, official_market_data_provider
+from .three_gate_price import official_three_gate_price_provider
 
 
 logger = logging.getLogger(__name__)
@@ -293,6 +294,13 @@ class DayTradingAutomationSupervisor:
                     self._quote_coverage_count = day_trading_engine.quote_coverage_count
                     if baseline_quote_due:
                         self._warmed_symbol_count = day_trading_engine.warmed_symbol_count
+                        try:
+                            three_gate_prices = await official_three_gate_price_provider.get_levels(
+                                tuple(stock.symbol for stock in selected_stocks)
+                            )
+                            day_trading_engine.update_three_gate_prices(three_gate_prices)
+                        except Exception:
+                            logger.exception("Official three-gate price refresh failed")
                     snapshot_due = (
                         self._last_quote_snapshot_at is None
                         or now - self._last_quote_snapshot_at >= timedelta(minutes=1)
@@ -377,6 +385,7 @@ class DayTradingAutomationSupervisor:
                 "candidateUniverseCount": len(day_trading_engine.stock_universe_symbols),
                 "candidateUniverseSource": "large-order-momentum-radar",
                 "quoteCoverageCount": self._quote_coverage_count,
+                "threeGateCoverageCount": day_trading_engine.three_gate_coverage_count,
                 "warmedSymbolCount": self._warmed_symbol_count,
                 "highFrequencyTrackingCount": len(priority_symbols),
                 "baselineQuoteRefreshSeconds": BASELINE_QUOTE_REFRESH_SECONDS,

@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from .official_market_data import OfficialStockQuote
 from .day_trading_schedule import MAX_LONG_CHASE_CHANGE_PERCENT
 from .popular_stock_universe import merge_momentum_stocks
+from .three_gate_price import ThreeGatePrice, evaluate_three_gate_direction
 from .theme_stock_universe import (
     ThemeStock,
 )
@@ -260,6 +261,7 @@ class MockDayTradingEngine:
         self._emitted_keys: set[str] = set()
         self._official_quotes: dict[str, OfficialStockQuote] = {}
         self._quote_history: dict[str, list[OfficialStockQuote]] = {}
+        self._three_gate_prices: dict[str, ThreeGatePrice] = {}
         self._signal_windows: dict[str, tuple[datetime, datetime, str]] = {}
         self._stock_universe, _ = merge_momentum_stocks(())
 
@@ -366,6 +368,18 @@ class MockDayTradingEngine:
                     if len(history) > self._LIVE_HISTORY_LIMIT:
                         del history[:-self._LIVE_HISTORY_LIMIT]
                     self._tick += 1
+
+    def update_three_gate_prices(self, levels: dict[str, ThreeGatePrice]) -> None:
+        if not levels:
+            return
+        with self._lock:
+            self._three_gate_prices.update(levels)
+
+    @property
+    def three_gate_coverage_count(self) -> int:
+        with self._lock:
+            universe = {stock.symbol for stock in self._stock_universe}
+            return sum(symbol in self._three_gate_prices for symbol in universe)
 
     def export_official_quote_history(self, now: datetime | None = None) -> dict[str, Any]:
         """Returns a compact, current-day warmup snapshot suitable for Redis."""
@@ -487,6 +501,7 @@ class MockDayTradingEngine:
     def apply_official_quotes(self, signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
         with self._lock:
             quotes = dict(self._official_quotes)
+            three_gate_prices = dict(self._three_gate_prices)
             histories = {
                 symbol: list(values)
                 for symbol, values in self._quote_history.items()
@@ -508,7 +523,7 @@ class MockDayTradingEngine:
             vwap_up = bool(metrics["vwapUp"])
             breakout = bool(metrics["breakout"])
             breakdown = bool(metrics["breakdown"])
-            direction = (
+            technical_direction = (
                 "long"
                 if metrics["fiveMinuteBullish"]
                 else "short"
@@ -521,6 +536,14 @@ class MockDayTradingEngine:
                 if quote.change_percent >= 0
                 else "short"
             )
+            three_gate = three_gate_prices.get(quote.symbol)
+            previous_price = history[-2].price if len(history) >= 2 else quote.previous_close
+            three_gate_decision = (
+                evaluate_three_gate_direction(price, previous_price, three_gate)
+                if three_gate is not None
+                else None
+            )
+            direction = three_gate_decision.direction if three_gate_decision else technical_direction
             market_score = float(regime["score"])
             market_alignment = round(max(0, min(
                 100,
@@ -579,7 +602,8 @@ class MockDayTradingEngine:
             daily_chase_blocked = bool(timing["dailyExtremeBlocked"])
             chase_blocked = bool(timing["blocked"])
             confirmed = (
-                bool(metrics["qualified"])
+                three_gate_decision is not None
+                and bool(metrics["qualified"])
                 and (
                     bool(metrics["fiveMinuteLongSetup"])
                     if direction == "long"
@@ -588,7 +612,9 @@ class MockDayTradingEngine:
                 and confidence >= 75
                 and not chase_blocked
             )
-            if chase_blocked:
+            if three_gate_decision is None:
+                action = "等待三關價載入"
+            elif chase_blocked:
                 action = (
                     "禁止追多，等待完整 5 分 K 拉回確認"
                     if direction == "long"
@@ -625,8 +651,15 @@ class MockDayTradingEngine:
                 else 999
             )
             exact_trade = quote.source == "TWSE MIS"
-            official_strategy = bool(metrics["qualified"]) and exact_trade and quote.is_realtime
+            official_strategy = (
+                three_gate_decision is not None
+                and bool(metrics["qualified"])
+                and exact_trade
+                and quote.is_realtime
+            )
             warnings: list[str] = []
+            if three_gate_decision is None:
+                warnings.append("尚未取得前一交易日三關價，停止產生正式進場訊號")
             if not metrics["qualified"]:
                 warnings.append(str(metrics["qualificationMessage"]))
             if quote.source == "TWSE MIS 五檔參考價":
@@ -640,6 +673,11 @@ class MockDayTradingEngine:
             if not volume_accelerating:
                 warnings.append("近期量能尚未明顯增加")
             reasons = [
+                (
+                    f"{three_gate_decision.status}（上 {three_gate.upper:,.2f}／中 {three_gate.middle:,.2f}／下 {three_gate.lower:,.2f}）"
+                    if three_gate_decision is not None and three_gate is not None
+                    else "三關價資料載入中"
+                ),
                 f"價格{'站上' if above_vwap else '跌破'}監控期間 VWAP {vwap:,.2f}",
                 f"1 分鐘趨勢 {trend_1m:+.2f}%",
                 f"5 分鐘趨勢 {trend_5m:+.2f}%",
@@ -654,7 +692,7 @@ class MockDayTradingEngine:
             item.update({
                 "stockName": quote.name,
                 "direction": direction,
-                "directionLabel": "做多" if direction == "long" else "空方風險",
+                "directionLabel": "做多" if direction == "long" else "放空",
                 "action": action,
                 "price": round(price, 2),
                 "previousClose": round(quote.previous_close, 2),
@@ -730,6 +768,21 @@ class MockDayTradingEngine:
                     if metrics["fiveMinuteBollingerMiddle"] is not None else None
                 ),
                 "fiveMinuteSetup": metrics["fiveMinuteSetup"],
+                "threeGateReady": three_gate is not None,
+                "threeGate": (
+                    {
+                        "sourceDate": three_gate.source_date,
+                        "upper": three_gate.upper,
+                        "middle": three_gate.middle,
+                        "lower": three_gate.lower,
+                    }
+                    if three_gate is not None else None
+                ),
+                "threeGateDirection": three_gate_decision.direction if three_gate_decision else None,
+                "threeGateLevel": three_gate_decision.level if three_gate_decision else None,
+                "threeGatePosition": three_gate_decision.position if three_gate_decision else None,
+                "threeGateCrossed": three_gate_decision.crossed if three_gate_decision else False,
+                "threeGateStatus": three_gate_decision.status if three_gate_decision else "三關價資料載入中",
             })
             if official_strategy:
                 item["id"] = str(item["id"]).replace("mock-", "live-", 1)

@@ -159,6 +159,12 @@ export function LiveSignalCard({
       <div><span>{long ? "第一停利" : "第一回補"}</span><strong>{number(signal.target1)}</strong></div>
       <div><span>{long ? "第二停利" : "第二回補"}</span><strong>{number(signal.target2)}</strong></div>
     </div>
+    {signal.threeGate && <div className="signal-three-gate">
+      <div><span>三關價方向 · {signal.threeGate.sourceDate}</span><strong className={long ? "text-up" : "text-down"}>{signal.threeGateStatus}</strong></div>
+      <div><span>上關</span><strong>{number(signal.threeGate.upper)}</strong></div>
+      <div><span>中關</span><strong>{number(signal.threeGate.middle)}</strong></div>
+      <div><span>下關</span><strong>{number(signal.threeGate.lower)}</strong></div>
+    </div>}
     <div className="signal-scores">
       <div><span>信心分數</span><strong>{signal.confidenceScore}</strong><i><b style={{ width: `${signal.confidenceScore}%` }} /></i></div>
       <div><span>健康度</span><strong>{signal.healthScore}</strong><i><b style={{ width: `${signal.healthScore}%` }} /></i></div>

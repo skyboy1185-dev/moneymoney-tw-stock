@@ -1272,6 +1272,11 @@ footer span { color: #566177; }
 .signal-levels span { color: var(--muted); font-size: 10px; }
 .signal-levels strong { margin-top: 5px; font-size: 11px; }
 .signal-levels .stop strong { color: #ff7c75; }
+.signal-three-gate { margin-top: 8px; display: grid; grid-template-columns: minmax(220px, 2fr) repeat(3, 1fr); gap: 7px; }
+.signal-three-gate > div { padding: 9px; background: #0f1826; border: 1px solid #2d3c54; border-radius: 7px; }
+.signal-three-gate span, .signal-three-gate strong { display: block; }
+.signal-three-gate span { color: var(--muted); font-size: 10px; }
+.signal-three-gate strong { margin-top: 5px; font-size: 11px; }
 .signal-scores { margin-top: 12px; display: grid; grid-template-columns: 1fr 1fr auto; gap: 12px; align-items: center; }
 .signal-scores > div { display: grid; grid-template-columns: 1fr auto; gap: 5px; }
 .signal-scores span { color: var(--muted); font-size: 11px; }
@@ -1658,7 +1663,7 @@ footer span { color: #566177; }
   .market-metric-grid { grid-template-columns: repeat(2, 1fr); }
   .market-metric-grid div:nth-child(4n) { border-right: 1px solid var(--line); }
   .market-metric-grid div:nth-child(2n) { border-right: 0; }
-  .signal-levels, .position-grid { grid-template-columns: repeat(2, 1fr); }
+  .signal-levels, .signal-three-gate, .position-grid { grid-template-columns: repeat(2, 1fr); }
   .signal-scores { grid-template-columns: 1fr 1fr; }
   .signal-scores > span { grid-column: 1 / -1; }
   .signal-evidence { grid-template-columns: 1fr; }

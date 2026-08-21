@@ -57,6 +57,7 @@ export interface MarketRegime {
     candidateUniverseCount?: number;
     candidateUniverseSource?: string;
     quoteCoverageCount?: number;
+    threeGateCoverageCount?: number;
     warmedSymbolCount?: number;
     highFrequencyTrackingCount?: number;
     baselineQuoteRefreshSeconds?: number;
@@ -116,6 +117,18 @@ export interface DayTradingSignal {
   dataNotice?: string;
   quoteStatus?: string;
   quoteIsRealtime?: boolean;
+  threeGateReady?: boolean;
+  threeGate?: {
+    sourceDate: string;
+    upper: number;
+    middle: number;
+    lower: number;
+  } | null;
+  threeGateDirection?: DayDirection | null;
+  threeGateLevel?: "upper" | "middle" | "lower" | null;
+  threeGatePosition?: "above" | "below" | null;
+  threeGateCrossed?: boolean;
+  threeGateStatus?: string;
   spreadPercentage: number;
   tradingEligible: boolean;
   shortEligible: boolean;
