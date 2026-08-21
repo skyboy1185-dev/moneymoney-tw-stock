@@ -37,6 +37,7 @@ class ThreeGateOpeningRetest:
     required: bool
     touched: bool
     ready: bool
+    invalidated: bool
     level: str | None
     status: str
 
@@ -98,6 +99,11 @@ def evaluate_opening_three_gate_retest(
     previous_intraday_price: float | None,
     session_high: float,
     session_low: float,
+    completed_bar_open: float | None,
+    completed_bar_close: float | None,
+    minimum_completed_close: float | None,
+    maximum_completed_close: float | None,
+    previously_invalidated: bool,
     three_gate: ThreeGatePrice,
 ) -> ThreeGateOpeningRetest:
     opened_above_middle = previous_close < three_gate.middle <= open_price
@@ -105,40 +111,74 @@ def evaluate_opening_three_gate_retest(
     if opened_above_middle:
         tolerance = max(stock_tick_size(three_gate.middle), three_gate.middle * 0.0015)
         touched = session_low <= three_gate.middle + tolerance
+        invalidated = bool(
+            previously_invalidated
+            or (
+                minimum_completed_close is not None
+                and minimum_completed_close < three_gate.middle - tolerance * 2
+            )
+        )
         ready = bool(
-            touched
+            not invalidated
+            and touched
             and current_price >= three_gate.middle
             and current_price <= three_gate.middle + tolerance * 2
             and previous_intraday_price is not None
             and current_price > previous_intraday_price
+            and completed_bar_open is not None
+            and completed_bar_close is not None
+            and completed_bar_close >= three_gate.middle
+            and completed_bar_close >= completed_bar_open
         )
         status = (
-            "回撤中關價後重新站穩，可等多方確認買進"
+            "完整 5 分 K 明確收破中關價，取消今日回撤做多"
+            if invalidated
+            else "完整 5 分 K 回撤中關價後收穩，可等多方確認買進"
             if ready
-            else "已回撤中關價，等待重新站穩"
+            else "已回撤中關價，等待完整 5 分 K 收回中關價之上"
             if touched
             else "開盤突破中關價，不追價，等待回撤中關價"
         )
-        return ThreeGateOpeningRetest("open-above-middle", True, touched, ready, "middle", status)
+        return ThreeGateOpeningRetest(
+            "open-above-middle", True, touched, ready, invalidated, "middle", status
+        )
     if opened_below_lower:
         tolerance = max(stock_tick_size(three_gate.lower), three_gate.lower * 0.0015)
         touched = session_high >= three_gate.lower - tolerance
+        invalidated = bool(
+            previously_invalidated
+            or (
+                maximum_completed_close is not None
+                and maximum_completed_close > three_gate.lower + tolerance * 2
+            )
+        )
         ready = bool(
-            touched
+            not invalidated
+            and touched
             and current_price < three_gate.lower
             and current_price >= three_gate.lower - tolerance * 2
             and previous_intraday_price is not None
             and current_price < previous_intraday_price
+            and completed_bar_open is not None
+            and completed_bar_close is not None
+            and completed_bar_close < three_gate.lower
+            and completed_bar_close <= completed_bar_open
         )
         status = (
-            "反彈回測下關價後再次跌破，可等空方確認放空"
+            "完整 5 分 K 明確站回下關價，取消今日回測放空"
+            if invalidated
+            else "完整 5 分 K 回測下關價後收破，可等空方確認放空"
             if ready
-            else "已反彈回測下關價，等待再次跌破"
+            else "已反彈回測下關價，等待完整 5 分 K 再收破下關價"
             if touched
             else "開盤跌破下關價，不追空，等待反彈回測下關價"
         )
-        return ThreeGateOpeningRetest("open-below-lower", True, touched, ready, "lower", status)
-    return ThreeGateOpeningRetest(None, False, False, True, None, "非開盤跳越三關價，依一般三關價方向確認")
+        return ThreeGateOpeningRetest(
+            "open-below-lower", True, touched, ready, invalidated, "lower", status
+        )
+    return ThreeGateOpeningRetest(
+        None, False, False, True, False, None, "非開盤跳越三關價，依一般三關價方向確認"
+    )
 
 
 def _number(value: Any) -> float | None:

@@ -183,7 +183,7 @@ export function LiveSignalCard({
     <div className="signal-actions">
       <button onClick={() => onAnalyze(signal.symbol)}><Eye size={14} />查看分析</button>
       <button onClick={() => onMonitor(signal)}><Bell size={14} />加入監控</button>
-      <button className={long ? "long-action" : "short-action"} disabled={expired || signal.status === "blocked"} onClick={() => onSimulate(signal)}>
+      <button className={long ? "long-action" : "short-action"} disabled={expired || signal.status === "blocked" || signal.threeGateInvalidated} onClick={() => onSimulate(signal)}>
         <Play size={14} />模擬{long ? "做多" : "放空"}
       </button>
     </div>

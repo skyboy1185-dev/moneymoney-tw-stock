@@ -133,6 +133,7 @@ export interface DayTradingSignal {
   threeGateRetestRequired?: boolean;
   threeGateRetestTouched?: boolean;
   threeGateRetestReady?: boolean;
+  threeGateInvalidated?: boolean;
   threeGateEntryLevel?: "middle" | "lower" | null;
   threeGateEntryStatus?: string;
   spreadPercentage: number;

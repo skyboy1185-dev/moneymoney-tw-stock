@@ -51,6 +51,11 @@ def test_opening_break_above_middle_waits_for_pullback_and_reclaim() -> None:
         previous_intraday_price=102.5,
         session_high=103,
         session_low=102,
+        completed_bar_open=102,
+        completed_bar_close=102.5,
+        minimum_completed_close=102.5,
+        maximum_completed_close=102.5,
+        previously_invalidated=False,
         three_gate=gate,
     )
     ready = evaluate_opening_three_gate_retest(
@@ -60,6 +65,11 @@ def test_opening_break_above_middle_waits_for_pullback_and_reclaim() -> None:
         previous_intraday_price=99.9,
         session_high=103,
         session_low=99.8,
+        completed_bar_open=99.8,
+        completed_bar_close=100.1,
+        minimum_completed_close=100.1,
+        maximum_completed_close=102.5,
+        previously_invalidated=False,
         three_gate=gate,
     )
 
@@ -80,6 +90,11 @@ def test_opening_break_below_lower_waits_for_retest_and_second_break() -> None:
         previous_intraday_price=80.5,
         session_high=81,
         session_low=79.5,
+        completed_bar_open=80.5,
+        completed_bar_close=80,
+        minimum_completed_close=80,
+        maximum_completed_close=80,
+        previously_invalidated=False,
         three_gate=gate,
     )
     ready = evaluate_opening_three_gate_retest(
@@ -89,6 +104,11 @@ def test_opening_break_below_lower_waits_for_retest_and_second_break() -> None:
         previous_intraday_price=82.5,
         session_high=82.35,
         session_low=80,
+        completed_bar_open=82.3,
+        completed_bar_close=82.2,
+        minimum_completed_close=80,
+        maximum_completed_close=82.2,
+        previously_invalidated=False,
         three_gate=gate,
     )
 
@@ -96,6 +116,61 @@ def test_opening_break_below_lower_waits_for_retest_and_second_break() -> None:
     assert waiting.ready is False
     assert ready.ready is True
     assert ready.level == "lower"
+
+
+def test_completed_bar_failure_cancels_opening_plan_for_the_day() -> None:
+    gate = calculate_three_gate_price("2026-08-20", high=110, low=90)
+    assert gate is not None
+
+    failed_long = evaluate_opening_three_gate_retest(
+        open_price=102,
+        previous_close=98,
+        current_price=98.5,
+        previous_intraday_price=98.8,
+        session_high=103,
+        session_low=98.8,
+        completed_bar_open=100,
+        completed_bar_close=98.5,
+        minimum_completed_close=98.5,
+        maximum_completed_close=102,
+        previously_invalidated=False,
+        three_gate=gate,
+    )
+    still_cancelled = evaluate_opening_three_gate_retest(
+        open_price=102,
+        previous_close=98,
+        current_price=100.1,
+        previous_intraday_price=100,
+        session_high=103,
+        session_low=98.8,
+        completed_bar_open=99.9,
+        completed_bar_close=100.1,
+        minimum_completed_close=100.1,
+        maximum_completed_close=102,
+        previously_invalidated=True,
+        three_gate=gate,
+    )
+    failed_short = evaluate_opening_three_gate_retest(
+        open_price=81,
+        previous_close=85,
+        current_price=83,
+        previous_intraday_price=82.8,
+        session_high=83.2,
+        session_low=80,
+        completed_bar_open=82.5,
+        completed_bar_close=83,
+        minimum_completed_close=80,
+        maximum_completed_close=83,
+        previously_invalidated=False,
+        three_gate=gate,
+    )
+
+    assert failed_long.invalidated is True
+    assert failed_long.ready is False
+    assert still_cancelled.invalidated is True
+    assert still_cancelled.ready is False
+    assert failed_short.invalidated is True
+    assert failed_short.ready is False
 
 
 def test_official_daily_rows_are_parsed_for_twse_and_tpex() -> None:

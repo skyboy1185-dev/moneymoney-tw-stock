@@ -266,6 +266,7 @@ class MockDayTradingEngine:
         self._official_quotes: dict[str, OfficialStockQuote] = {}
         self._quote_history: dict[str, list[OfficialStockQuote]] = {}
         self._three_gate_prices: dict[str, ThreeGatePrice] = {}
+        self._three_gate_invalidations: dict[str, str] = {}
         self._signal_windows: dict[str, tuple[datetime, datetime, str]] = {}
         self._stock_universe, _ = merge_momentum_stocks(())
 
@@ -290,6 +291,11 @@ class MockDayTradingEngine:
                     symbol: history
                     for symbol, history in self._quote_history.items()
                     if symbol == "t00" or symbol in active_symbols
+                }
+                self._three_gate_invalidations = {
+                    symbol: trading_date
+                    for symbol, trading_date in self._three_gate_invalidations.items()
+                    if symbol in active_symbols
                 }
 
     @property
@@ -349,6 +355,7 @@ class MockDayTradingEngine:
                 history = self._quote_history.setdefault(symbol, [])
                 if history and history[-1].quote_timestamp[:10] != quote.quote_timestamp[:10]:
                     history.clear()
+                    self._three_gate_invalidations.pop(symbol, None)
                 is_new_sample = (
                     previous is None
                     or previous.quote_timestamp != quote.quote_timestamp
@@ -506,6 +513,7 @@ class MockDayTradingEngine:
         with self._lock:
             quotes = dict(self._official_quotes)
             three_gate_prices = dict(self._three_gate_prices)
+            three_gate_invalidations = dict(self._three_gate_invalidations)
             histories = {
                 symbol: list(values)
                 for symbol, values in self._quote_history.items()
@@ -543,6 +551,8 @@ class MockDayTradingEngine:
             three_gate = three_gate_prices.get(quote.symbol)
             previous_intraday_price = history[-2].price if len(history) >= 2 else None
             previous_price = previous_intraday_price or quote.previous_close
+            trading_date = quote.quote_timestamp[:10]
+            previously_invalidated = three_gate_invalidations.get(quote.symbol) == trading_date
             three_gate_decision = (
                 evaluate_three_gate_direction(price, previous_price, three_gate)
                 if three_gate is not None
@@ -556,11 +566,31 @@ class MockDayTradingEngine:
                     previous_intraday_price=previous_intraday_price,
                     session_high=quote.high,
                     session_low=quote.low,
+                    completed_bar_open=(
+                        float(metrics["fiveMinuteLastCompletedOpen"])
+                        if metrics["fiveMinuteLastCompletedOpen"] is not None else None
+                    ),
+                    completed_bar_close=(
+                        float(metrics["fiveMinuteLastCompletedClose"])
+                        if metrics["fiveMinuteLastCompletedClose"] is not None else None
+                    ),
+                    minimum_completed_close=(
+                        float(metrics["fiveMinuteMinCompletedClose"])
+                        if metrics["fiveMinuteMinCompletedClose"] is not None else None
+                    ),
+                    maximum_completed_close=(
+                        float(metrics["fiveMinuteMaxCompletedClose"])
+                        if metrics["fiveMinuteMaxCompletedClose"] is not None else None
+                    ),
+                    previously_invalidated=previously_invalidated,
                     three_gate=three_gate,
                 )
                 if three_gate is not None
                 else None
             )
+            if opening_retest is not None and opening_retest.invalidated and not previously_invalidated:
+                with self._lock:
+                    self._three_gate_invalidations[quote.symbol] = trading_date
             direction = (
                 "long"
                 if opening_retest is not None and opening_retest.pattern == "open-above-middle"
@@ -729,7 +759,9 @@ class MockDayTradingEngine:
             warnings: list[str] = []
             if three_gate_decision is None:
                 warnings.append("尚未取得前一交易日三關價，停止產生正式進場訊號")
-            if opening_retest is not None and opening_retest.required and not opening_retest.ready:
+            if opening_retest is not None and opening_retest.invalidated:
+                warnings.append("開盤三關價型態今日已失效，禁止進場且不在同一根 K 反手")
+            elif opening_retest is not None and opening_retest.required and not opening_retest.ready:
                 warnings.append("開盤直接跳越關鍵價，回測完成前禁止追價進場")
             if not metrics["qualified"]:
                 warnings.append(str(metrics["qualificationMessage"]))
@@ -825,7 +857,11 @@ class MockDayTradingEngine:
                 ),
                 "quoteIsRealtime": quote.is_realtime,
                 "quoteStatus": "盤中行情" if quote.is_realtime else "最近有效行情／收盤",
-                "status": "confirmed" if confirmed else "temporary",
+                "status": (
+                    "blocked"
+                    if opening_retest is not None and opening_retest.invalidated
+                    else "confirmed" if confirmed else "temporary"
+                ),
                 "liveSampleCount": len(history),
                 "fiveMinuteBarCount": metrics["fiveMinuteBarCount"],
                 "fiveMinuteStructure": (
@@ -859,6 +895,7 @@ class MockDayTradingEngine:
                 "threeGateRetestRequired": opening_retest.required if opening_retest else False,
                 "threeGateRetestTouched": opening_retest.touched if opening_retest else False,
                 "threeGateRetestReady": opening_retest.ready if opening_retest else False,
+                "threeGateInvalidated": opening_retest.invalidated if opening_retest else False,
                 "threeGateEntryLevel": opening_retest.level if opening_retest else None,
                 "threeGateEntryStatus": opening_retest.status if opening_retest else "等待三關價回測判讀",
             })
@@ -885,6 +922,10 @@ class MockDayTradingEngine:
                 "volumeScore": 0,
                 "fiveMinuteReady": False,
                 "fiveMinuteBarCount": 0,
+                "fiveMinuteLastCompletedOpen": None,
+                "fiveMinuteLastCompletedClose": None,
+                "fiveMinuteMinCompletedClose": None,
+                "fiveMinuteMaxCompletedClose": None,
                 "fiveMinuteHigherLows": False,
                 "fiveMinuteLowerHighs": False,
                 "fiveMinuteMaFast": 0.0,
@@ -1138,6 +1179,14 @@ class MockDayTradingEngine:
             "volumeScore": max(0, volume_score),
             "fiveMinuteReady": five_minute_ready,
             "fiveMinuteBarCount": len(completed_bars),
+            "fiveMinuteLastCompletedOpen": (
+                float(last_completed["open"]) if last_completed is not None else None
+            ),
+            "fiveMinuteLastCompletedClose": (
+                float(last_completed["close"]) if last_completed is not None else None
+            ),
+            "fiveMinuteMinCompletedClose": min(completed_closes) if completed_closes else None,
+            "fiveMinuteMaxCompletedClose": max(completed_closes) if completed_closes else None,
             "fiveMinuteHigherLows": higher_lows,
             "fiveMinuteLowerHighs": lower_highs,
             "fiveMinuteMaFast": ma_fast,
