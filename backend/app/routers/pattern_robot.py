@@ -39,6 +39,15 @@ def _breakout_focus(trade_date: date):
     )
 
 
+def _breakout_score_floor(db: Session, trade_date: date, requested: float = 0) -> float:
+    settings = ensure_pattern_settings(db)
+    regime = db.scalar(select(PatternDetection.market_regime).where(
+        PatternDetection.trade_date == trade_date,
+    ).limit(1))
+    market_floor = 85 if regime == "strong_bear" else 80 if regime == "bear" else 0
+    return max(float(settings.minimum_score), requested, market_floor)
+
+
 def _user_id(x_user_id: str = Header(min_length=8, max_length=80)) -> str:
     return x_user_id
 
@@ -62,11 +71,12 @@ def status(db: Session = Depends(get_db)) -> dict:
     ).order_by(PatternTradeMessage.created_at.desc()).limit(1))
     top = []
     if latest:
+        score_floor = _breakout_score_floor(db, latest.trade_date)
         top = list(db.scalars(select(PatternDetection).where(
             PatternDetection.trade_date == latest.trade_date,
             PatternDetection.stock_code.in_(AI_RELATED_CODES),
             _breakout_focus(latest.trade_date),
-            PatternDetection.pattern_score >= settings.minimum_score,
+            PatternDetection.pattern_score >= score_floor,
         ).order_by(PatternDetection.pattern_score.desc()).limit(10)).all())
     return {
         **pattern_robot_automation.state, "enabled": settings.enabled,
@@ -158,7 +168,9 @@ def detections(
             clauses.append(_breakout_focus(focus_date))
         else:
             clauses.append(PatternDetection.pattern_status.in_(BREAKOUT_RESULT_STATUSES))
-    clauses.append(PatternDetection.pattern_score >= (minScore or ensure_pattern_settings(db).minimum_score))
+    score_date = tradeDate or dateTo or latest_trade_date
+    score_floor = _breakout_score_floor(db, score_date, minScore) if score_date else (minScore or float(ensure_pattern_settings(db).minimum_score))
+    clauses.append(PatternDetection.pattern_score >= score_floor)
     if action: clauses.append(PatternDetection.action == action)
     if notified is True: clauses.append(PatternDetection.notified_at.is_not(None))
     if notified is False: clauses.append(PatternDetection.notified_at.is_(None))
@@ -395,13 +407,23 @@ def messages(unreadOnly: bool = False, page: int = 1, pageSize: int = 100, db: S
     latest_trade_date = db.scalar(select(func.max(PatternRobotRun.trade_date)))
     query = select(PatternTradeMessage).outerjoin(
         PatternSignal, PatternTradeMessage.signal_id == PatternSignal.id,
+    ).outerjoin(
+        PatternDetection, PatternSignal.detection_id == PatternDetection.id,
     ).where(PatternTradeMessage.message_type != "WATCH")
     if latest_trade_date:
+        score_floor = _breakout_score_floor(db, latest_trade_date)
         query = query.where(or_(
             and_(
                 PatternTradeMessage.signal_id.is_not(None),
                 PatternSignal.trade_date == latest_trade_date,
                 PatternSignal.stock_code.in_(AI_RELATED_CODES),
+                or_(
+                    PatternTradeMessage.message_type != "PREPARE",
+                    and_(
+                        _breakout_focus(latest_trade_date),
+                        PatternDetection.pattern_score >= score_floor,
+                    ),
+                ),
             ),
             and_(
                 PatternTradeMessage.signal_id.is_(None),
