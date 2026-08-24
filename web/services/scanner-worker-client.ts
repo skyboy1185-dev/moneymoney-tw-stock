@@ -45,7 +45,7 @@ export async function proxyScannerRequest(request: Request): Promise<Response | 
         method: request.method,
         headers: workerHeaders(request),
         cache: "no-store",
-        signal: AbortSignal.timeout(900_000),
+        signal: AbortSignal.timeout(1_800_000),
       }).then(async (response) => {
         const payload = await response.text();
         if (!enqueue(payload)) return;

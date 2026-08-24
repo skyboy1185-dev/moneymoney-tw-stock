@@ -19,6 +19,7 @@ export async function proxy(request: NextRequest) {
     (
       pathname === "/api/adaptive-electronic/scan"
       || pathname === "/api/rocket-radar/scan"
+      || pathname === "/api/pattern-robot/scanner"
       || pathname === "/api/ai"
     )
     && await verifyAdaptiveScannerToken(request.headers.get("x-adaptive-scanner-token"))

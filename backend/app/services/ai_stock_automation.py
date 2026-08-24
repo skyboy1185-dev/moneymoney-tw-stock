@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from ..config import get_settings
 from ..database import BackgroundSessionLocal as SessionLocal
-from ..models import AIStockAlert, AIStockMonitor, AIStockPosition
+from ..models import AIStockAlert, AIStockMonitor, AIStockPosition, PatternRobotRun, PatternRobotSetting
 from .ai_stock_line import (
     add_on_message,
     daily_position_summary_message,
@@ -162,7 +162,29 @@ class AIStockAutomation:
         current = now or datetime.now(UTC)
         session = _market_session(current)
         if session == "open":
-            await self._scan_market(current)
+            local_date = current.astimezone(TAIPEI).date()
+            with SessionLocal() as db:
+                pattern_setting = db.get(PatternRobotSetting, 1)
+                pattern_run = db.scalar(select(PatternRobotRun).where(
+                    PatternRobotRun.trade_date == local_date,
+                    PatternRobotRun.run_type == "OPEN_SCAN",
+                ))
+            # Opening order: pattern scan/reminder first, then the original AI
+            # selection scan. A FAILED pattern run is recorded but never blocks
+            # the original robot permanently; its own retry loop remains active.
+            if pattern_setting and pattern_setting.enabled and (
+                pattern_run is None or pattern_run.status == "RUNNING"
+            ):
+                self._state.update({
+                    "lastScanAt": current.isoformat(),
+                    "lastScanStatus": "waiting_pattern_scan",
+                    "lastScanError": None,
+                    "lastScanFeaturedCount": 0,
+                    "lastScanCandidateCount": 0,
+                    "lastSyncedCount": 0,
+                })
+            else:
+                await self._scan_market(current)
         else:
             self._state.update({
                 "lastScanAt": current.isoformat(),

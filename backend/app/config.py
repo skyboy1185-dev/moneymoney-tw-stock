@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     rocket_radar_scanner_url: str = ""
     rocket_radar_scan_interval_seconds: int = 60
     rocket_radar_scanner_timeout_seconds: float = 900.0
+    pattern_robot_enabled: bool = True
+    pattern_robot_scanner_url: str = ""
+    pattern_robot_scan_interval_seconds: int = 180
+    pattern_robot_scanner_timeout_seconds: float = 1800.0
     large_holder_auto_sync_enabled: bool = True
     large_holder_sync_interval_seconds: int = 21_600
     twse_timezone: str = "Asia/Taipei"

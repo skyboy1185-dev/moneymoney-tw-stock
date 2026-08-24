@@ -438,6 +438,16 @@ AI 選股群組、推送紀錄及 Webhook 去重分別保存於 `ai_stock_line_g
 
 本機啟動後，背景掃描器會在台股交易日 08:50～14:10 依 `ROCKET_RADAR_SCAN_INTERVAL_SECONDS` 執行。若未設定 `ROCKET_RADAR_SCANNER_URL`，會從 `ADAPTIVE_ELECTRONIC_SCANNER_URL` 自動推導 `/api/rocket-radar/scan`。
 
+### 型態選股機器人
+
+主選單的「型態選股機器人」及獨立路由 `/pattern-robot` 使用獨立的 `pattern_*` 資料表、模擬帳戶、持倉、交易週期與權益曲線，不會併入 AI 當沖機器人績效。掃描器讀取上市、上櫃普通股至少 180 個交易日的真實行情，以還原權息價格偵測頭肩底、W底、圓弧底、杯柄及上升三角形；即時監控及模擬成交使用未還原市價。
+
+後端預設會從 `ADAPTIVE_ELECTRONIC_SCANNER_URL` 推導 `/api/pattern-robot/scanner`，也可直接設定 `PATTERN_ROBOT_SCANNER_URL`。首次全市場歷史掃描可能較久，結果會快取並以 PostgreSQL advisory lock、每日 run 唯一限制及 signal/order/message 唯一限制防止多實例重複執行。
+
+```bash
+psql "$DATABASE_URL" -f backend/migrations/020_pattern_robot.sql
+```
+
 測試：
 
 ```powershell

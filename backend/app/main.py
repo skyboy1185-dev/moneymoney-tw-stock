@@ -18,6 +18,7 @@ from .routers import (
     large_holders,
     long_term,
     market_data,
+    pattern_robot,
     portfolio,
     rocket_radar,
     screener,
@@ -30,6 +31,7 @@ from .services.day_trading_automation import day_trading_automation
 from .services.line_messaging import line_notification_dispatcher
 from .services.large_holder_automation import large_holder_automation
 from .services.long_term_automation import long_term_selection_automation
+from .services.pattern_robot_automation import pattern_robot_automation
 from .services.rocket_automation import rocket_radar_automation
 
 settings = get_settings()
@@ -41,6 +43,8 @@ async def lifespan(_: FastAPI):
     cleanup_expired_operational_data(retention_days=7)
     await line_notification_dispatcher.start()
     await day_trading_automation.start()
+    # 型態掃描必須先於原本 AI 選股偵測啟動；09:00 後重啟會由此立即補掃。
+    await pattern_robot_automation.start(persist=False)
     await ai_stock_automation.start()
     await adaptive_electronic_automation.start()
     await large_holder_automation.start()
@@ -56,6 +60,7 @@ async def lifespan(_: FastAPI):
         await large_holder_automation.stop()
         await adaptive_electronic_automation.stop()
         await ai_stock_automation.stop()
+        await pattern_robot_automation.stop(persist=False)
         await day_trading_automation.stop()
         await line_notification_dispatcher.stop()
 
@@ -79,6 +84,7 @@ app.include_router(content.router, prefix=settings.api_prefix)
 app.include_router(chip_flow.router, prefix=settings.api_prefix)
 app.include_router(portfolio.router, prefix=settings.api_prefix)
 app.include_router(day_trading.router, prefix=settings.api_prefix)
+app.include_router(pattern_robot.router, prefix=settings.api_prefix)
 app.include_router(line_integration.router, prefix=settings.api_prefix)
 app.include_router(ai_stock_line_integration.router, prefix=settings.api_prefix)
 app.include_router(ai_stock.router, prefix=settings.api_prefix)

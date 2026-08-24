@@ -1295,3 +1295,352 @@ class RocketNotification(Base):
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     is_read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class PatternRobotSetting(Base):
+    __tablename__ = "pattern_robot_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    robot_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="SWING")
+    performance_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="PAPER_LIVE")
+    initial_capital: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("1000000"))
+    cash: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("1000000"))
+    paper_live_cash: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("1000000"))
+    manual_paper_cash: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("1000000"))
+    backtest_cash: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("1000000"))
+    max_positions: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    max_position_pct: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=Decimal("20"))
+    max_sector_pct: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=Decimal("40"))
+    risk_per_trade_pct: Mapped[Decimal] = mapped_column(Numeric(7, 4), nullable=False, default=Decimal("0.5"))
+    minimum_score: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=Decimal("70"))
+    minimum_risk_reward: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=Decimal("2"))
+    pivot_window: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    minimum_swing_pct: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=Decimal("3"))
+    allow_probe: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    allow_add: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    trailing_stop_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    opening_reminder_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    broker_fee_discount: Mapped[Decimal] = mapped_column(Numeric(7, 4), nullable=False, default=Decimal("0.6"))
+    slippage_rate: Mapped[Decimal] = mapped_column(Numeric(9, 6), nullable=False, default=Decimal("0.001"))
+    day_trade_close_time: Mapped[str] = mapped_column(String(5), nullable=False, default="13:20")
+    settings_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_by: Mapped[str] = mapped_column(String(80), nullable=False, default="system")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PatternDetection(Base):
+    __tablename__ = "pattern_detections"
+    __table_args__ = (
+        UniqueConstraint("trade_date", "stock_code", "pattern_type", name="uq_pattern_detection_date_stock_type"),
+        Index("ix_pattern_detection_date_score", "trade_date", "pattern_score"),
+        Index("ix_pattern_detection_status", "trade_date", "pattern_status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    stock_code: Mapped[str] = mapped_column(String(12), nullable=False)
+    stock_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    market_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    sector_name: Mapped[str] = mapped_column(String(80), nullable=False, default="其他")
+    pattern_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    pattern_status: Mapped[str] = mapped_column(String(30), nullable=False)
+    pattern_score: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False)
+    primary_pattern: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    pivot_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    neckline_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    breakout_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    current_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    target_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    invalidation_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    stop_loss_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    entry_price_low: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    entry_price_high: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    add_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    take_profit_1: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    take_profit_2: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    trailing_stop_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    volume_ratio: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    distance_to_breakout_pct: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    risk_reward_ratio: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    completion_pct: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False)
+    action: Mapped[str] = mapped_column(String(30), nullable=False)
+    action_label: Mapped[str] = mapped_column(String(60), nullable=False)
+    suggested_position_pct: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=Decimal("0"))
+    suggested_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    market_regime: Mapped[str] = mapped_column(String(30), nullable=False, default="neutral")
+    sector_strength: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=Decimal("50"))
+    volume_confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    key_points_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    score_breakdown_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    reasons_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    missing_conditions_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    risk_warnings_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    all_patterns_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    source_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PatternWatchlist(Base):
+    __tablename__ = "pattern_watchlist"
+    __table_args__ = (
+        UniqueConstraint("user_id", "stock_code", "pattern_type", name="uq_pattern_watch_user_stock_type"),
+        Index("ix_pattern_watch_user_active", "user_id", "active"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    detection_id: Mapped[int | None] = mapped_column(ForeignKey("pattern_detections.id"))
+    stock_code: Mapped[str] = mapped_column(String(12), nullable=False)
+    stock_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    pattern_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    trade_paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    reminder_only: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    removed_reason: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PatternSignal(Base):
+    __tablename__ = "pattern_signals"
+    __table_args__ = (
+        UniqueConstraint("trade_date", "stock_code", "pattern_type", "signal_type", "signal_version", name="uq_pattern_signal_version"),
+        Index("ix_pattern_signal_time", "signal_time", "stock_code"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    detection_id: Mapped[int] = mapped_column(ForeignKey("pattern_detections.id"), nullable=False)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    stock_code: Mapped[str] = mapped_column(String(12), nullable=False)
+    stock_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    pattern_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    signal_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    signal_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    action: Mapped[str] = mapped_column(String(30), nullable=False)
+    signal_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reasons_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    signal_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class PatternOrder(Base):
+    __tablename__ = "pattern_orders"
+    __table_args__ = (
+        UniqueConstraint("signal_id", "order_action", name="uq_pattern_order_signal_action"),
+        Index("ix_pattern_order_status", "status", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    signal_id: Mapped[int] = mapped_column(ForeignKey("pattern_signals.id"), nullable=False)
+    performance_mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    order_action: Mapped[str] = mapped_column(String(30), nullable=False)
+    stock_code: Mapped[str] = mapped_column(String(12), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    order_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="CREATED")
+    filled_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rejection_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PatternFill(Base):
+    __tablename__ = "pattern_fills"
+    __table_args__ = (Index("ix_pattern_fill_time", "filled_at", "stock_code"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    order_id: Mapped[int] = mapped_column(ForeignKey("pattern_orders.id"), nullable=False)
+    signal_id: Mapped[int] = mapped_column(ForeignKey("pattern_signals.id"), nullable=False)
+    stock_code: Mapped[str] = mapped_column(String(12), nullable=False)
+    side: Mapped[str] = mapped_column(String(10), nullable=False)
+    signal_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    filled_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    gross_amount: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    fee: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    tax: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    slippage: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    net_amount: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    realized_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("0"))
+    filled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PatternTradeCycle(Base):
+    __tablename__ = "pattern_trade_cycles"
+    __table_args__ = (Index("ix_pattern_cycle_mode_status", "performance_mode", "status"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    stock_code: Mapped[str] = mapped_column(String(12), nullable=False)
+    stock_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    primary_pattern: Mapped[str] = mapped_column(String(40), nullable=False)
+    all_patterns_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    pattern_score: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False)
+    robot_mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    performance_mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    market_regime: Mapped[str] = mapped_column(String(30), nullable=False)
+    sector_strength: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="OPEN")
+    first_entry_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cumulative_buy_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cumulative_buy_amount: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("0"))
+    cumulative_sell_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cumulative_sell_amount: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("0"))
+    realized_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("0"))
+    unrealized_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("0"))
+    trading_cost: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("0"))
+    mfe: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("0"))
+    mae: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("0"))
+    exit_reason: Mapped[str | None] = mapped_column(String(40))
+    reasons_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PatternPosition(Base):
+    __tablename__ = "pattern_positions"
+    __table_args__ = (
+        Index("ix_pattern_position_mode_status", "performance_mode", "status"),
+        Index("ix_pattern_position_stock", "stock_code", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trade_cycle_id: Mapped[int] = mapped_column(ForeignKey("pattern_trade_cycles.id"), nullable=False)
+    stock_code: Mapped[str] = mapped_column(String(12), nullable=False)
+    stock_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    primary_pattern: Mapped[str] = mapped_column(String(40), nullable=False)
+    pattern_status: Mapped[str] = mapped_column(String(30), nullable=False)
+    robot_mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    performance_mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="OPEN")
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    sellable_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    average_cost: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    current_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    invested_cost: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    realized_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("0"))
+    unrealized_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("0"))
+    stop_loss_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    take_profit_1: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    take_profit_2: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    pattern_target_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    trailing_stop_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    highest_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    lowest_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    take_profit_stage: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    auto_trade_paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    first_entry_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_add_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PatternPositionLot(Base):
+    __tablename__ = "pattern_position_lots"
+    __table_args__ = (Index("ix_pattern_lot_position", "position_id", "remaining_quantity"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    position_id: Mapped[int] = mapped_column(ForeignKey("pattern_positions.id"), nullable=False)
+    fill_id: Mapped[int] = mapped_column(ForeignKey("pattern_fills.id"), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    remaining_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    cost_per_share: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PatternTradeMessage(Base):
+    __tablename__ = "pattern_trade_messages"
+    __table_args__ = (
+        UniqueConstraint("signal_id", "message_type", "message_version", name="uq_pattern_message_version"),
+        Index("ix_pattern_message_unread", "is_read", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    signal_id: Mapped[int | None] = mapped_column(ForeignKey("pattern_signals.id"))
+    message_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    message_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    stock_code: Mapped[str | None] = mapped_column(String(12))
+    stock_name: Mapped[str | None] = mapped_column(String(80))
+    pattern_type: Mapped[str | None] = mapped_column(String(40))
+    action: Mapped[str | None] = mapped_column(String(30))
+    title: Mapped[str] = mapped_column(String(160), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    price: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    quantity: Mapped[int | None] = mapped_column(Integer)
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 2))
+    cash_impact: Mapped[Decimal | None] = mapped_column(Numeric(20, 2))
+    position_impact: Mapped[int | None] = mapped_column(Integer)
+    reasons_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    is_read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    remind_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    displayed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PatternDailyEquity(Base):
+    __tablename__ = "pattern_daily_equity"
+    __table_args__ = (
+        UniqueConstraint(
+            "trade_date", "robot_mode", "performance_mode",
+            name="uq_pattern_equity_date_robot_performance_mode",
+        ),
+        Index("ix_pattern_equity_date", "trade_date", "performance_mode"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    robot_mode: Mapped[str] = mapped_column(String(30), nullable=False)
+    performance_mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    cash: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    market_value: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    total_equity: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    daily_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    cumulative_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    realized_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    unrealized_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    drawdown_pct: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PatternPerformanceSnapshot(Base):
+    __tablename__ = "pattern_performance_snapshots"
+    __table_args__ = (Index("ix_pattern_perf_mode_time", "performance_mode", "calculated_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    performance_mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    robot_mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    parameter_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    metrics_json: Mapped[str] = mapped_column(Text, nullable=False)
+    by_pattern_json: Mapped[str] = mapped_column(Text, nullable=False)
+    calculated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PatternRobotRun(Base):
+    __tablename__ = "pattern_robot_runs"
+    __table_args__ = (
+        UniqueConstraint("trade_date", "run_type", name="uq_pattern_run_date_type"),
+        Index("ix_pattern_run_status", "status", "started_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    run_type: Mapped[str] = mapped_column(String(30), nullable=False, default="OPEN_SCAN")
+    status: Mapped[str] = mapped_column(String(30), nullable=False)
+    scanned_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    matched_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    counts_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    error_message: Mapped[str | None] = mapped_column(Text)
+    parameter_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    source_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

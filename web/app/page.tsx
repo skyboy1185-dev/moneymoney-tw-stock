@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Activity, BarChart3, Bot, Fish, Flame, Landmark, Newspaper, Rocket, Search, SlidersHorizontal, Telescope, TrendingUp, Waves, Wifi, WifiOff } from "lucide-react";
+import { Activity, BarChart3, Bot, Fish, Flame, Landmark, Newspaper, Rocket, ScanSearch, Search, SlidersHorizontal, Telescope, TrendingUp, Waves, Wifi, WifiOff } from "lucide-react";
 import { StockAnalysis } from "@/components/StockAnalysis";
 import { Screener } from "@/components/Screener";
 import { PortfolioPage } from "@/components/PortfolioPage";
@@ -15,12 +15,13 @@ import { AdaptiveElectronicPage } from "@/components/AdaptiveElectronicPage";
 import { LongTermSelectionPage } from "@/components/LongTermSelectionPage";
 import { RocketRadarPage } from "@/components/RocketRadarPage";
 import { WhaleAccumulationPage } from "@/components/WhaleAccumulationPage";
+import { PatternRobotPage } from "@/components/PatternRobotPage";
 import { LegalTermsButton } from "@/components/LegalTermsGate";
 import { PrivateSiteLogoutButton } from "@/components/PrivateSiteLogoutButton";
 import type { MarketSnapshot } from "@/lib/market-types";
 import type { StockPayload } from "@/lib/types";
 
-type Tab = "analysis" | "screener" | "day-trading" | "adaptive-electronic" | "rocket-radar" | "long-term" | "whale-accumulation" | "institutional-investors" | "chip-flow" | "portfolio" | "industries" | "news";
+type Tab = "analysis" | "screener" | "day-trading" | "pattern-robot" | "adaptive-electronic" | "rocket-radar" | "long-term" | "whale-accumulation" | "institutional-investors" | "chip-flow" | "portfolio" | "industries" | "news";
 type Connection = "connecting" | "connected" | "disconnected";
 
 async function fetchStock(query: string): Promise<StockPayload> {
@@ -67,7 +68,7 @@ export default function Home() {
     void loadStock(initial).then(() => {
       if (requestedView === "ai") {
         setTab("adaptive-electronic");
-      } else if (requestedView && ["analysis", "screener", "day-trading", "adaptive-electronic", "rocket-radar", "long-term", "whale-accumulation", "institutional-investors", "chip-flow", "portfolio", "industries", "news"].includes(requestedView)) {
+      } else if (requestedView && ["analysis", "screener", "day-trading", "pattern-robot", "adaptive-electronic", "rocket-radar", "long-term", "whale-accumulation", "institutional-investors", "chip-flow", "portfolio", "industries", "news"].includes(requestedView)) {
         setTab(requestedView);
       }
     });
@@ -146,6 +147,7 @@ export default function Home() {
         <button className={tab === "analysis" ? "active" : ""} onClick={() => setTab("analysis")}><Activity size={17} />個股分析</button>
         <button className={tab === "screener" ? "active" : ""} onClick={() => setTab("screener")}><SlidersHorizontal size={17} />AI 選股</button>
         <button className={tab === "day-trading" ? "active ai-nav" : "ai-nav"} onClick={() => setTab("day-trading")}><Bot size={17} />當沖機器人<span>LIVE</span></button>
+        <button className={tab === "pattern-robot" ? "active pattern-nav" : "pattern-nav"} onClick={() => setTab("pattern-robot")}><ScanSearch size={17} />型態選股機器人</button>
         <button className={tab === "adaptive-electronic" ? "active" : ""} onClick={() => setTab("adaptive-electronic")}><TrendingUp size={17} />AI選股機器人</button>
         <button className={tab === "rocket-radar" ? "active rocket-nav" : "rocket-nav"} onClick={() => setTab("rocket-radar")}><Rocket size={17} />飆股雷達{rocketUnread > 0 && <span className="rocket-unread-badge">{rocketUnread > 99 ? "99+" : rocketUnread}</span>}</button>
         <button className={tab === "long-term" ? "active" : ""} onClick={() => setTab("long-term")}><Telescope size={17} />長線選股</button>
@@ -173,6 +175,8 @@ export default function Home() {
           <Screener onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }} />
         ) : tab === "day-trading" ? (
           <DayTradingDashboard />
+        ) : tab === "pattern-robot" ? (
+          <PatternRobotPage userId={userId} onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }} />
         ) : tab === "adaptive-electronic" ? (
           <AdaptiveElectronicPage userId={userId} onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }} />
         ) : tab === "rocket-radar" ? (
