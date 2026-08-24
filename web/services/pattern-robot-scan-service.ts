@@ -55,16 +55,28 @@ async function json(url: string, timeout = 15_000): Promise<unknown> {
   return response.json();
 }
 
+async function officialJson(url: string): Promise<unknown> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try { return await json(url); }
+    catch (error) {
+      lastError = error;
+      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+
 async function loadOfficialUniverse() {
   const [listedCompanies, otcCompanies, listedQuotes, otcQuotes, fullListed, fullOtc, disposedListed, disposedOtc] = await Promise.all([
-    json("https://openapi.twse.com.tw/v1/opendata/t187ap03_L").catch(() => []),
-    json("https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O").catch(() => []),
-    json("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL").catch(() => []),
-    json("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes").catch(() => []),
-    json("https://openapi.twse.com.tw/v1/exchangeReport/TWT85U").catch(() => []),
-    json("https://www.tpex.org.tw/openapi/v1/tpex_cmode").catch(() => []),
-    json("https://openapi.twse.com.tw/v1/announcement/punish").catch(() => []),
-    json("https://www.tpex.org.tw/openapi/v1/tpex_disposal_information").catch(() => []),
+    officialJson("https://openapi.twse.com.tw/v1/opendata/t187ap03_L").catch(() => []),
+    officialJson("https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O").catch(() => []),
+    officialJson("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL").catch(() => []),
+    officialJson("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes").catch(() => []),
+    officialJson("https://openapi.twse.com.tw/v1/exchangeReport/TWT85U").catch(() => []),
+    officialJson("https://www.tpex.org.tw/openapi/v1/tpex_cmode").catch(() => []),
+    officialJson("https://openapi.twse.com.tw/v1/announcement/punish").catch(() => []),
+    officialJson("https://www.tpex.org.tw/openapi/v1/tpex_disposal_information").catch(() => []),
   ]) as Row[][];
   const companies: Company[] = [
     ...listedCompanies.map((row) => ({
@@ -100,7 +112,7 @@ async function loadOfficialUniverse() {
 async function officialUniverse() {
   if (universeCache && universeCache.expiresAt > Date.now()) return universeCache.value;
   const value = await loadOfficialUniverse();
-  universeCache = { value, expiresAt: Date.now() + CACHE_MS };
+  universeCache = { value, expiresAt: Date.now() + (value.unavailable.length ? 10_000 : CACHE_MS) };
   return value;
 }
 
@@ -194,8 +206,11 @@ async function buildUncached(page: number, pageSize: number) {
   const [{companies,quoteMap,unavailable,fullDelivery,disposed}, regime, aiUniverse] = await Promise.all([
     officialUniverse(), marketRegime(), aiPatternUniverse(),
   ]);
-  const aiCodes = new Set(aiUniverse.items.map((item) => item.stockCode));
-  const scopedCompanies = companies.filter((company) => aiCodes.has(company.symbol));
+  const officialCompanies = new Map(companies.map((company) => [company.symbol, company]));
+  const scopedCompanies: Company[] = aiUniverse.items.map((item) => officialCompanies.get(item.stockCode) ?? ({
+    symbol: item.stockCode, name: item.stockName, market: item.market as Market,
+    sector: item.industry, listingDate: null,
+  }));
   const now=new Date();
   const taipeiParts=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Taipei",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false}).formatToParts(now);
   const part=(type:string)=>taipeiParts.find((item)=>item.type===type)?.value??"";
@@ -206,13 +221,17 @@ async function buildUncached(page: number, pageSize: number) {
   const pageCount=Math.max(1,Math.ceil(scopedCompanies.length/pageSize));
   const pageCompanies=scopedCompanies.slice((page-1)*pageSize,page*pageSize);
   const candidates=await Promise.all(pageCompanies.map(async(company)=>{
-    const quote=quoteMap.get(company.symbol);
-    if(!quote?.price||!quote.volume)return null;
+    let quote=quoteMap.get(company.symbol);
     let history:Awaited<ReturnType<typeof patternHistory>>;
     try{history=await patternHistory(company);validHistoryCount+=1;}catch{return null;}
     const actual=[...history.actual];
     const adjusted=[...history.adjusted];
     const latest=actual.at(-1);
+    if ((!quote?.price || !quote.volume) && latest) {
+      quote = { price:latest.close, open:latest.open, high:latest.high, low:latest.low,
+        volume:latest.volume, turnover:latest.turnover, date:latest.date, source:history.source };
+    }
+    if (!quote?.price || !quote.volume) return null;
     if(quote.date&&latest&&quote.date>=latest.date){
       const candle={date:quote.date,open:quote.open||quote.price,high:quote.high||quote.price,low:quote.low||quote.price,close:quote.price,volume:quote.volume,turnover:quote.turnover||quote.price*quote.volume};
       actual.splice(actual.findIndex((row)=>row.date===quote.date),actual.some((row)=>row.date===quote.date)?1:0,candle);
