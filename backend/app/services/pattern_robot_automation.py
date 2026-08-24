@@ -157,19 +157,24 @@ class PatternRobotAutomation:
                 local = now.astimezone(TAIPEI)
                 with SessionLocal() as db:
                     settings = ensure_pattern_settings(db)
-                    completed = db.scalar(select(PatternRobotRun.id).where(
+                    completed_run = db.scalar(select(PatternRobotRun).where(
                         PatternRobotRun.trade_date == local.date(), PatternRobotRun.run_type == "OPEN_SCAN",
                         PatternRobotRun.status == "COMPLETED",
                     ))
                     enabled = settings.enabled
                     db.commit()
-                should_open = completed is None and local.time() >= time(9, 0)
-                should_monitor = completed is not None and time(9, 0) <= local.time() <= time(13, 40)
-                should_close = completed is not None and local.time() > time(13, 40) and self._last_close_scan_date != local.date()
+                completed = completed_run is not None
+                completed_after_close = bool(
+                    completed_run and completed_run.completed_at
+                    and completed_run.completed_at.astimezone(TAIPEI).time() > time(13, 40)
+                )
+                should_open = not completed and local.time() >= time(9, 0)
+                should_monitor = completed and time(9, 0) <= local.time() <= time(13, 40)
+                should_close = completed and local.time() > time(13, 40) and not completed_after_close and self._last_close_scan_date != local.date()
                 if enabled and _is_trading_day(local.date()) and (should_open or should_monitor or should_close):
                     # A restart after 09:00 immediately performs a missing opening scan.
                     # Subsequent cycles update intraday status without inserting another run row.
-                    await self.run_once(force=completed is not None)
+                    await self.run_once(force=completed)
                     if should_close:
                         self._last_close_scan_date = local.date()
                 self._state["nextRunAt"] = (datetime.now(UTC).timestamp() + interval)
