@@ -48,10 +48,10 @@ async function json(url: string, timeout = 15_000): Promise<unknown> {
 
 async function officialUniverse() {
   const [listedCompanies, otcCompanies, listedQuotes, otcQuotes, fullListed, fullOtc, disposedListed, disposedOtc] = await Promise.all([
-    json("https://openapi.twse.com.tw/v1/opendata/t187ap03_L"),
-    json("https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"),
-    json("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"),
-    json("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes"),
+    json("https://openapi.twse.com.tw/v1/opendata/t187ap03_L").catch(() => []),
+    json("https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O").catch(() => []),
+    json("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL").catch(() => []),
+    json("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes").catch(() => []),
     json("https://openapi.twse.com.tw/v1/exchangeReport/TWT85U").catch(() => []),
     json("https://www.tpex.org.tw/openapi/v1/tpex_cmode").catch(() => []),
     json("https://openapi.twse.com.tw/v1/announcement/punish").catch(() => []),
@@ -81,7 +81,11 @@ async function officialUniverse() {
     quoteMap.set(symbol, { price:numberValue(row.Close), open:numberValue(row.Open), high:numberValue(row.High), low:numberValue(row.Low), volume:numberValue(row.TradingShares), turnover:numberValue(row.TransactionAmount), date:rocDate(stringValue(row,["Date"])) ?? "", source:"TPEx OpenAPI" });
   }
   const codes = (rows: Row[]) => new Set(rows.flatMap((row) => Object.values(row).map(String).filter((value) => /^\d{4}$/.test(value))));
-  return { companies, quoteMap, fullDelivery: new Set([...codes(fullListed), ...codes(fullOtc)]), disposed: new Set([...codes(disposedListed), ...codes(disposedOtc)]) };
+  const unavailable = [
+    !listedCompanies.length && "TWSE company list", !otcCompanies.length && "TPEx company list",
+    !listedQuotes.length && "TWSE quotes", !otcQuotes.length && "TPEx quotes",
+  ].filter((value): value is string => Boolean(value));
+  return { companies, quoteMap, unavailable, fullDelivery: new Set([...codes(fullListed), ...codes(fullOtc)]), disposed: new Set([...codes(disposedListed), ...codes(disposedOtc)]) };
 }
 
 function taipeiDate(timestamp: number) {
@@ -150,7 +154,7 @@ async function marketRegime() {
 }
 
 async function buildUncached() {
-  const [{companies,quoteMap,fullDelivery,disposed}, regime] = await Promise.all([officialUniverse(),marketRegime()]);
+  const [{companies,quoteMap,unavailable,fullDelivery,disposed}, regime] = await Promise.all([officialUniverse(),marketRegime()]);
   const now=new Date();
   const taipeiParts=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Taipei",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false}).formatToParts(now);
   const part=(type:string)=>taipeiParts.find((item)=>item.type===type)?.value??"";
@@ -190,7 +194,7 @@ async function buildUncached() {
   const weekday=Number(new Intl.DateTimeFormat("en-US",{timeZone:"Asia/Taipei",weekday:"short"}).format(now)!=="Sun"&&new Intl.DateTimeFormat("en-US",{timeZone:"Asia/Taipei",weekday:"short"}).format(now)!=="Sat");
   return {trade_date:latestDate,generated_at:now.toISOString(),is_trading_day:Boolean(weekday)&&latestDate===today,market_regime:regime.regime,market_score:regime.score,stocks,
     sources:["TWSE listed company/open data","TPEx listed company/open data","TWSE/TPEx daily quote","Yahoo Finance adjusted close","TWSE MIS/official close"],
-    source_status:{universe:`${companies.length} listed/OTC ordinary shares`,history:`${validHistoryCount} stocks read with >=180 daily bars; ${stocks.length} passed eligibility`,adjustment:"adjusted close factor; official discontinuity fallback"}};
+    source_status:{universe:`${companies.length} listed/OTC ordinary shares`,history:`${validHistoryCount} stocks read with >=180 daily bars; ${stocks.length} passed eligibility`,adjustment:"adjusted close factor; official discontinuity fallback",degraded:unavailable.length?unavailable.join(", "):"none"}};
 }
 
 export async function buildPatternRobotScan() {

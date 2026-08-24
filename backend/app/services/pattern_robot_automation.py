@@ -52,7 +52,10 @@ async def fetch_pattern_scan_payload() -> PatternScanPayload:
     ) as client:
         response = await client.get(_scanner_url(), headers=headers)
         response.raise_for_status()
-        return PatternScanPayload.model_validate(response.json())
+        payload = response.json()
+        if isinstance(payload, dict) and payload.get("error"):
+            raise RuntimeError(f"型態掃描器：{payload['error']}")
+        return PatternScanPayload.model_validate(payload)
 
 
 class PatternRobotAutomation:
