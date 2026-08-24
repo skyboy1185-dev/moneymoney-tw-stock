@@ -22,6 +22,7 @@ from ..models import (
     ElectronicIndustryStrength,
     MarketRegime,
     StrategyParameter,
+    SuperAIDaytradeNotification,
 )
 from ..services.adaptive_backtest_service import run_backtest
 from ..services.adaptive_electronic_automation import adaptive_electronic_automation
@@ -33,6 +34,16 @@ from ..services.adaptive_electronic_service import (
 )
 from ..services.adaptive_parameters import ensure_default_parameters
 from ..services.adaptive_performance_service import performance_payload
+from ..services.gmail_messaging import gmail_notification_dispatcher
+from ..services.super_ai_daytrade_service import (
+    SYSTEM_NAME,
+    ensure_settings as ensure_super_ai_settings,
+    market_state,
+    notification_payload,
+    risk_status,
+    settings_payload,
+    update_settings as update_super_ai_settings,
+)
 
 
 router = APIRouter(prefix="/adaptive-electronic", tags=["adaptive-electronic"])
@@ -56,8 +67,33 @@ def _latest_trade_date(db: Session):
 
 
 @router.get("/status")
-def automation_status() -> dict:
-    return adaptive_electronic_automation.state
+def automation_status(db: Session = Depends(get_db)) -> dict:
+    settings = ensure_super_ai_settings(db)
+    regime = db.scalar(select(MarketRegime).where(MarketRegime.is_current.is_(True)).order_by(MarketRegime.trade_date.desc()).limit(1))
+    state = adaptive_electronic_automation.state
+    state.update({
+        "systemName": SYSTEM_NAME,
+        "settings": settings_payload(settings),
+        "marketState": market_state(regime.regime if regime else "UNCERTAIN"),
+        "risk": risk_status(db, settings, datetime.now(UTC)),
+    })
+    return state
+
+
+@router.get("/settings")
+def super_ai_settings(db: Session = Depends(get_db)) -> dict:
+    return settings_payload(ensure_super_ai_settings(db))
+
+
+@router.put("/settings")
+def update_super_ai_settings_endpoint(
+    values: dict,
+    user_id: str = Depends(_user_id),
+    db: Session = Depends(get_db),
+) -> dict:
+    row = update_super_ai_settings(db, values, user_id, datetime.now(UTC))
+    db.commit()
+    return settings_payload(row)
 
 
 @router.get("/market-regime")
@@ -227,6 +263,76 @@ def performance(
     db: Session = Depends(get_db),
 ) -> dict:
     return performance_payload(db, limit, month or None)
+
+
+@router.get("/notifications")
+def notifications(
+    source: str = Query(default="SUPER_AI_DAYTRADE", max_length=40),
+    category: str = Query(default="", max_length=40),
+    symbol: str = Query(default="", max_length=12),
+    unreadOnly: bool = False,
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> dict:
+    query = select(SuperAIDaytradeNotification).where(SuperAIDaytradeNotification.source == source)
+    if category:
+        query = query.where(SuperAIDaytradeNotification.category == category)
+    if symbol:
+        query = query.where(SuperAIDaytradeNotification.symbol == symbol)
+    if unreadOnly:
+        query = query.where(SuperAIDaytradeNotification.is_read.is_(False))
+    rows = list(db.scalars(query.order_by(SuperAIDaytradeNotification.created_at.desc()).limit(limit)).all())
+    return {"items": [notification_payload(row) for row in rows], "total": len(rows)}
+
+
+@router.post("/notifications/{notification_id}/mark-read")
+def mark_notification_read(notification_id: int, db: Session = Depends(get_db)) -> dict:
+    row = db.get(SuperAIDaytradeNotification, notification_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="notification not found")
+    row.is_read = True
+    row.read_at = datetime.now(UTC)
+    db.commit()
+    return {"status": "read", "id": notification_id}
+
+
+@router.post("/notifications/mark-all-read")
+def mark_all_notifications_read(db: Session = Depends(get_db)) -> dict:
+    rows = list(db.scalars(select(SuperAIDaytradeNotification).where(
+        SuperAIDaytradeNotification.source == "SUPER_AI_DAYTRADE",
+        SuperAIDaytradeNotification.is_read.is_(False),
+    )).all())
+    now = datetime.now(UTC)
+    for row in rows:
+        row.is_read = True
+        row.read_at = now
+    db.commit()
+    return {"updated": len(rows)}
+
+
+@router.delete("/notifications/{notification_id}", status_code=204)
+def delete_notification(notification_id: int, db: Session = Depends(get_db)) -> Response:
+    row = db.get(SuperAIDaytradeNotification, notification_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="notification not found")
+    db.delete(row)
+    db.commit()
+    return Response(status_code=204)
+
+
+@router.post("/email/test")
+async def test_super_ai_email() -> dict:
+    if not gmail_notification_dispatcher.configured:
+        raise HTTPException(status_code=409, detail="Gmail 尚未完成設定")
+    sent = await gmail_notification_dispatcher.dispatch(
+        event_type="super_ai_daytrade_test",
+        action="測試Email",
+        message=f"【{SYSTEM_NAME}｜Email測試】\n\n這是一封通知設定測試信，不是真實交易訊號。",
+        dedupe_key=f"super-ai-email-test:{datetime.now(UTC).timestamp()}",
+        symbol="SYSTEM",
+        channel_name=SYSTEM_NAME,
+    )
+    return {"sent": sent, "systemName": SYSTEM_NAME}
 
 
 @router.get("/parameters")

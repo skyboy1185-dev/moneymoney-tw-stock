@@ -1,59 +1,768 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { Activity, AlertTriangle, CircleDollarSign, Download, Eye, RefreshCw, ShieldAlert, TrendingUp, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Activity,
+  AlertTriangle,
+  BarChart3,
+  Bell,
+  Bot,
+  CheckCircle2,
+  CircleDollarSign,
+  Mail,
+  RefreshCw,
+  ShieldAlert,
+  TrendingDown,
+  TrendingUp,
+  X,
+} from "lucide-react";
 
-type Regime={regime:string;regimeLabel:string;confidence:number;activeStrategy:string;exposureMin:number;exposureMax:number;reasons:string[];missingFields:string[];updatedAt:string|null;lastSwitchedAt?:string|null;indicators?:Record<string,unknown>};
-type Candidate={rank:number;stockCode:string;stockName:string;marketType:string;subIndustry:string;strategyType:"CRASH"|"RECOVERY"|"RANGE"|"BREAKOUT";strategyName:string;totalScore:number;healthScore:number;previousHealthScore:number|null;currentPrice:number;entryPriceLow:number;entryPriceHigh:number;breakoutPrice:number;stopLossPrice:number;targetPrice1:number;targetPrice2:number;allocationPercent:number;relativeStrength:number;volumeStatus:string;foreignNetBuy:number|null;investmentTrustNetBuy:number|null;holder400Change:number|null;holder1000Change:number|null;retailHolderChange:number|null;marginChange:number|null;industryStrength:number;falseBreakoutRisk:number;status:string;statusLabel:string;scoreBreakdown:Record<string,unknown>;selectedReasons:string[];riskReasons:string[];missingData:string[];quoteSource:string;quoteTimestamp:string};
-type Industry={subIndustry:string;strengthScore:number;strengthRank:number;return1d:number|null;return5d:number|null;continuationDays:number};
-type ScannerStatus={status:string;lastRunAt:string|null;lastSuccessAt:string|null;lastError:string|null;nextScanSeconds:number};
-type Monitoring={stockCode:string;stockName:string;strategyType:string;addedDate:string;triggerPrice:number;stopLossPrice:number;targetPrice1:number;targetPrice2:number;allocationPercent:number;healthScore:number;monitorStatus:string;lastSignal:string|null;updatedAt:string};
-type PaperTrade={id:number;stockCode:string;stockName:string;strategyType:string;quantityShares:number;quantityLots:number;entryPrice:number;entryTime:string;entryReason:string;stopLossPrice:number;targetPrice1:number;targetPrice2:number;lastPrice:number;status:"open"|"closed";exitPrice:number|null;exitTime:string|null;exitReason:string|null;grossProfit:number;tradingCost:number;netProfit:number;returnPercentage:number;unrealizedProfit:number;updatedAt:string};
-type Performance={mode:"paper";period:string;assumption:string;summary:{totalTrades:number;closedTrades:number;openTrades:number;wins:number;losses:number;breakeven:number;winRate:number;grossProfit:number;tradingCost:number;netProfit:number;unrealizedProfit:number;averageProfit:number};openPositions:PaperTrade[];closedTrades:PaperTrade[]};
+type Settings = {
+  systemName: string;
+  enabled: boolean;
+  tradingMode: "PAPER" | "LIVE" | string;
+  maxCapital: number;
+  availableCapital: number;
+  riskPerTradePct: number;
+  dailyMaxLossPct: number;
+  weeklyDrawdownPct: number;
+  minAiScoreToTrade: number;
+  minAiScoreToWatch: number;
+  minRiskReward: number;
+  maxPositions: number;
+  maxPositionPct: number;
+  emailEnabled: boolean;
+  emailBuyEnabled: boolean;
+  emailSellEnabled: boolean;
+  emailAddEnabled: boolean;
+  emailStopLossEnabled: boolean;
+  emailTakeProfitEnabled: boolean;
+  emailRiskEnabled: boolean;
+  emailDailySummaryEnabled: boolean;
+  emailErrorEnabled: boolean;
+  stopNewTrades: boolean;
+  stopReason: string | null;
+  consecutiveStopLosses: number;
+  settingsVersion: number;
+  updatedAt: string;
+};
 
-async function request<T>(path:string, userId:string, init?:RequestInit){const response=await fetch(path,{...init,headers:{...(init?.headers??{}),"x-user-id":userId},cache:"no-store"});const body=await response.json().catch(()=>({}));if(!response.ok)throw new Error(body.error??"資料讀取失敗");return body as T;}
-const n=(value:number|null,digits=1)=>value==null?"—":value.toLocaleString("zh-TW",{maximumFractionDigits:digits});
-const money=(value:number)=>`${value>=0?"+":"−"}${Math.abs(value).toLocaleString("zh-TW",{maximumFractionDigits:0})} 元`;
-const csvCell=(value:unknown)=>`"${String(value??"").replaceAll('"','""')}"`;
+type MarketState = {
+  regime: string;
+  label: string;
+  longWeight: number;
+  shortWeight: number;
+};
 
-export function AdaptiveElectronicPage({userId,onSelectStock}:{userId:string;onSelectStock:(symbol:string)=>void}){
-  const [regime,setRegime]=useState<Regime|null>(null),[items,setItems]=useState<Candidate[]>([]),[monitoring,setMonitoring]=useState<Monitoring[]>([]),[industries,setIndustries]=useState<Industry[]>([]),[scanner,setScanner]=useState<ScannerStatus|null>(null),[performance,setPerformance]=useState<Performance|null>(null),[selected,setSelected]=useState<Candidate|null>(null),[loading,setLoading]=useState(true),[exporting,setExporting]=useState(false),[error,setError]=useState(""),[backtest,setBacktest]=useState<Record<string,unknown>|null>(null);
-  const load=useCallback(async()=>{if(!userId)return;setLoading(true);setError("");try{const [r,c,i,s,p,m]=await Promise.all([request<Regime>("/api/adaptive-electronic/market-regime",userId),request<{items:Candidate[]}>("/api/adaptive-electronic/candidates",userId),request<{items:Industry[]}>("/api/adaptive-electronic/industries",userId),request<ScannerStatus>("/api/adaptive-electronic/status",userId),request<Performance>("/api/adaptive-electronic/performance",userId),request<{items:Monitoring[]}>("/api/adaptive-electronic/monitoring",userId)]);setRegime(r);setItems(c.items);setIndustries(i.items);setScanner(s);setPerformance(p);setMonitoring(m.items);}catch(reason){setError(reason instanceof Error?reason.message:"載入失敗");}finally{setLoading(false);}},[userId]);
-  useEffect(()=>{void load();const timer=setInterval(()=>void load(),60_000);return()=>clearInterval(timer);},[load]);
-  const monitor=async(item:Candidate)=>{try{await request("/api/adaptive-electronic/monitor",userId,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({stock_code:item.stockCode})});alert(`${item.stockName} 已加入監控區`);}catch(reason){alert(reason instanceof Error?reason.message:"加入失敗");}};
-  const runBacktest=async(item:Candidate,years:number)=>{setBacktest({loading:true});try{setBacktest(await request<Record<string,unknown>>("/api/adaptive-electronic/backtest",userId,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({stockCode:item.stockCode,strategyType:item.strategyType,years})}));}catch(reason){setBacktest({error:reason instanceof Error?reason.message:"回測失敗"});}};
-  const exportMonthlyPerformance=async()=>{setExporting(true);try{const now=new Date(),month=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;const report=await request<Performance>(`/api/adaptive-electronic/performance?month=${month}&limit=500`,userId);const formatTime=(value:string|null)=>value?new Date(value).toLocaleString("zh-TW",{hour12:false}):"";const rows:unknown[][]=[
-    ["AI選股機器人本月模擬績效表"],["月份",month],["報表產生時間",formatTime(new Date().toISOString())],["計算說明",report.assumption],[],
-    ["完成交易",report.summary.closedTrades,"持有中",report.summary.openTrades,"獲利筆數",report.summary.wins,"虧損筆數",report.summary.losses,"勝率",`${report.summary.winRate}%`],
-    ["已實現淨損益",report.summary.netProfit,"未實現損益",report.summary.unrealizedProfit,"交易成本",report.summary.tradingCost,"平均每筆",report.summary.averageProfit],[],
-    ["狀態","股票代號","股票名稱","策略","張數","買進時間","買進價","賣出時間","賣出價／現價","毛損益","交易成本","淨損益／未實現","報酬率","買進原因","賣出原因"],
-    ...report.closedTrades.map((trade)=>["已賣出",trade.stockCode,trade.stockName,trade.strategyType,trade.quantityLots,formatTime(trade.entryTime),trade.entryPrice,formatTime(trade.exitTime),trade.exitPrice,trade.grossProfit,trade.tradingCost,trade.netProfit,`${trade.returnPercentage}%`,trade.entryReason,trade.exitReason]),
-    ...report.openPositions.map((trade)=>["持有中",trade.stockCode,trade.stockName,trade.strategyType,trade.quantityLots,formatTime(trade.entryTime),trade.entryPrice,"",trade.lastPrice,"","",trade.unrealizedProfit,"",trade.entryReason,"尚未賣出"]),
-  ];const csv="\ufeff"+rows.map((row)=>row.map(csvCell).join(",")).join("\r\n");const url=URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8"}));const anchor=document.createElement("a");anchor.href=url;anchor.download=`AI選股機器人_本月績效_${month}.csv`;anchor.click();URL.revokeObjectURL(url);}catch(reason){alert(reason instanceof Error?reason.message:"匯出失敗");}finally{setExporting(false);}};
-  const tone=regime?.regime.toLowerCase()??"uncertain";
-  return <section className="adaptive-page">
-    <div className="adaptive-heading"><div><span className="eyebrow">上市／上櫃全電子股＋低軌衛星＋玻纖布＋廠務工程</span><h1>AI選股機器人</h1><p>新進場訊號只在 09:00～13:20 有效；13:20 後選到的股票一律列為隔日觀察並重新確認。</p></div><button onClick={()=>void load()} disabled={loading}><RefreshCw size={16} className={loading?"spin":""}/>更新</button></div>
-    {error&&<div className="error-banner">{error}</div>}
-    <div className={`regime-hero ${tone}`}><div className="regime-light"/><div><small>當前市場狀態</small><strong>{regime?.regimeLabel??"等待首次掃描"}</strong><p>{regime?.reasons?.slice(0,3).join("；")??"正在等待官方資料"}</p></div><div className="regime-stat"><span>信心分數</span><b>{n(regime?.confidence??null,0)}</b></div><div className="regime-stat"><span>啟用策略</span><b>{regime?.activeStrategy??"—"}</b></div><div className="regime-stat"><span>建議總持股</span><b>{regime?`${regime.exposureMin}～${regime.exposureMax}%`:"—"}</b></div><div className="regime-stat"><span>最近切換</span><b>{regime?.lastSwitchedAt?new Date(regime.lastSwitchedAt).toLocaleString("zh-TW",{hour12:false}):"—"}</b></div></div>
-    {regime?.regime==="CRASH"&&<div className="crash-defense"><ShieldAlert/><div><strong>崩盤防守模式已啟用</strong><p>停止突破與一般低接，不發直接買進訊號，只保留抗跌電子股等待止跌。</p></div></div>}
-    <div className="adaptive-grid"><div className="adaptive-card"><h2><TrendingUp size={18}/>電子次產業強度</h2><div className="industry-ranks">{industries.slice(0,10).map((item)=><div key={item.subIndustry}><b>#{item.strengthRank}</b><span>{item.subIndustry}</span><i style={{width:`${item.strengthScore}%`}}/><strong>{n(item.strengthScore,0)}</strong><small>{n(item.return5d)}%</small></div>)}</div></div><div className="adaptive-card market-sources"><h2><Activity size={18}/>資料與風險狀態</h2><p>掃描器：{scanner?.status==="running"?`運行中・每 ${scanner.nextScanSeconds} 秒掃描`:scanner?.status??"讀取中"}</p><p>最後成功：{scanner?.lastSuccessAt?new Date(scanner.lastSuccessAt).toLocaleString("zh-TW",{hour12:false}):"尚未成功"}</p><p>市場更新：{regime?.updatedAt?new Date(regime.updatedAt).toLocaleString("zh-TW",{hour12:false}):"尚未更新"}</p><p>缺少欄位：{regime?.missingFields?.length?regime.missingFields.join("、"):"無"}</p><p className="notice"><AlertTriangle size={14}/>缺少的資料不會用假數字補齊，相關分數直接不加分。</p></div></div>
-    <section className="adaptive-performance-card">
-      <div className="adaptive-performance-title"><div><span className="eyebrow">AI PAPER PERFORMANCE</span><h2><CircleDollarSign size={19}/>模擬買賣與績效</h2><p>{performance?.assumption??"只有正式進場訊號才會建立模擬交易。"}</p></div><div className="adaptive-performance-actions"><strong>勝率 {n(performance?.summary.winRate??0,2)}%</strong><button onClick={()=>void exportMonthlyPerformance()} disabled={exporting}><Download size={14}/>{exporting?"匯出中":"匯出本月績效表"}</button></div></div>
-      <div className="adaptive-performance-summary">
-        <article><span>已完成交易</span><b>{performance?.summary.closedTrades??0} 筆</b><small>獲利 {performance?.summary.wins??0}／虧損 {performance?.summary.losses??0}</small></article>
-        <article><span>持有中</span><b>{performance?.summary.openTrades??0} 檔</b><small>尚未計入勝率</small></article>
-        <article className={(performance?.summary.netProfit??0)>=0?"profit":"loss"}><span>已實現總損益</span><b>{money(performance?.summary.netProfit??0)}</b><small>交易成本 {n(performance?.summary.tradingCost??0,0)} 元</small></article>
-        <article className={(performance?.summary.unrealizedProfit??0)>=0?"profit":"loss"}><span>未實現損益</span><b>{money(performance?.summary.unrealizedProfit??0)}</b><small>持有部位估算</small></article>
-        <article><span>平均每筆</span><b>{money(performance?.summary.averageProfit??0)}</b><small>只計已完成交易</small></article>
+type RiskState = {
+  todayPnl: number;
+  dailyMaxLoss: number;
+  openTrades: number;
+  stopNewTrades: boolean;
+  stopReason: string | null;
+  consecutiveStopLosses: number;
+};
+
+type Status = {
+  systemName: string;
+  status?: string;
+  running?: boolean;
+  lastRunAt?: string | null;
+  lastSuccessAt?: string | null;
+  lastError?: string | null;
+  settings: Settings;
+  marketState: MarketState;
+  risk: RiskState;
+};
+
+type Candidate = {
+  rank: number;
+  stockCode: string;
+  stockName: string;
+  subIndustry: string;
+  strategyType: string;
+  strategyName: string;
+  totalScore: number;
+  healthScore: number;
+  currentPrice: number;
+  entryPriceLow: number;
+  entryPriceHigh: number;
+  breakoutPrice: number;
+  stopLossPrice: number;
+  targetPrice1: number;
+  targetPrice2: number;
+  relativeStrength: number;
+  industryStrength: number;
+  falseBreakoutRisk: number;
+  status: string;
+  statusLabel: string;
+  selectedReasons: string[];
+  riskReasons: string[];
+  missingData: string[];
+  quoteSource: string;
+  quoteTimestamp: string;
+};
+
+type Industry = {
+  subIndustry: string;
+  strengthScore: number;
+  strengthRank: number;
+  return1d: number | null;
+  advanceRatio: number | null;
+  volumeGrowth: number | null;
+};
+
+type Trade = {
+  id: number;
+  stockCode: string;
+  stockName: string;
+  strategyType: string;
+  side: "LONG" | "SHORT" | string;
+  tradeMode: string;
+  quantityShares: number;
+  quantityLots: number;
+  entryPrice: number;
+  entryTime: string;
+  entryReasons: string[];
+  stopLossPrice: number;
+  targetPrice1: number;
+  targetPrice2: number;
+  lastPrice: number;
+  aiScore: number;
+  marketRegime: string;
+  sectorStatus: string | null;
+  riskAmount: number;
+  initialR: number;
+  realizedR: number;
+  status: string;
+  exitPrice: number | null;
+  exitTime: string | null;
+  exitReason: string | null;
+  exitReasons: string[];
+  grossProfit: number;
+  tradingCost: number;
+  netProfit: number;
+  returnPercentage: number;
+  unrealizedProfit: number;
+  updatedAt: string;
+};
+
+type Performance = {
+  systemName: string;
+  settings: Pick<Settings, "maxCapital" | "availableCapital" | "riskPerTradePct" | "dailyMaxLossPct" | "tradingMode">;
+  summary: {
+    totalTrades: number;
+    closedTrades: number;
+    openTrades: number;
+    wins: number;
+    losses: number;
+    breakeven: number;
+    winRate: number;
+    longWinRate: number;
+    shortWinRate: number;
+    grossProfit: number;
+    tradingCost: number;
+    netProfit: number;
+    unrealizedProfit: number;
+    averageProfit: number;
+    profitFactor: number;
+    averageR: number;
+  };
+  openPositions: Trade[];
+  closedTrades: Trade[];
+  strategyAnalytics: Array<{
+    strategy: string;
+    trades: number;
+    winRate: number;
+    averageR: number;
+    profitFactor: number;
+    recent30ProfitFactor: number;
+    weightStatus: "ACTIVE" | "REDUCED" | "PAUSED" | string;
+  }>;
+  timeBucketAnalytics: Array<{
+    bucket: string;
+    trades: number;
+    winRate: number;
+    averageR: number;
+    profitFactor: number;
+  }>;
+};
+
+type NotificationItem = {
+  id: number;
+  source: string;
+  category: string;
+  level: string;
+  symbol: string | null;
+  symbolName: string | null;
+  title: string;
+  message: string;
+  strategy: string | null;
+  side: string | null;
+  price: number | null;
+  quantity: number | null;
+  stopLoss: number | null;
+  takeProfit1: number | null;
+  takeProfit2: number | null;
+  aiScore: number | null;
+  riskReward: number | null;
+  emailSent: boolean;
+  read: boolean;
+  timestamp: string;
+};
+
+const SYSTEM_NAME = "超強AI當沖系統";
+const USER_WARNING =
+  "此為超強AI當沖系統的模擬交易與技術決策結果，不代表實際券商成交，也不保證獲利。AI訊號必須通過市場、流動性、資金、風險、R/R與重複訊號檢查後才允許交易；風控規則永遠高於AI判斷。";
+
+function money(value: number | null | undefined) {
+  const safe = Number(value ?? 0);
+  return `${safe < 0 ? "-" : ""}NT$${Math.abs(safe).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}`;
+}
+
+function price(value: number | null | undefined) {
+  return Number(value ?? 0).toLocaleString("zh-TW", { maximumFractionDigits: 2 });
+}
+
+function pct(value: number | null | undefined) {
+  const safe = Number(value ?? 0);
+  return `${safe > 0 ? "+" : ""}${safe.toFixed(2)}%`;
+}
+
+function dt(value: string | null | undefined) {
+  if (!value) return "尚無";
+  return new Date(value).toLocaleString("zh-TW", { hour12: false });
+}
+
+function pnlClass(value: number | null | undefined) {
+  const safe = Number(value ?? 0);
+  return safe > 0 ? "pattern-profit" : safe < 0 ? "pattern-loss" : "";
+}
+
+function sideLabel(side: string | null | undefined) {
+  return side === "SHORT" ? "🔴 放空" : side === "LONG" ? "🟢 做多" : "—";
+}
+
+function categoryIcon(category: string) {
+  if (category === "BUY") return "🟢";
+  if (category === "SHORT") return "🔴";
+  if (category === "ADD") return "🔵";
+  if (category === "REDUCE") return "🟠";
+  if (category === "TAKE_PROFIT") return "✅";
+  if (category === "STOP_LOSS") return "⛔";
+  if (category === "RISK") return "⚠️";
+  if (category === "ERROR") return "🚨";
+  return "🟡";
+}
+
+function strategyLabel(strategy: string) {
+  const map: Record<string, string> = {
+    BREAKOUT: "開盤強勢突破",
+    RECOVERY: "VWAP強勢回踩",
+    RANGE: "平台壓縮突破",
+    CRASH: "弱勢放空/跌破",
+    OPEN_STRENGTH_BREAKOUT: "開盤強勢突破",
+    VWAP_PULLBACK: "VWAP強勢回踩",
+    RANGE_BREAKDOWN: "平台跌破",
+    FAKE_BREAKOUT_REVERSAL: "假突破反轉",
+  };
+  return map[strategy] ?? strategy;
+}
+
+async function api<T>(path: string, userId: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`/api/adaptive-electronic${path}`, {
+    ...init,
+    headers: {
+      Accept: "application/json",
+      "x-user-id": userId,
+      ...(init?.headers ?? {}),
+    },
+    cache: "no-store",
+  });
+  const body = (await response.json().catch(() => ({}))) as { error?: string; detail?: string };
+  if (!response.ok) throw new Error(body.detail ?? body.error ?? `HTTP ${response.status}`);
+  return body as T;
+}
+
+function StatCard({ label, value, tone }: { label: string; value: string; tone?: string }) {
+  return (
+    <article>
+      <span>{label}</span>
+      <b className={tone}>{value}</b>
+    </article>
+  );
+}
+
+function DecisionReasonList({ reasons }: { reasons: string[] }) {
+  if (!reasons.length) return <small>尚無AI決策說明</small>;
+  return (
+    <ol className="pattern-reasons">
+      {reasons.slice(0, 7).map((reason) => (
+        <li key={reason}>{reason}</li>
+      ))}
+    </ol>
+  );
+}
+
+export function AdaptiveElectronicPage({
+  userId,
+  onSelectStock,
+}: {
+  userId: string;
+  onSelectStock: (symbol: string) => void;
+}) {
+  const [status, setStatus] = useState<Status | null>(null);
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [industries, setIndustries] = useState<Industry[]>([]);
+  const [performance, setPerformance] = useState<Performance | null>(null);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState("");
+  const [toast, setToast] = useState("");
+  const [minimumScore, setMinimumScore] = useState(70);
+  const [sideFilter, setSideFilter] = useState("");
+  const [query, setQuery] = useState("");
+  const [notificationSource, setNotificationSource] = useState("SUPER_AI_DAYTRADE");
+
+  const load = useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true);
+    try {
+      const currentStatus = await api<Status>("/status", userId);
+      const [candidatePayload, industryPayload, perfPayload, notificationPayload] = await Promise.all([
+        api<{ items: Candidate[] }>(`/candidates?minimumScore=${minimumScore}`, userId),
+        api<{ items: Industry[] }>("/industries", userId),
+        api<Performance>("/performance", userId),
+        api<{ items: NotificationItem[] }>(`/notifications?source=${notificationSource}&limit=120`, userId),
+      ]);
+      setStatus(currentStatus);
+      setSettings(currentStatus.settings);
+      setCandidates(candidatePayload.items ?? []);
+      setIndustries(industryPayload.items ?? []);
+      setPerformance(perfPayload);
+      setNotifications(notificationPayload.items ?? []);
+      setError("");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "載入失敗");
+    } finally {
+      setLoading(false);
+    }
+  }, [minimumScore, notificationSource, userId]);
+
+  useEffect(() => {
+    void load();
+    const timer = window.setInterval(() => void load(true), 15_000);
+    return () => window.clearInterval(timer);
+  }, [load]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(""), 4500);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  const saveSettings = async (patch?: Partial<Settings>) => {
+    const next = { ...(settings ?? status?.settings), ...(patch ?? {}) };
+    if (!next.systemName) return;
+    setWorking(true);
+    try {
+      const saved = await api<Settings>("/settings", userId, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(next),
+      });
+      setSettings(saved);
+      setStatus((old) => old ? { ...old, settings: saved } : old);
+      setToast("設定已保存到後端資料庫");
+      await load(true);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "設定保存失敗");
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const sendTestEmail = async () => {
+    setWorking(true);
+    try {
+      const result = await api<{ sent: boolean }>("/email/test", userId, { method: "POST" });
+      setToast(result.sent ? "測試 Email 已送出" : "Email 未送出，請檢查 Gmail 設定");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "測試 Email 失敗");
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const markAllRead = async () => {
+    setWorking(true);
+    try {
+      await api("/notifications/mark-all-read", userId, { method: "POST" });
+      await load(true);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "通知更新失敗");
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const visibleCandidates = useMemo(() => candidates.filter((item) => {
+    const textMatch = !query || `${item.stockCode}${item.stockName}${item.subIndustry}${item.strategyName}`.includes(query);
+    const side = status?.marketState.regime === "CRASH" ? "SHORT" : item.relativeStrength < -3 ? "SHORT" : "LONG";
+    const sideMatch = !sideFilter || sideFilter === side;
+    return textMatch && sideMatch;
+  }), [candidates, query, sideFilter, status?.marketState.regime]);
+
+  const usedCapital = (settings?.maxCapital ?? 0) - (settings?.availableCapital ?? 0);
+  const summary = performance?.summary;
+  const market = status?.marketState;
+  const risk = status?.risk;
+  const openPositions = performance?.openPositions ?? [];
+  const closedTrades = performance?.closedTrades ?? [];
+
+  if (loading && !status) {
+    return (
+      <div className="pattern-loading">
+        <span className="spinner" />
+        <p>載入超強AI當沖系統...</p>
       </div>
-      <div className="adaptive-trade-columns">
-        <div><h3>目前模擬持股</h3>{performance?.openPositions.length?<div className="adaptive-trade-table"><table><thead><tr><th>股票</th><th>買進</th><th>現價</th><th>未實現損益</th><th>時間</th></tr></thead><tbody>{performance.openPositions.map((trade)=><tr key={trade.id}><td><b>{trade.stockCode}</b><span>{trade.stockName}</span></td><td>{n(trade.entryPrice,2)}<span>{n(trade.quantityLots,2)} 張</span></td><td>{n(trade.lastPrice,2)}</td><td className={trade.unrealizedProfit>=0?"profit":"loss"}>{money(trade.unrealizedProfit)}</td><td>{new Date(trade.entryTime).toLocaleString("zh-TW",{hour12:false})}</td></tr>)}</tbody></table></div>:<p className="adaptive-trade-empty">尚無正式進場訊號，因此沒有模擬持股。</p>}</div>
-        <div><h3>已完成買賣紀錄</h3>{performance?.closedTrades.length?<div className="adaptive-trade-table"><table><thead><tr><th>股票</th><th>買進／賣出</th><th>淨損益</th><th>報酬率</th><th>賣出原因</th></tr></thead><tbody>{performance.closedTrades.map((trade)=><tr key={trade.id}><td><b>{trade.stockCode}</b><span>{trade.stockName}</span></td><td>{n(trade.entryPrice,2)} → {n(trade.exitPrice,2)}<span>{trade.exitTime?new Date(trade.exitTime).toLocaleString("zh-TW",{hour12:false}):"—"}</span></td><td className={trade.netProfit>=0?"profit":"loss"}>{money(trade.netProfit)}</td><td className={trade.returnPercentage>=0?"profit":"loss"}>{trade.returnPercentage>=0?"+":""}{n(trade.returnPercentage,2)}%</td><td>{trade.exitReason??"—"}</td></tr>)}</tbody></table></div>:<p className="adaptive-trade-empty">目前尚無完成的模擬交易；勝率會在第一筆賣出後開始計算。</p>}</div>
+    );
+  }
+
+  return (
+    <div className="pattern-page">
+      <header className="pattern-hero">
+        <div>
+          <small>SUPER AI DAYTRADE SYSTEM</small>
+          <h1><Bot />{SYSTEM_NAME}</h1>
+          <p>多空雙向、即時監控、風控優先、動態資金控管、模擬/實盤模式、Email與網頁通知分流。</p>
+        </div>
+        <div className="pattern-hero-actions">
+          <span className={`pattern-system-state ${settings?.enabled ? "on" : "off"}`}>
+            {settings?.enabled ? "系統啟用" : "系統停止"}
+          </span>
+          <button disabled={working || !settings} onClick={() => void saveSettings({ enabled: !settings?.enabled })}>
+            {settings?.enabled ? "停止" : "啟動"}
+          </button>
+          <button disabled={working} onClick={() => void load()}>
+            <RefreshCw className={working ? "spin-icon" : ""} />重新整理
+          </button>
+        </div>
+      </header>
+
+      <p className="pattern-risk-notice"><ShieldAlert />{USER_WARNING}</p>
+      {error && <div className="error-banner">{error}<button onClick={() => setError("")}><X /></button></div>}
+      {toast && <div className="pattern-toast">{toast}</div>}
+
+      <section className="pattern-stats">
+        <StatCard label="市場狀態" value={`${market?.label ?? "盤整"} (${market?.regime ?? "UNCERTAIN"})`} />
+        <StatCard label="多方權重" value={`${market?.longWeight ?? 50}%`} />
+        <StatCard label="空方權重" value={`${market?.shortWeight ?? 50}%`} />
+        <StatCard label="今日已使用資金" value={money(usedCapital)} />
+        <StatCard label="剩餘資金" value={money(settings?.availableCapital)} />
+        <StatCard label="今日損益" value={money(risk?.todayPnl)} tone={pnlClass(risk?.todayPnl)} />
+        <StatCard label="今日最大允許虧損" value={money(risk?.dailyMaxLoss)} />
+        <StatCard label="目前風險" value={risk?.stopNewTrades ? `停止新交易：${risk.stopReason ?? "風控觸發"}` : "可接受新訊號"} tone={risk?.stopNewTrades ? "pattern-loss" : "pattern-profit"} />
+      </section>
+
+      <section className="pattern-panel">
+        <div className="pattern-title">
+          <CircleDollarSign />
+          <div>
+            <h2>資金與風控設定</h2>
+            <p>資金上限不得超過500萬元；下單張數由可用資金、停損距離、單筆最大風險與R/R自動計算。</p>
+          </div>
+          <button disabled={working || !settings} onClick={() => void saveSettings()}>保存設定</button>
+        </div>
+        {settings && (
+          <div className="pattern-settings-grid">
+            <label>交易模式
+              <select value={settings.tradingMode} onChange={(e) => setSettings({ ...settings, tradingMode: e.target.value })}>
+                <option value="PAPER">模擬盤</option>
+                <option value="LIVE">實盤</option>
+              </select>
+            </label>
+            <label>最大操作資金
+              <input type="number" min="100000" max="5000000" step="100000" value={settings.maxCapital} onChange={(e) => setSettings({ ...settings, maxCapital: Number(e.target.value) })} />
+            </label>
+            <label>目前可用資金
+              <input type="number" min="0" max="5000000" step="10000" value={settings.availableCapital} onChange={(e) => setSettings({ ...settings, availableCapital: Number(e.target.value) })} />
+            </label>
+            <label>單筆最大風險 %
+              <input type="number" min="0.1" max="1" step="0.05" value={settings.riskPerTradePct} onChange={(e) => setSettings({ ...settings, riskPerTradePct: Number(e.target.value) })} />
+            </label>
+            <label>單日最大虧損 %
+              <input type="number" min="0.3" max="3" step="0.1" value={settings.dailyMaxLossPct} onChange={(e) => setSettings({ ...settings, dailyMaxLossPct: Number(e.target.value) })} />
+            </label>
+            <label>單週最大回撤 %
+              <input type="number" min="1" max="5" step="0.1" value={settings.weeklyDrawdownPct} onChange={(e) => setSettings({ ...settings, weeklyDrawdownPct: Number(e.target.value) })} />
+            </label>
+            <label>交易最低AI分數
+              <input type="number" min="70" max="100" value={settings.minAiScoreToTrade} onChange={(e) => setSettings({ ...settings, minAiScoreToTrade: Number(e.target.value) })} />
+            </label>
+            <label>觀察最低AI分數
+              <input type="number" min="0" max="100" value={settings.minAiScoreToWatch} onChange={(e) => setSettings({ ...settings, minAiScoreToWatch: Number(e.target.value) })} />
+            </label>
+            <label>最低R/R
+              <input type="number" min="1" max="5" step="0.1" value={settings.minRiskReward} onChange={(e) => setSettings({ ...settings, minRiskReward: Number(e.target.value) })} />
+            </label>
+            <label>最多持股
+              <input type="number" min="1" max="10" value={settings.maxPositions} onChange={(e) => setSettings({ ...settings, maxPositions: Number(e.target.value) })} />
+            </label>
+            <label>單檔資金上限 %
+              <input type="number" min="5" max="50" value={settings.maxPositionPct} onChange={(e) => setSettings({ ...settings, maxPositionPct: Number(e.target.value) })} />
+            </label>
+            <label className="check"><input type="checkbox" checked={settings.emailEnabled} onChange={(e) => setSettings({ ...settings, emailEnabled: e.target.checked })} />啟用Email通知</label>
+            <label className="check"><input type="checkbox" checked={settings.emailBuyEnabled} onChange={(e) => setSettings({ ...settings, emailBuyEnabled: e.target.checked })} />買進/放空通知</label>
+            <label className="check"><input type="checkbox" checked={settings.emailSellEnabled} onChange={(e) => setSettings({ ...settings, emailSellEnabled: e.target.checked })} />出場通知</label>
+            <label className="check"><input type="checkbox" checked={settings.emailStopLossEnabled} onChange={(e) => setSettings({ ...settings, emailStopLossEnabled: e.target.checked })} />停損通知</label>
+            <label className="check"><input type="checkbox" checked={settings.emailTakeProfitEnabled} onChange={(e) => setSettings({ ...settings, emailTakeProfitEnabled: e.target.checked })} />停利通知</label>
+            <label className="check"><input type="checkbox" checked={settings.emailRiskEnabled} onChange={(e) => setSettings({ ...settings, emailRiskEnabled: e.target.checked })} />風控通知</label>
+            <label className="check"><input type="checkbox" checked={settings.emailDailySummaryEnabled} onChange={(e) => setSettings({ ...settings, emailDailySummaryEnabled: e.target.checked })} />每日結算通知</label>
+            <label className="check"><input type="checkbox" checked={settings.emailErrorEnabled} onChange={(e) => setSettings({ ...settings, emailErrorEnabled: e.target.checked })} />異常通知</label>
+          </div>
+        )}
+        <div className="pattern-run-strip">
+          <span>交易模式 <b className={settings?.tradingMode === "LIVE" ? "pattern-loss" : ""}>{settings?.tradingMode === "LIVE" ? "實盤" : "模擬盤"}</b></span>
+          <span>單筆風險金額 <b>{money((settings?.maxCapital ?? 0) * (settings?.riskPerTradePct ?? 0) / 100)}</b></span>
+          <span>連續停損 <b>{risk?.consecutiveStopLosses ?? 0}/3</b></span>
+          <span>設定版本 <b>v{settings?.settingsVersion ?? 0}</b></span>
+          <span>最後成功執行 <b>{dt(status?.lastSuccessAt)}</b></span>
+          <button disabled={working} onClick={() => void sendTestEmail()}><Mail />發送測試Email</button>
+        </div>
+        {settings?.tradingMode === "LIVE" && (
+          <p className="pattern-risk-notice"><AlertTriangle />目前為實盤交易模式。此模式保存在後端，不會因重新整理自動切回模擬盤。</p>
+        )}
+      </section>
+
+      {summary && (
+        <section className="pattern-stats">
+          <StatCard label="累積損益" value={money(summary.netProfit)} tone={pnlClass(summary.netProfit)} />
+          <StatCard label="未實現損益" value={money(summary.unrealizedProfit)} tone={pnlClass(summary.unrealizedProfit)} />
+          <StatCard label="交易次數" value={`${summary.closedTrades} 已結 / ${summary.openTrades} 持倉`} />
+          <StatCard label="勝率" value={pct(summary.winRate)} />
+          <StatCard label="多單勝率" value={pct(summary.longWinRate)} />
+          <StatCard label="空單勝率" value={pct(summary.shortWinRate)} />
+          <StatCard label="Profit Factor" value={summary.profitFactor >= 900 ? "∞" : summary.profitFactor.toFixed(2)} />
+          <StatCard label="平均R" value={summary.averageR.toFixed(2)} tone={pnlClass(summary.averageR)} />
+        </section>
+      )}
+
+      <section className="pattern-panel">
+        <div className="pattern-title">
+          <Activity />
+          <div>
+            <h2>即時候選與AI交易評分</h2>
+            <p>70以下禁止交易，70-79觀察，80-89允許交易，90以上A+。進場前仍需通過風控與R/R。</p>
+          </div>
+          <div className="pattern-filters">
+            <input placeholder="股票/族群/策略" value={query} onChange={(e) => setQuery(e.target.value)} />
+            <select value={sideFilter} onChange={(e) => setSideFilter(e.target.value)}>
+              <option value="">多空全部</option>
+              <option value="LONG">做多</option>
+              <option value="SHORT">放空</option>
+            </select>
+            <select value={minimumScore} onChange={(e) => setMinimumScore(Number(e.target.value))}>
+              <option value={0}>全部</option>
+              <option value={70}>70分以上</option>
+              <option value={80}>80分以上</option>
+              <option value={90}>90分以上</option>
+            </select>
+          </div>
+        </div>
+        <div className="pattern-table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>股票</th>
+                <th>方向/策略</th>
+                <th>AI評分</th>
+                <th>價格/進場區</th>
+                <th>停損/目標</th>
+                <th>族群/量價</th>
+                <th>原因</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleCandidates.map((item) => {
+                const inferredSide = market?.regime === "CRASH" || item.relativeStrength < -3 ? "SHORT" : "LONG";
+                const aiScore = Math.min(100, item.totalScore * 0.6 + item.healthScore * 0.4 + (market?.regime === "BREAKOUT" || market?.regime === "RECOVERY" ? 10 : 4));
+                const risk = Math.max(0.01, Math.abs(item.currentPrice - item.stopLossPrice));
+                const reward = Math.max(0, Math.abs(item.targetPrice2 - item.currentPrice));
+                const rr = reward / risk;
+                return (
+                  <tr key={`${item.stockCode}-${item.strategyType}`}>
+                    <td><b>{item.stockCode}</b><small>{item.stockName}</small></td>
+                    <td><b>{sideLabel(inferredSide)}</b><small>{strategyLabel(item.strategyType)}</small></td>
+                    <td><strong>{aiScore.toFixed(0)}</strong><small>{item.statusLabel}</small></td>
+                    <td>{price(item.currentPrice)}<small>{price(item.entryPriceLow)} - {price(item.entryPriceHigh)}</small></td>
+                    <td><span className="pattern-loss">{price(item.stopLossPrice)}</span><small className="pattern-profit">TP1 {price(item.targetPrice1)} / TP2 {price(item.targetPrice2)}</small></td>
+                    <td>{item.subIndustry}<small>族群 {item.industryStrength.toFixed(0)}｜RS {item.relativeStrength.toFixed(1)}｜R/R {rr.toFixed(2)}</small></td>
+                    <td><DecisionReasonList reasons={[...item.selectedReasons, ...item.riskReasons]} /></td>
+                    <td><button onClick={() => onSelectStock(item.stockCode)}>查看個股</button></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {!visibleCandidates.length && <div className="pattern-empty">目前沒有符合篩選條件的候選訊號。</div>}
+        </div>
+      </section>
+
+      <div className="pattern-two-columns wide">
+        <section className="pattern-panel">
+          <div className="pattern-title"><TrendingUp /><div><h2>目前持倉</h2><p>虧損單禁止攤平；只有獲利部位才允許金字塔加碼。</p></div></div>
+          <div className="pattern-table-wrap">
+            <table>
+              <thead><tr><th>股票</th><th>方向/策略</th><th>成本/現價</th><th>股數</th><th>損益</th><th>R倍數</th><th>停損/停利</th><th>AI建議</th></tr></thead>
+              <tbody>
+                {openPositions.map((item) => (
+                  <tr key={item.id}>
+                    <td><b>{item.stockCode}</b><small>{item.stockName}</small></td>
+                    <td>{sideLabel(item.side)}<small>{strategyLabel(item.strategyType)}</small></td>
+                    <td>{price(item.entryPrice)}<small>{price(item.lastPrice)}</small></td>
+                    <td>{item.quantityShares.toLocaleString()}<small>{item.quantityLots.toFixed(2)} 張</small></td>
+                    <td className={pnlClass(item.unrealizedProfit)}>{money(item.unrealizedProfit)}</td>
+                    <td className={pnlClass(item.realizedR)}>{item.realizedR.toFixed(2)}R</td>
+                    <td><span className="pattern-loss">{price(item.stopLossPrice)}</span><small className="pattern-profit">{price(item.targetPrice1)} / {price(item.targetPrice2)}</small></td>
+                    <td>{item.unrealizedProfit > item.riskAmount ? "續抱/移動停損" : item.unrealizedProfit < 0 ? "嚴守停損，不攤平" : "等待突破確認"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {!openPositions.length && <div className="pattern-empty">目前沒有超強AI當沖系統持倉。</div>}
+          </div>
+        </section>
+
+        <section className="pattern-panel">
+          <div className="pattern-title"><TrendingDown /><div><h2>最近交易紀錄</h2><p>超強AI當沖系統獨立績效，不與其他機器人混算。</p></div></div>
+          <div className="pattern-table-wrap">
+            <table>
+              <thead><tr><th>股票</th><th>方向</th><th>進出場</th><th>損益</th><th>R</th><th>原因</th></tr></thead>
+              <tbody>
+                {closedTrades.slice(0, 30).map((item) => (
+                  <tr key={item.id}>
+                    <td><b>{item.stockCode}</b><small>{item.stockName}</small></td>
+                    <td>{sideLabel(item.side)}<small>{strategyLabel(item.strategyType)}</small></td>
+                    <td>{price(item.entryPrice)}<small>{item.exitPrice ? price(item.exitPrice) : "尚未出場"}</small></td>
+                    <td className={pnlClass(item.netProfit)}>{money(item.netProfit)}<small>{pct(item.returnPercentage)}</small></td>
+                    <td className={pnlClass(item.realizedR)}>{item.realizedR.toFixed(2)}R</td>
+                    <td>{item.exitReason ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {!closedTrades.length && <div className="pattern-empty">尚無已完成交易，因此勝率與Profit Factor仍為0。</div>}
+          </div>
+        </section>
       </div>
-      <footer><AlertTriangle size={14}/>這是依 AI 正式訊號建立的模擬績效，不代表使用者或券商帳戶實際買賣，也不保證未來獲利。</footer>
-    </section>
-    <div className="adaptive-table-card"><div className="table-title"><div><h2>跨日追蹤</h2><p>前一交易日選到的股票會保留在這裡，不會因今日重新排名而消失。</p></div><span>{monitoring.length} 檔</span></div>{!monitoring.length?<div className="adaptive-empty">目前沒有跨日追蹤股票</div>:<div className="adaptive-table-wrap"><table><thead><tr><th>股票</th><th>選入日期</th><th>策略</th><th>健康度</th><th>觸發價</th><th>停損</th><th>目標價</th><th>狀態</th></tr></thead><tbody>{monitoring.map((item)=><tr key={item.stockCode}><td><button className="stock-link" onClick={()=>onSelectStock(item.stockCode)}><b>{item.stockCode}</b><span>{item.stockName}</span></button></td><td>{item.addedDate}</td><td>{item.strategyType}</td><td>{n(item.healthScore,0)}</td><td>{n(item.triggerPrice,2)}</td><td>{n(item.stopLossPrice,2)}</td><td>{n(item.targetPrice1,2)}／{n(item.targetPrice2,2)}</td><td><span className="candidate-status waiting_confirmation">持續監控</span></td></tr>)}</tbody></table></div>}</div>
-    <div className="adaptive-table-card"><div className="table-title"><div><h2>電子與指定題材候選區</h2><p>最多列出 20 檔；沒有合格股票時不會為了湊滿 5 檔而降標準。</p></div><span>{items.length} 檔</span></div>{!loading&&!items.length?<div className="adaptive-empty">目前沒有符合進場標準的股票</div>:<div className="adaptive-table-wrap"><table><thead><tr><th>排名</th><th>股票</th><th>次產業／策略</th><th>分數／健康度</th><th>最新價格</th><th>進場區／突破價</th><th>停損／目標</th><th>資金</th><th>籌碼</th><th>狀態</th><th>操作</th></tr></thead><tbody>{items.map((item)=><tr key={item.stockCode}><td>#{item.rank}</td><td><button className="stock-link" onClick={()=>onSelectStock(item.stockCode)}><b>{item.stockCode}</b><span>{item.stockName}・{item.marketType}</span></button></td><td><b>{item.subIndustry}</b><span>{item.strategyName}</span></td><td><b>{n(item.totalScore,0)}</b><span>健康 {n(item.healthScore,0)} {item.previousHealthScore==null?"":item.healthScore>item.previousHealthScore?"↑":item.healthScore<item.previousHealthScore?"↓":"→"}</span></td><td>{n(item.currentPrice,2)}<span>{item.quoteSource}</span></td><td>{n(item.entryPriceLow,2)}～{n(item.entryPriceHigh,2)}<span>突破 {n(item.breakoutPrice,2)}</span></td><td>{n(item.stopLossPrice,2)}<span>目標 {n(item.targetPrice1,2)}／{n(item.targetPrice2,2)}</span></td><td>{n(item.allocationPercent)}%</td><td><span>外資 {n(item.foreignNetBuy,0)}</span><span>投信 {n(item.investmentTrustNetBuy,0)}</span><span>400張 {n(item.holder400Change,2)}</span><span>千張 {n(item.holder1000Change,2)}</span></td><td><span className={`candidate-status ${item.status}`}>{item.statusLabel}</span></td><td><div className="row-actions"><button onClick={()=>setSelected(item)}><Eye size={14}/>原因</button><button onClick={()=>void monitor(item)}>監控</button></div></td></tr>)}</tbody></table></div>}</div>
-    {selected&&<div className="adaptive-modal-backdrop" onClick={()=>setSelected(null)}><article className="adaptive-modal" onClick={(e)=>e.stopPropagation()}><button className="modal-close" onClick={()=>setSelected(null)}><X/></button><span className="eyebrow">{selected.stockCode} {selected.stockName}</span><h2>{selected.strategyName}・{selected.statusLabel}</h2><div className="reason-columns"><div><h3>入選與加分項目</h3>{selected.selectedReasons.map((x)=><p key={x}>✓ {x}</p>)}</div><div><h3>扣分與主要風險</h3>{selected.riskReasons.length?selected.riskReasons.map((x)=><p key={x}>⚠ {x}</p>):<p>目前沒有額外風險扣分</p>}<h3>資料限制</h3>{selected.missingData.map((x)=><p key={x}>— {x}</p>)}</div></div><pre>{JSON.stringify(selected.scoreBreakdown,null,2)}</pre><div className="row-actions"><button onClick={()=>void runBacktest(selected,1)}>回測 1 年</button><button onClick={()=>void runBacktest(selected,3)}>回測 3 年</button><button onClick={()=>void runBacktest(selected,5)}>回測 5 年</button></div>{backtest&&<pre>{JSON.stringify(backtest,null,2)}</pre>}<small>資料更新：{new Date(selected.quoteTimestamp).toLocaleString("zh-TW",{hour12:false})}</small></article></div>}
-  </section>;
+
+      <div className="pattern-two-columns">
+        <section className="pattern-panel">
+          <div className="pattern-title"><BarChart3 /><div><h2>策略績效自動分析</h2><p>最近30筆Profit Factor低於1會降權，低於0.8會暫停策略。</p></div></div>
+          <div className="pattern-table-wrap">
+            <table>
+              <thead><tr><th>策略</th><th>交易</th><th>勝率</th><th>平均R</th><th>PF</th><th>近30 PF</th><th>權重</th></tr></thead>
+              <tbody>
+                {(performance?.strategyAnalytics ?? []).map((item) => (
+                  <tr key={item.strategy}>
+                    <td>{strategyLabel(item.strategy)}</td>
+                    <td>{item.trades}</td>
+                    <td>{pct(item.winRate)}</td>
+                    <td className={pnlClass(item.averageR)}>{item.averageR.toFixed(2)}</td>
+                    <td>{item.profitFactor >= 900 ? "∞" : item.profitFactor.toFixed(2)}</td>
+                    <td>{item.recent30ProfitFactor >= 900 ? "∞" : item.recent30ProfitFactor.toFixed(2)}</td>
+                    <td>{item.weightStatus}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section className="pattern-panel">
+          <div className="pattern-title"><Activity /><div><h2>交易時間分析</h2><p>統計不同時段的勝率、Profit Factor與平均R。</p></div></div>
+          <div className="pattern-table-wrap">
+            <table>
+              <thead><tr><th>時段</th><th>交易</th><th>勝率</th><th>平均R</th><th>PF</th></tr></thead>
+              <tbody>
+                {(performance?.timeBucketAnalytics ?? []).map((item) => (
+                  <tr key={item.bucket}>
+                    <td>{item.bucket}</td>
+                    <td>{item.trades}</td>
+                    <td>{pct(item.winRate)}</td>
+                    <td className={pnlClass(item.averageR)}>{item.averageR.toFixed(2)}</td>
+                    <td>{item.profitFactor >= 900 ? "∞" : item.profitFactor.toFixed(2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <section className="pattern-panel">
+        <div className="pattern-title">
+          <Bell />
+          <div>
+            <h2>通知中心</h2>
+            <p>所有通知保存source，不靠文字判斷來源。超強AI當沖系統、當沖機器人、型態選股機器人、飆股雷達可分流。</p>
+          </div>
+          <div className="pattern-filters">
+            <select value={notificationSource} onChange={(e) => setNotificationSource(e.target.value)}>
+              <option value="SUPER_AI_DAYTRADE">超強AI當沖系統</option>
+              <option value="DAYTRADE_BOT">當沖機器人</option>
+              <option value="PATTERN_BOT">型態選股機器人</option>
+              <option value="MOMENTUM_RADAR">飆股雷達</option>
+              <option value="SYSTEM">系統通知</option>
+              <option value="MARKET">大盤通知</option>
+            </select>
+            <button disabled={working} onClick={() => void markAllRead()}><CheckCircle2 />全部已讀</button>
+          </div>
+        </div>
+        <div className="pattern-message-list">
+          {notifications.map((item) => (
+            <article key={item.id} className={`${item.read ? "" : "unread"} ${item.level}`}>
+              <time>{dt(item.timestamp)}</time>
+              <b>{categoryIcon(item.category)} 【{item.source === "SUPER_AI_DAYTRADE" ? SYSTEM_NAME : item.source}｜{item.category}】 {item.symbol} {item.symbolName}</b>
+              <p>{item.message}</p>
+              <small>
+                {item.strategy ? `策略：${strategyLabel(item.strategy)}｜` : ""}
+                {item.side ? `方向：${sideLabel(item.side)}｜` : ""}
+                {item.price ? `價格：${price(item.price)}｜` : ""}
+                {item.quantity ? `股數：${item.quantity.toLocaleString()}｜` : ""}
+                {item.aiScore ? `AI評分：${item.aiScore.toFixed(0)}｜` : ""}
+                {item.riskReward ? `R/R：1:${item.riskReward.toFixed(2)}｜` : ""}
+                Email：{item.emailSent ? "已送出" : "未送出"}
+              </small>
+            </article>
+          ))}
+          {!notifications.length && <div className="pattern-empty">目前沒有通知。</div>}
+        </div>
+      </section>
+
+      <section className="pattern-panel">
+        <div className="pattern-title"><BarChart3 /><div><h2>強弱族群</h2><p>用於多空權重與個股AI評分。</p></div></div>
+        <div className="pattern-table-wrap">
+          <table>
+            <thead><tr><th>排名</th><th>族群</th><th>強度</th><th>今日漲跌</th><th>上漲家數</th><th>量能</th></tr></thead>
+            <tbody>
+              {industries.slice(0, 20).map((item) => (
+                <tr key={item.subIndustry}>
+                  <td>{item.strengthRank}</td>
+                  <td>{item.subIndustry}</td>
+                  <td>{item.strengthScore.toFixed(1)}</td>
+                  <td className={pnlClass(item.return1d)}>{pct(item.return1d)}</td>
+                  <td>{pct(item.advanceRatio)}</td>
+                  <td>{pct(item.volumeGrowth)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  );
 }

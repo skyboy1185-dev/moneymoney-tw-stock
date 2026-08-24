@@ -132,16 +132,16 @@ async def ai_stock_line_webhook(
         text = str(message.get("text", "")).strip()
         reply_token = str(event.get("replyToken", ""))
         reply = ""
-        if text in {"綁定AI選股機器人", "綁定選股機器人"}:
+        if text in {"綁定超強AI當沖系統", "綁定選股機器人"}:
             _bind_group(db, str(group_id))
-            reply = "AI選股機器人已成功綁定此群組"
+            reply = "超強AI當沖系統已成功綁定此群組"
         elif text in {"解除AI選股通知", "解除選股通知"}:
             _unbind_group(db, str(group_id))
-            reply = "AI選股機器人已解除此群組的選股通知"
+            reply = "超強AI當沖系統已解除此群組的選股通知"
         elif text in {"測試AI選股通知", "測試選股通知"}:
             reply = (
                 "【測試訊息】\n"
-                "AI選股機器人 LINE 群組通知已連線成功。\n"
+                "超強AI當沖系統 LINE 群組通知已連線成功。\n"
                 "此訊息為測試通知，非交易訊號。"
             )
         if reply and reply_token:
@@ -216,8 +216,8 @@ async def test_ai_stock_gmail_notification() -> dict[str, Any]:
         event_type="ai_stock_test",
         action="AI選股 Gmail 測試通知",
         message=(
-            "【AI選股機器人｜Gmail 測試】\n\n"
-            "這是一封 AI 選股機器人測試信，不是真實選股訊號。\n\n"
+            "【超強AI當沖系統｜Gmail 測試】\n\n"
+            "這是一封 超強AI當沖系統測試信，不是真實選股訊號。\n\n"
             "測試標的：2330 台積電\n"
             "測試策略：預測即將翻紅\n"
             "測試狀態：等待確認\n\n"
@@ -250,7 +250,7 @@ async def test_ai_stock_line_notification(db: Session = Depends(get_db)) -> dict
         action="測試AI選股通知",
         message=(
             "【測試訊息】\n"
-            "AI選股機器人 LINE 群組通知已連線成功。\n"
+            "超強AI當沖系統 LINE 群組通知已連線成功。\n"
             "此訊息為測試通知，非交易訊號。"
         ),
         dedupe_key=f"manual-test:{uuid4()}",

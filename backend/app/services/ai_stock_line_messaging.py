@@ -14,7 +14,7 @@ from .gmail_messaging import gmail_notification_dispatcher
 from .line_messaging import LineMessagingClient, LineNotificationEvent
 
 
-AI_STOCK_OFFICIAL_ACCOUNT_NAME = "AI選股機器人"
+AI_STOCK_OFFICIAL_ACCOUNT_NAME = "超強AI當沖系統"
 logger = logging.getLogger(__name__)
 
 

@@ -80,7 +80,7 @@ def position_action_message(position: dict[str, Any], action: str, reasons: list
             f"剩餘部位停損：{_price(position['stopLoss'])}\n"
         )
     return (
-        f"【AI選股機器人｜{title}】\n\n"
+        f"【超強AI當沖系統｜{title}】\n\n"
         f"股票：{position['symbol']} {position['stockName']}\n"
         f"目前價格：{_price(position['currentPrice'])}\n"
         f"實際平均成本：{_price(position['averageCost'])}\n"
@@ -108,7 +108,7 @@ def add_on_message(position: dict[str, Any], add_on: dict[str, Any]) -> str:
         + Decimal(str(position["currentPrice"])) * quantity
     ) / max(1, total_quantity)
     return (
-        f"【AI選股機器人｜{stage}加碼確認】\n\n"
+        f"【超強AI當沖系統｜{stage}加碼確認】\n\n"
         f"股票：{position['symbol']} {position['stockName']}\n"
         f"目前價格：{_price(position['currentPrice'])}\n"
         f"原始進場價：{_price(position['entryPrice'])}\n"
@@ -136,7 +136,7 @@ def daily_position_summary_message(position: dict[str, Any]) -> str:
         - Decimal(str(position["currentAllocationPercentage"])),
     )
     return (
-        "【AI選股機器人｜每日持倉摘要】\n\n"
+        "【超強AI當沖系統｜每日持倉摘要】\n\n"
         f"股票：{position['symbol']} {position['stockName']}\n"
         f"實際平均成本：{_price(position['averageCost'])}\n"
         f"今日收盤：{_price(position['currentPrice'])}\n"
@@ -175,7 +175,7 @@ def friday_replay_messages(trade_date: date) -> list[tuple[str, str | None]]:
         },
     ]
     messages: list[tuple[str, str | None]] = [(
-        "【AI選股機器人｜展示模擬回放】\n\n"
+        "【超強AI當沖系統｜展示模擬回放】\n\n"
         f"回放日期：{trade_date.isoformat()}（星期五）\n"
         "大盤狀態：偏多（模擬）\n"
         "今日 AI 精選：2／5 檔\n"

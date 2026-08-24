@@ -104,6 +104,54 @@ def create_tables() -> None:
                 "ALTER TABLE day_trading_positions "
                 "ADD COLUMN IF NOT EXISTS strategy_confidence DOUBLE PRECISION NOT NULL DEFAULT 0"
             ))
+            connection.execute(text(
+                "ALTER TABLE adaptive_paper_trades "
+                "ADD COLUMN IF NOT EXISTS side VARCHAR(10) NOT NULL DEFAULT 'LONG'"
+            ))
+            connection.execute(text(
+                "ALTER TABLE adaptive_paper_trades "
+                "ADD COLUMN IF NOT EXISTS trade_mode VARCHAR(20) NOT NULL DEFAULT 'PAPER'"
+            ))
+            connection.execute(text(
+                "ALTER TABLE adaptive_paper_trades "
+                "ADD COLUMN IF NOT EXISTS ai_score NUMERIC(7,2) NOT NULL DEFAULT 0"
+            ))
+            connection.execute(text(
+                "ALTER TABLE adaptive_paper_trades "
+                "ADD COLUMN IF NOT EXISTS market_regime VARCHAR(20) NOT NULL DEFAULT 'UNCERTAIN'"
+            ))
+            connection.execute(text(
+                "ALTER TABLE adaptive_paper_trades "
+                "ADD COLUMN IF NOT EXISTS sector_status VARCHAR(80) NOT NULL DEFAULT ''"
+            ))
+            connection.execute(text(
+                "ALTER TABLE adaptive_paper_trades "
+                "ADD COLUMN IF NOT EXISTS initial_capital NUMERIC(20,2) NOT NULL DEFAULT 5000000"
+            ))
+            connection.execute(text(
+                "ALTER TABLE adaptive_paper_trades "
+                "ADD COLUMN IF NOT EXISTS risk_amount NUMERIC(20,2) NOT NULL DEFAULT 0"
+            ))
+            connection.execute(text(
+                "ALTER TABLE adaptive_paper_trades "
+                "ADD COLUMN IF NOT EXISTS initial_r NUMERIC(20,4) NOT NULL DEFAULT 0"
+            ))
+            connection.execute(text(
+                "ALTER TABLE adaptive_paper_trades "
+                "ADD COLUMN IF NOT EXISTS realized_r NUMERIC(12,4) NOT NULL DEFAULT 0"
+            ))
+            connection.execute(text(
+                "ALTER TABLE adaptive_paper_trades "
+                "ADD COLUMN IF NOT EXISTS entry_reasons_json TEXT NOT NULL DEFAULT '[]'"
+            ))
+            connection.execute(text(
+                "ALTER TABLE adaptive_paper_trades "
+                "ADD COLUMN IF NOT EXISTS exit_reasons_json TEXT NOT NULL DEFAULT '[]'"
+            ))
+            connection.execute(text(
+                "INSERT INTO super_ai_daytrade_settings (id, updated_at) "
+                "VALUES (1, CURRENT_TIMESTAMP) ON CONFLICT (id) DO NOTHING"
+            ))
     # Database synchronization can merge two independently created portfolio
     # batches. Quarantine overflow before enforcing one open row per symbol.
     from .services.long_term_selection import repair_long_term_position_overflow

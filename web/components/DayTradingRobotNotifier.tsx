@@ -217,7 +217,7 @@ export function DayTradingRobotNotifier({ onOpen }: { onOpen?: (target: RobotTar
               id: `adaptive-signal:${signal.id}`,
               kind: isEntry ? "buy" : "sell",
               target: "adaptive-electronic",
-              title: isEntry ? "AI 選股機器人｜模擬買進" : "AI 選股機器人｜模擬賣出",
+              title: isEntry ? "超強AI當沖系統｜模擬買進" : "超強AI當沖系統｜模擬賣出",
               stock: `${signal.stockCode ?? "—"} ${signal.stockName ?? ""}`.trim(),
               message: `${signal.action}・價格 ${price}`,
               reason: signal.reasons.slice(0, 2).join("；")

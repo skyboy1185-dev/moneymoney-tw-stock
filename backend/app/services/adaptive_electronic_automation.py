@@ -14,7 +14,7 @@ from sqlalchemy import select
 from ..adaptive_schemas import AdaptiveScanPayload
 from ..config import get_settings
 from ..database import BackgroundSessionLocal as SessionLocal
-from ..models import AdaptiveSignal, AdaptiveStockCandidate, MarketRegime
+from ..models import AdaptiveSignal, AdaptiveStockCandidate, MarketRegime, SuperAIDaytradeNotification
 from .adaptive_electronic_service import STRATEGY_NAMES, process_adaptive_scan
 from .adaptive_entry_window import adaptive_entry_window_open
 from .adaptive_parameters import load_parameters
@@ -24,6 +24,8 @@ from .line_messaging import (
     PERSONAL_STRATEGY_SIMULATION_NOTE,
     format_personal_strategy_simulation,
 )
+from .gmail_messaging import gmail_notification_dispatcher
+from .super_ai_daytrade_service import SYSTEM_NAME, TRADE_EMAIL_CATEGORIES
 
 
 logger = logging.getLogger(__name__)
@@ -148,6 +150,7 @@ class AdaptiveElectronicAutomation:
             self._last_close_scan_date = local_date
         if send_notifications:
             await self._send_pending_signals(result.get("signalIds", []))
+            await self._send_super_ai_emails()
         self._state.update({
             "status": "running",
             "lastSuccessAt": datetime.now(UTC).isoformat(),
@@ -155,6 +158,32 @@ class AdaptiveElectronicAutomation:
             "lastError": None,
         })
         return result
+
+    async def _send_super_ai_emails(self) -> None:
+        if not gmail_notification_dispatcher.configured:
+            return
+        with SessionLocal() as db:
+            rows = list(db.scalars(select(SuperAIDaytradeNotification).where(
+                SuperAIDaytradeNotification.source == "SUPER_AI_DAYTRADE",
+                SuperAIDaytradeNotification.email_sent.is_(False),
+                SuperAIDaytradeNotification.category.in_(TRADE_EMAIL_CATEGORIES),
+            ).order_by(SuperAIDaytradeNotification.created_at).limit(20)).all())
+        for row in rows:
+            sent = await gmail_notification_dispatcher.dispatch(
+                event_type=f"super_ai_daytrade_{row.category.lower()}",
+                action=row.category,
+                message=row.message,
+                dedupe_key=f"email:{row.dedupe_key}",
+                signal_id=row.dedupe_key,
+                symbol=row.symbol,
+                channel_name=SYSTEM_NAME,
+            )
+            if sent:
+                with SessionLocal() as db:
+                    stored = db.get(SuperAIDaytradeNotification, row.id)
+                    if stored:
+                        stored.email_sent = True
+                        db.commit()
 
     async def _send_pending_signals(self, signal_keys: list[str]) -> None:
         for signal_key in signal_keys:
@@ -177,7 +206,7 @@ class AdaptiveElectronicAutomation:
                     continue
                 if signal.signal_type == "exit_triggered" and signal.stock_code:
                     message = (
-                        "【AI選股機器人｜模擬賣出】\n\n"
+                        "【超強AI當沖系統｜模擬賣出】\n\n"
                         f"股票：{signal.stock_code} {signal.stock_name or ''}\n"
                         f"模擬賣出價：{float(signal.price or 0):,.2f} 元\n"
                         f"動作：{signal.action}\n\n"
@@ -199,7 +228,7 @@ class AdaptiveElectronicAutomation:
                 elif candidate:
                     if signal.signal_type == "next_day_watch":
                         message = (
-                            "【AI選股機器人｜隔日觀察】\n\n"
+                            "【超強AI當沖系統｜隔日觀察】\n\n"
                             f"股票：{candidate.stock_code} {candidate.stock_name}\n"
                             f"狀態：{signal.action}\n"
                             f"健康度：{float(candidate.health_score):.1f} 分\n\n"
@@ -208,7 +237,7 @@ class AdaptiveElectronicAutomation:
                         )
                     else:
                         message = (
-                            "【AI選股機器人｜候選監控】\n\n"
+                            "【超強AI當沖系統｜候選監控】\n\n"
                             f"股票：{candidate.stock_code} {candidate.stock_name}\n"
                             f"狀態：{signal.action}\n"
                             f"健康度：{float(candidate.health_score):.1f} 分\n\n"
@@ -217,7 +246,7 @@ class AdaptiveElectronicAutomation:
                     symbol = candidate.stock_code
                 else:
                     message = (
-                        "【AI選股機器人｜市場狀態切換】\n\n"
+                        "【超強AI當沖系統｜市場狀態切換】\n\n"
                         f"目前狀態：{STRATEGY_NAMES.get(signal.strategy_type or '', signal.strategy_type or 'UNCERTAIN')}\n"
                         "觸發原因：\n- " + "\n- ".join(reasons[:8])
                         + "\n\n若為崩盤防守模式，系統不會發出直接買進訊號。"

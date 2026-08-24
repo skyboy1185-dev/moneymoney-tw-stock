@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from sqlalchemy import BigInteger, Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, func
@@ -262,7 +262,7 @@ class LineNotificationSettings(Base):
     stop_loss_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     data_alert_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     closing_summary_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
 
 
 class LineDeliveryLog(Base):
@@ -286,7 +286,7 @@ class LineDeliveryLog(Base):
     response_status: Mapped[int | None] = mapped_column(Integer)
     error_message: Mapped[str | None] = mapped_column(String(500))
     message_preview: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
@@ -874,6 +874,73 @@ class AdaptiveSignal(Base):
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class SuperAIDaytradeSetting(Base):
+    __tablename__ = "super_ai_daytrade_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    system_name: Mapped[str] = mapped_column(String(80), nullable=False, default="超強AI當沖系統")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    trading_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="PAPER")
+    max_capital: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("5000000"))
+    available_capital: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("5000000"))
+    risk_per_trade_pct: Mapped[Decimal] = mapped_column(Numeric(7, 4), nullable=False, default=Decimal("0.25"))
+    daily_max_loss_pct: Mapped[Decimal] = mapped_column(Numeric(7, 4), nullable=False, default=Decimal("1.0"))
+    weekly_drawdown_pct: Mapped[Decimal] = mapped_column(Numeric(7, 4), nullable=False, default=Decimal("3.0"))
+    min_ai_score_to_trade: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=Decimal("80"))
+    min_ai_score_to_watch: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=Decimal("70"))
+    min_risk_reward: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=Decimal("2"))
+    max_positions: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    max_position_pct: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=Decimal("20"))
+    email_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    email_buy_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    email_sell_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    email_add_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    email_stop_loss_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    email_take_profit_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    email_risk_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    email_daily_summary_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    email_error_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    stop_new_trades: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    stop_reason: Mapped[str | None] = mapped_column(Text)
+    consecutive_stop_losses: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    settings_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_by: Mapped[str] = mapped_column(String(80), nullable=False, default="system")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class SuperAIDaytradeNotification(Base):
+    __tablename__ = "super_ai_daytrade_notifications"
+    __table_args__ = (
+        UniqueConstraint("source", "dedupe_key", name="uq_super_ai_daytrade_notification_dedupe"),
+        Index("ix_super_ai_daytrade_notifications_source_time", "source", "created_at"),
+        Index("ix_super_ai_daytrade_notifications_read", "is_read", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source: Mapped[str] = mapped_column(String(40), nullable=False)
+    category: Mapped[str] = mapped_column(String(40), nullable=False)
+    level: Mapped[str] = mapped_column(String(20), nullable=False)
+    symbol: Mapped[str | None] = mapped_column(String(12))
+    symbol_name: Mapped[str | None] = mapped_column(String(80))
+    title: Mapped[str] = mapped_column(String(180), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    strategy: Mapped[str | None] = mapped_column(String(40))
+    side: Mapped[str | None] = mapped_column(String(10))
+    price: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    quantity: Mapped[int | None] = mapped_column(Integer)
+    stop_loss: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    take_profit_1: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    take_profit_2: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    ai_score: Mapped[Decimal | None] = mapped_column(Numeric(7, 2))
+    risk_reward: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    dedupe_key: Mapped[str] = mapped_column(String(220), nullable=False)
+    email_sent: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    popup_shown: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class AdaptivePaperTrade(Base):
     __tablename__ = "adaptive_paper_trades"
     __table_args__ = (
@@ -888,6 +955,8 @@ class AdaptivePaperTrade(Base):
     strategy_type: Mapped[str] = mapped_column(String(20), nullable=False)
     entry_signal_key: Mapped[str] = mapped_column(String(180), nullable=False)
     exit_signal_key: Mapped[str | None] = mapped_column(String(180))
+    side: Mapped[str] = mapped_column(String(10), nullable=False, default="LONG")
+    trade_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="PAPER")
     quantity_shares: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
     entry_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
     entry_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -896,6 +965,15 @@ class AdaptivePaperTrade(Base):
     target_price_1: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
     target_price_2: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
     last_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    ai_score: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=Decimal("0"))
+    market_regime: Mapped[str] = mapped_column(String(20), nullable=False, default="UNCERTAIN")
+    sector_status: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    initial_capital: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("5000000"))
+    risk_amount: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("0"))
+    initial_r: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False, default=Decimal("0"))
+    realized_r: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False, default=Decimal("0"))
+    entry_reasons_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    exit_reasons_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
     exit_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
     exit_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

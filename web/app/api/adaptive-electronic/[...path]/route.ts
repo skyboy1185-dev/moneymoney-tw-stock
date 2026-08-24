@@ -15,6 +15,6 @@ async function proxy(request:NextRequest,context:{params:Promise<{path:string[]}
     const body=["GET","HEAD"].includes(request.method)?undefined:await request.text();
     const payload=await backendJson<unknown>(target,{method:request.method,headers,body});
     return NextResponse.json(payload);
-  }catch(error){const message=error instanceof BackendUnavailableError?"AI選股機器人後端暫時無法連線":error instanceof Error?error.message:"載入失敗";return NextResponse.json({error:message},{status:503});}
+  }catch(error){const message=error instanceof BackendUnavailableError?"??AI????????????":error instanceof Error?error.message:"????";return NextResponse.json({error:message},{status:503});}
 }
-export const GET=proxy;export const POST=proxy;export const DELETE=proxy;
+export const GET=proxy;export const POST=proxy;export const PUT=proxy;export const DELETE=proxy;

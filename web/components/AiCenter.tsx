@@ -99,7 +99,7 @@ export function AiCenter({ snapshot, loading, autoMode, onAutoModeChange, onSele
     <div className="ai-center">
       {actionMessage && <button className="portfolio-toast" onClick={() => setActionMessage("")}>{actionMessage}<X size={13} /></button>}
       <div className="ai-page-heading">
-        <div><p className="section-kicker">AI STOCK SELECTION BOT</p><h1><BrainCircuit size={25} />AI選股機器人</h1><p>掃描 AI 供應鏈、低軌衛星、玻纖布與廠務工程族群，再進行策略評分</p></div>
+        <div><p className="section-kicker">SUPER AI DAYTRADE SYSTEM</p><h1><BrainCircuit size={25} />超強AI當沖系統</h1><p>掃描 AI 供應鏈、低軌衛星、玻纖布與廠務工程族群，加入多空雙向、風控優先與績效追蹤。</p></div>
         <div className="ai-heading-actions"><span className="official-data-badge"><Database size={14} />個股行情：市場實際資料</span><label className="auto-toggle"><span><Bot size={16} />AI 自動模式</span><input type="checkbox" checked={autoMode} onChange={(event) => onAutoModeChange(event.target.checked)} /><i /></label></div>
       </div>
 

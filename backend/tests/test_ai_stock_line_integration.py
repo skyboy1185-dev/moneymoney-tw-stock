@@ -72,7 +72,7 @@ def test_ai_stock_line_webhook_binds_group_with_valid_signature(monkeypatch: Any
             "type": "message",
             "replyToken": "reply-token",
             "source": {"type": "group", "groupId": "C-ai-stock-group"},
-            "message": {"type": "text", "text": "綁定AI選股機器人"},
+            "message": {"type": "text", "text": "綁定超強AI當沖系統"},
         }],
     }
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")

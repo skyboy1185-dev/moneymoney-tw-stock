@@ -148,7 +148,7 @@ export default function Home() {
         <button className={tab === "screener" ? "active" : ""} onClick={() => setTab("screener")}><SlidersHorizontal size={17} />AI 選股</button>
         <button className={tab === "day-trading" ? "active ai-nav" : "ai-nav"} onClick={() => setTab("day-trading")}><Bot size={17} />當沖機器人<span>LIVE</span></button>
         <button className={tab === "pattern-robot" ? "active pattern-nav" : "pattern-nav"} onClick={() => setTab("pattern-robot")}><ScanSearch size={17} />型態選股機器人</button>
-        <button className={tab === "adaptive-electronic" ? "active" : ""} onClick={() => setTab("adaptive-electronic")}><TrendingUp size={17} />AI選股機器人</button>
+        <button className={tab === "adaptive-electronic" ? "active" : ""} onClick={() => setTab("adaptive-electronic")}><TrendingUp size={17} />超強AI當沖系統</button>
         <button className={tab === "rocket-radar" ? "active rocket-nav" : "rocket-nav"} onClick={() => setTab("rocket-radar")}><Rocket size={17} />飆股雷達{rocketUnread > 0 && <span className="rocket-unread-badge">{rocketUnread > 99 ? "99+" : rocketUnread}</span>}</button>
         <button className={tab === "long-term" ? "active" : ""} onClick={() => setTab("long-term")}><Telescope size={17} />長線選股</button>
         <button className={tab === "whale-accumulation" ? "active whale-nav" : "whale-nav"} onClick={() => setTab("whale-accumulation")}><Fish size={17} />大戶偷掃貨</button>
