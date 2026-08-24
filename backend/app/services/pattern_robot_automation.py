@@ -47,15 +47,30 @@ async def fetch_pattern_scan_payload() -> PatternScanPayload:
     headers = {"Accept": "application/json", "User-Agent": "TWSE-Pattern-Robot/1.0"}
     if settings.adaptive_electronic_scanner_token:
         headers["X-Adaptive-Scanner-Token"] = settings.adaptive_electronic_scanner_token
-    async with httpx.AsyncClient(
-        timeout=settings.pattern_robot_scanner_timeout_seconds, follow_redirects=True,
-    ) as client:
-        response = await client.get(_scanner_url(), headers=headers)
-        response.raise_for_status()
-        payload = response.json()
-        if isinstance(payload, dict) and payload.get("error"):
-            raise RuntimeError(f"型態掃描器：{payload['error']}")
-        return PatternScanPayload.model_validate(payload)
+    async with httpx.AsyncClient(timeout=settings.pattern_robot_scanner_timeout_seconds, follow_redirects=True) as client:
+        scanner_url = _scanner_url()
+
+        async def fetch_page(page: int) -> PatternScanPayload:
+            separator = "&" if "?" in scanner_url else "?"
+            response = await client.get(f"{scanner_url}{separator}page={page}&pageSize=80", headers=headers)
+            response.raise_for_status()
+            payload = response.json()
+            if isinstance(payload, dict) and payload.get("error"):
+                raise RuntimeError(f"型態掃描器：{payload['error']}")
+            return PatternScanPayload.model_validate(payload)
+
+        result = await fetch_page(1)
+        stocks = list(result.stocks)
+        for page in range(2, result.page_count + 1):
+            batch = await fetch_page(page)
+            if batch.trade_date != result.trade_date:
+                raise RuntimeError("型態掃描批次交易日不一致，取消寫入")
+            stocks.extend(batch.stocks)
+        if not stocks:
+            raise RuntimeError("沒有股票通過真實行情完整性與流動性門檻")
+        result.stocks = stocks
+        result.source_status["batches"] = f"{result.page_count} pages merged; {len(stocks)} eligible stocks"
+        return result
 
 
 class PatternRobotAutomation:

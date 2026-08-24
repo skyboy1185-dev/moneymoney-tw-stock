@@ -56,6 +56,8 @@ class PatternScanPayload(BaseModel):
     stocks: list[PatternStockInput]
     sources: list[str]
     source_status: dict[str, str] = {}
+    page: int = Field(default=1, ge=1)
+    page_count: int = Field(default=1, ge=1)
 
 
 class PatternSettingsUpdate(BaseModel):

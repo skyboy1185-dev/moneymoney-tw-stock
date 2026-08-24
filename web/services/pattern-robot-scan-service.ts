@@ -11,8 +11,9 @@ type YahooPayload = { chart?: { result?: Array<{ timestamp?: number[]; indicator
 } }> } };
 
 const CACHE_MS = 5 * 60_000;
-let scanCache: { expiresAt: number; value: unknown } | null = null;
-let scanInFlight: Promise<unknown> | null = null;
+let universeCache: { expiresAt: number; value: Awaited<ReturnType<typeof loadOfficialUniverse>> } | null = null;
+const scanCache = new Map<string, { expiresAt: number; value: unknown }>();
+const scanInFlight = new Map<string, Promise<unknown>>();
 let activeHistory = 0;
 const queue: Array<() => void> = [];
 const HISTORY_CONCURRENCY = 4;
@@ -46,7 +47,7 @@ async function json(url: string, timeout = 15_000): Promise<unknown> {
   return response.json();
 }
 
-async function officialUniverse() {
+async function loadOfficialUniverse() {
   const [listedCompanies, otcCompanies, listedQuotes, otcQuotes, fullListed, fullOtc, disposedListed, disposedOtc] = await Promise.all([
     json("https://openapi.twse.com.tw/v1/opendata/t187ap03_L").catch(() => []),
     json("https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O").catch(() => []),
@@ -86,6 +87,13 @@ async function officialUniverse() {
     !listedQuotes.length && "TWSE quotes", !otcQuotes.length && "TPEx quotes",
   ].filter((value): value is string => Boolean(value));
   return { companies, quoteMap, unavailable, fullDelivery: new Set([...codes(fullListed), ...codes(fullOtc)]), disposed: new Set([...codes(disposedListed), ...codes(disposedOtc)]) };
+}
+
+async function officialUniverse() {
+  if (universeCache && universeCache.expiresAt > Date.now()) return universeCache.value;
+  const value = await loadOfficialUniverse();
+  universeCache = { value, expiresAt: Date.now() + CACHE_MS };
+  return value;
 }
 
 function taipeiDate(timestamp: number) {
@@ -153,7 +161,7 @@ async function marketRegime() {
   } catch { return {regime:"neutral",score:50}; }
 }
 
-async function buildUncached() {
+async function buildUncached(page: number, pageSize: number) {
   const [{companies,quoteMap,unavailable,fullDelivery,disposed}, regime] = await Promise.all([officialUniverse(),marketRegime()]);
   const now=new Date();
   const taipeiParts=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Taipei",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false}).formatToParts(now);
@@ -162,7 +170,9 @@ async function buildUncached() {
   const currentTime=`${part("hour")}:${part("minute")}:${part("second")}`;
   const closeComplete=currentTime>="13:40:00";
   let validHistoryCount=0;
-  const candidates=await Promise.all(companies.map(async(company)=>{
+  const pageCount=Math.max(1,Math.ceil(companies.length/pageSize));
+  const pageCompanies=companies.slice((page-1)*pageSize,page*pageSize);
+  const candidates=await Promise.all(pageCompanies.map(async(company)=>{
     const quote=quoteMap.get(company.symbol);
     if(!quote?.price||!quote.volume)return null;
     let history:Awaited<ReturnType<typeof patternHistory>>;
@@ -189,16 +199,23 @@ async function buildUncached() {
     return !stock.is_disposed&&!stock.is_full_delivery&&stock.current_volume>0&&stock.average_turnover_20d>=30_000_000&&listingDays>=168&&stock.adjusted_prices.length>=180?stock:null;
   }));
   const stocks=candidates.filter((item):item is NonNullable<typeof item>=>Boolean(item));
-  if(!stocks.length)throw new Error("沒有股票通過真實行情完整性與流動性門檻，取消本次掃描");
-  const latestDate=stocks.map((item)=>item.actual_prices.at(-1)?.date??"").sort().at(-1)??today;
+  const latestDate=stocks.map((item)=>item.actual_prices.at(-1)?.date??"").sort().at(-1)
+    ?? [...quoteMap.values()].map((quote)=>quote.date).filter(Boolean).sort().at(-1) ?? today;
   const weekday=Number(new Intl.DateTimeFormat("en-US",{timeZone:"Asia/Taipei",weekday:"short"}).format(now)!=="Sun"&&new Intl.DateTimeFormat("en-US",{timeZone:"Asia/Taipei",weekday:"short"}).format(now)!=="Sat");
-  return {trade_date:latestDate,generated_at:now.toISOString(),is_trading_day:Boolean(weekday)&&latestDate===today,market_regime:regime.regime,market_score:regime.score,stocks,
+  return {trade_date:latestDate,generated_at:now.toISOString(),is_trading_day:Boolean(weekday)&&latestDate===today,market_regime:regime.regime,market_score:regime.score,stocks,page,page_count:pageCount,
     sources:["TWSE listed company/open data","TPEx listed company/open data","TWSE/TPEx daily quote","Yahoo Finance adjusted close","TWSE MIS/official close"],
     source_status:{universe:`${companies.length} listed/OTC ordinary shares`,history:`${validHistoryCount} stocks read with >=180 daily bars; ${stocks.length} passed eligibility`,adjustment:"adjusted close factor; official discontinuity fallback",degraded:unavailable.length?unavailable.join(", "):"none"}};
 }
 
-export async function buildPatternRobotScan() {
-  if(scanCache&&scanCache.expiresAt>Date.now())return scanCache.value;
-  if(!scanInFlight)scanInFlight=withScanLoadLock(buildUncached).then((value)=>{scanCache={value,expiresAt:Date.now()+CACHE_MS};return value;}).finally(()=>{scanInFlight=null;});
-  return scanInFlight;
+export async function buildPatternRobotScan(page = 1, pageSize = 60) {
+  const key=`${page}:${pageSize}`;
+  const cached=scanCache.get(key);
+  if(cached&&cached.expiresAt>Date.now())return cached.value;
+  const pending=scanInFlight.get(key);
+  if(pending)return pending;
+  const request=withScanLoadLock(()=>buildUncached(page,pageSize))
+    .then((value)=>{scanCache.set(key,{value,expiresAt:Date.now()+CACHE_MS});return value;})
+    .finally(()=>{scanInFlight.delete(key);});
+  scanInFlight.set(key,request);
+  return request;
 }

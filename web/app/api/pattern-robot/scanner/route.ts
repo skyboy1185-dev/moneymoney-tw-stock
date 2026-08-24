@@ -14,7 +14,9 @@ export async function GET(request: NextRequest) {
   const proxied = await proxyScannerRequest(request);
   if (proxied) return proxied;
   try {
-    return NextResponse.json(await buildPatternRobotScan());
+    const page = Math.max(1, Number(request.nextUrl.searchParams.get("page")) || 1);
+    const pageSize = Math.min(100, Math.max(20, Number(request.nextUrl.searchParams.get("pageSize")) || 60));
+    return NextResponse.json(await buildPatternRobotScan(page, pageSize));
   } catch (error) {
     console.error("pattern robot scan", error);
     return NextResponse.json({ error: "型態掃描行情來源暫時無法使用" }, { status: 503 });
