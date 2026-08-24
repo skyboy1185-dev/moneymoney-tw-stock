@@ -26,6 +26,11 @@ from .chip_flow_alerts import (
 from .chip_flow_repository import ChipFlowRepository
 from .day_trading_cache import day_trading_cache
 from .day_trading_restrictions import day_trading_restrictions
+from .day_trading_strategies import (
+    route_signals_to_active_robot,
+    strategy_context,
+    strategy_eligible_signals,
+)
 from .day_trading_schedule import (
     TradingScheduleConfig,
     stable_recommendation_selector,
@@ -330,6 +335,7 @@ class DayTradingAutomationSupervisor:
                 infrastructure_ok=database_ok and day_trading_cache.ready_for_formal_signals,
                 recovering=recovering,
             )
+            strategy = strategy_context(regime, session)
             trading_date = str(session["tradingDate"])
             if self._trading_date != trading_date:
                 self._trading_date = trading_date
@@ -347,6 +353,10 @@ class DayTradingAutomationSupervisor:
                     ),
                     now,
                 )
+                candidates = strategy_eligible_signals(route_signals_to_active_robot(
+                    candidates,
+                    strategy["activeRobot"],
+                ))
                 session = trading_session_state(
                     config,
                     now,
@@ -355,6 +365,7 @@ class DayTradingAutomationSupervisor:
                     infrastructure_ok=database_ok and day_trading_cache.ready_for_formal_signals,
                     recovering=False,
                 )
+                strategy = strategy_context(regime, session)
                 self._recommendations, _ranked_candidates = stable_recommendation_selector.select(
                     "system-automation",
                     candidates,
@@ -391,6 +402,7 @@ class DayTradingAutomationSupervisor:
                 "baselineQuoteRefreshSeconds": BASELINE_QUOTE_REFRESH_SECONDS,
                 "priorityQuoteRefreshSeconds": PRIORITY_QUOTE_REFRESH_SECONDS,
                 "disposalRestrictions": day_trading_restrictions.state,
+                "activeRobot": strategy["activeRobot"],
             }
             day_trading_cache.put("automation-supervisor", self._state, ttl=180)
             line_tasks: list[Any] = []

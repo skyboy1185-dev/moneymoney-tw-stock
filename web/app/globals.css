@@ -2274,6 +2274,33 @@ footer span { color: #566177; }
 .day-trading-regime { border-color: var(--line); }
 .day-trading-regime > div:nth-child(2) > small { color: var(--muted); }
 .day-trading-regime > div:nth-child(2) > small:last-child { display: block; margin-top: 8px; font-size: 10px; }
+.dt-robot-router { padding: 18px; display: grid; gap: 14px; background: linear-gradient(135deg, rgba(31,50,76,.92), rgba(14,24,40,.98)); border: 1px solid #395574; border-radius: 14px; }
+.dt-active-robot { display: grid; grid-template-columns: auto minmax(260px,1fr) auto minmax(190px,240px); align-items: center; gap: 14px; }
+.dt-robot-icon { width: 44px; height: 44px; display: grid; place-items: center; color: #8bd7ff; background: rgba(56,189,248,.12); border: 1px solid rgba(91,192,235,.35); border-radius: 12px; }
+.dt-robot-icon svg { width: 23px; height: 23px; }
+.dt-active-robot small, .dt-active-robot p, .dt-active-robot-rules span, .dt-robot-roster small { color: var(--muted); }
+.dt-active-robot h2 { margin: 3px 0 4px; font-size: 20px; }
+.dt-active-robot p { margin: 0; font-size: 12px; }
+.dt-robot-status { padding: 6px 10px; color: #73e0aa; background: rgba(35,196,131,.12); border: 1px solid rgba(35,196,131,.3); border-radius: 999px; font-size: 11px; white-space: nowrap; }
+.dt-robot-status.managing, .dt-robot-status.warming_up { color: #f2cc70; background: rgba(228,183,78,.1); border-color: rgba(228,183,78,.3); }
+.dt-robot-status.paused { color: #ff8c94; background: rgba(240,92,103,.1); border-color: rgba(240,92,103,.3); }
+.dt-robot-status.standby { color: #aab5c8; background: rgba(148,163,184,.1); border-color: rgba(148,163,184,.25); }
+.dt-robot-confidence { display: grid; gap: 5px; }
+.dt-robot-confidence > span { display: flex; align-items: center; gap: 5px; color: #a9b8ca; font-size: 11px; }
+.dt-robot-confidence strong { font-size: 22px; }
+.dt-robot-confidence strong small { font-size: 11px; font-weight: 600; }
+.dt-robot-confidence > i { height: 6px; overflow: hidden; background: #0a1422; border-radius: 999px; }
+.dt-robot-confidence > i b { height: 100%; display: block; background: linear-gradient(90deg,#4ea6dc,#6fe0ad); border-radius: inherit; }
+.dt-active-robot-rules { display: grid; grid-template-columns: .8fr 1.6fr 1fr; gap: 9px; }
+.dt-active-robot-rules > div { padding: 10px 12px; display: grid; gap: 4px; background: rgba(7,15,27,.52); border: 1px solid rgba(80,105,134,.3); border-radius: 8px; }
+.dt-active-robot-rules span { font-size: 10px; }
+.dt-active-robot-rules b { font-size: 11px; line-height: 1.55; }
+.dt-robot-roster { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 8px; }
+.dt-robot-roster article { padding: 10px; display: grid; gap: 4px; opacity: .62; background: rgba(8,17,29,.52); border: 1px solid rgba(67,86,110,.45); border-radius: 8px; }
+.dt-robot-roster article.selected { opacity: 1; background: rgba(45,126,167,.18); border-color: #4b9dc5; box-shadow: inset 0 0 0 1px rgba(79,174,216,.12); }
+.dt-robot-roster span { color: #68bfe7; font-size: 9px; }
+.dt-robot-roster b { font-size: 11px; }
+.dt-robot-roster small { font-size: 9px; line-height: 1.4; }
 .day-trading-adaptive .automation-banner { padding: 16px 18px; background: var(--surface); border-color: var(--line); border-radius: 14px; }
 .day-trading-adaptive .dt-system-strip { padding: 0; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; overflow: visible; background: transparent; border: 0; border-radius: 0; }
 .day-trading-adaptive .dt-system-strip > div { min-height: 72px; padding: 13px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
@@ -2304,9 +2331,16 @@ footer span { color: #566177; }
 .day-trading-detail-modal > .position-card { margin-top: 14px; box-shadow: none; }
 .day-trading-detail-modal > .position-card { grid-column: auto; }
 @media (max-width: 1100px) {
+  .dt-active-robot { grid-template-columns: auto 1fr auto; }
+  .dt-robot-confidence { grid-column: 2 / -1; }
+  .dt-robot-roster { grid-template-columns: repeat(3,minmax(0,1fr)); }
   .day-trading-adaptive .dt-system-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 @media (max-width: 680px) {
+  .dt-active-robot { grid-template-columns: auto 1fr; }
+  .dt-robot-status { grid-column: 2; justify-self: start; }
+  .dt-robot-confidence { grid-column: 1 / -1; }
+  .dt-active-robot-rules, .dt-robot-roster { grid-template-columns: 1fr; }
   .day-trading-heading-actions { margin-top: 12px; justify-items: start; }
   .day-trading-adaptive .dt-hero-status { justify-content: flex-start; }
   .day-trading-adaptive .dt-system-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }

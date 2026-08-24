@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Activity, BellRing, Eye, Radio, RefreshCw, ShieldAlert, X } from "lucide-react";
+import { Activity, BellRing, Bot, Eye, Gauge, Radio, RefreshCw, ShieldAlert, X } from "lucide-react";
 import { streamRetryDelay } from "@/lib/day-trading-engine";
 import type {
   DayTradingAlert, DayTradingPerformance, DayTradingPosition, DayTradingSignal,
@@ -311,6 +311,23 @@ export function DayTradingDashboard() {
       <div className="regime-stat"><span>推薦方向</span><b>{regime.preferredDirection}</b></div>
       <div className="regime-stat"><span>本小時精選</span><b>{signals.length} / {regime.maximumRecommendations} 檔</b></div>
       <div className="regime-stat"><span>機器人自動持倉</span><b>{performancePositions.length} 筆</b></div>
+    </section>
+
+    <section className={`dt-robot-router status-${regime.activeRobot.status}`}>
+      <div className="dt-active-robot">
+        <span className="dt-robot-icon"><Bot /></span>
+        <div><small>目前使用的盤勢機器人</small><h2>{regime.activeRobot.name}</h2><p>{regime.activeRobot.description}</p></div>
+        <span className={`dt-robot-status ${regime.activeRobot.status}`}>{regime.activeRobot.statusLabel}</span>
+        <div className="dt-robot-confidence"><span><Gauge size={15} />策略信心度</span><strong>{regime.activeRobot.confidence}<small> / 100・{regime.activeRobot.confidenceLabel}</small></strong><i><b style={{ width: `${regime.activeRobot.confidence ?? 0}%` }} /></i></div>
+      </div>
+      <div className="dt-active-robot-rules">
+        <div><span>使用盤勢</span><b>{regime.activeRobot.useWhen}</b></div>
+        <div><span>進場規則</span><b>{regime.activeRobot.entryRule}</b></div>
+        <div><span>禁止事項</span><b>{regime.activeRobot.avoidRule}</b></div>
+      </div>
+      <div className="dt-robot-roster" aria-label="盤勢策略機器人清單">
+        {regime.strategyRobots.map((robot) => <article className={robot.selected ? "selected" : ""} key={robot.id}><span>{robot.selected ? "目前啟用" : "自動切換"}</span><b>{robot.name}</b><small>{robot.useWhen}</small></article>)}
+      </div>
     </section>
 
     <div className="adaptive-grid dt-dashboard-grid day-trading-overview-grid single">

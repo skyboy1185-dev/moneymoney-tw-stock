@@ -38,6 +38,11 @@ from ..services.chip_flow_alerts import (
 from ..services.chip_flow_repository import ChipFlowRepository
 from ..services.day_trading_cache import day_trading_cache
 from ..services.day_trading_restrictions import day_trading_restrictions
+from ..services.day_trading_strategies import (
+    route_signals_to_active_robot,
+    strategy_context,
+    strategy_eligible_signals,
+)
 from ..services.day_trading_automation import day_trading_automation
 from ..services.automated_position_tracker import (
     AUTOMATION_PERFORMANCE_START,
@@ -342,6 +347,8 @@ def _selection(
         quote_samples=day_trading_engine.sample_count,
         infrastructure_ok=infrastructure_ok,
     )
+    strategy = strategy_context(regime, session)
+    regime = {**regime, **strategy}
     # When risk controls already block formal signals (for example a stale or
     # disconnected quote feed), candidate generation cannot affect the public
     # result. Avoid the expensive 276-symbol signal and chip-history scan so
@@ -360,6 +367,10 @@ def _selection(
             electronic_chip_flow_alert_monitor.rules,
             as_of=now or datetime.now(UTC),
         )
+        candidates = strategy_eligible_signals(route_signals_to_active_robot(
+            candidates,
+            strategy["activeRobot"],
+        ))
         open_ids = set(db.scalars(select(DayTradingPosition.signal_id).where(
             DayTradingPosition.user_id == user_id,
             DayTradingPosition.status == "open",

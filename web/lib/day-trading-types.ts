@@ -40,6 +40,8 @@ export interface MarketRegime {
   shortPermission: number;
   suitableStrategies: string[];
   forbiddenStrategies: string[];
+  activeRobot: DayTradingStrategyRobot;
+  strategyRobots: DayTradingStrategyRobot[];
   reasons: string[];
   dataStatus: string;
   dataDelaySeconds: number;
@@ -68,6 +70,23 @@ export interface MarketRegime {
   disclaimer?: string;
 }
 
+export interface DayTradingStrategyRobot {
+  id: string;
+  name: string;
+  direction: "long" | "short" | "both";
+  directionLabel?: string;
+  useWhen: string;
+  description: string;
+  entryRule: string;
+  avoidRule: string;
+  confidence?: number;
+  confidenceLabel?: string;
+  status?: "active" | "warming_up" | "managing" | "paused" | "standby";
+  statusLabel?: string;
+  reasons?: string[];
+  selected?: boolean;
+}
+
 export interface DayTradingSignal {
   id: string;
   rank: number;
@@ -87,6 +106,10 @@ export interface DayTradingSignal {
   target1: number;
   target2: number;
   confidenceScore: number;
+  strategyRobotId?: string;
+  strategyRobotName?: string;
+  strategyConfidence?: number;
+  strategyAligned?: boolean;
   healthScore: number;
   riskRewardRatio: number;
   vwapStatus: string;
