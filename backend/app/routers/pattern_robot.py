@@ -29,6 +29,16 @@ router = APIRouter(prefix="/pattern-robot", tags=["pattern-robot"])
 AI_RELATED_CODES = tuple(AI_RELATED_THEME_STOCKS_BY_SYMBOL)
 
 
+def _breakout_focus(trade_date: date):
+    return or_(
+        PatternDetection.pattern_status.in_(["NEAR_BREAKOUT", "INTRADAY_BREAKOUT"]),
+        and_(
+            PatternDetection.pattern_status == "CONFIRMED_BREAKOUT",
+            func.date(PatternDetection.confirmed_at) == trade_date,
+        ),
+    )
+
+
 def _user_id(x_user_id: str = Header(min_length=8, max_length=80)) -> str:
     return x_user_id
 
@@ -55,7 +65,7 @@ def status(db: Session = Depends(get_db)) -> dict:
         top = list(db.scalars(select(PatternDetection).where(
             PatternDetection.trade_date == latest.trade_date,
             PatternDetection.stock_code.in_(AI_RELATED_CODES),
-            PatternDetection.pattern_status.in_(BREAKOUT_RESULT_STATUSES),
+            _breakout_focus(latest.trade_date),
             PatternDetection.pattern_score >= settings.minimum_score,
         ).order_by(PatternDetection.pattern_score.desc()).limit(10)).all())
     return {
@@ -143,7 +153,11 @@ def detections(
     if status:
         clauses.append(PatternDetection.pattern_status == status)
     else:
-        clauses.append(PatternDetection.pattern_status.in_(BREAKOUT_RESULT_STATUSES))
+        focus_date = tradeDate or dateTo or latest_trade_date
+        if focus_date:
+            clauses.append(_breakout_focus(focus_date))
+        else:
+            clauses.append(PatternDetection.pattern_status.in_(BREAKOUT_RESULT_STATUSES))
     clauses.append(PatternDetection.pattern_score >= (minScore or ensure_pattern_settings(db).minimum_score))
     if action: clauses.append(PatternDetection.action == action)
     if notified is True: clauses.append(PatternDetection.notified_at.is_not(None))

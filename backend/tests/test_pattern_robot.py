@@ -19,7 +19,7 @@ from app.models import (
 )
 from app.pattern_schemas import PatternScanPayload, PatternStockInput
 from app.services.pattern_detection import (
-    Candle, PatternResult, Pivot, _detect_ascending_triangle, _detect_cup_handle,
+    Candle, PatternResult, Pivot, _breakout_confirmation_date, _detect_ascending_triangle, _detect_cup_handle,
     _detect_double_bottom, _detect_head_shoulders, _detect_rounded_bottom,
     _status, find_pivots, risk_sized_quantity,
 )
@@ -180,6 +180,11 @@ def test_pattern_status_state_machine(current, close_complete, previous, status)
     assert _status(rows, 100, 92, 1, close_complete=close_complete, previously_confirmed=previous) == status
 
 
+def test_breakout_confirmation_uses_actual_cross_date_instead_of_scan_date():
+    rows = candles([98, 99, 101, 103, 104])
+    assert _breakout_confirmation_date(rows, 100, 1) == rows[2].trade_date
+
+
 @pytest.mark.parametrize(
     "equity,cash,entry,stop,risk_pct,max_pct,expected",
     [(1_000_000,1_000_000,100,95,.5,20,1000),(1_000_000,50_000,100,95,.5,20,500),(1_000_000,1_000_000,100,100,.5,20,0),(0,1_000_000,100,95,.5,20,0)],
@@ -216,7 +221,7 @@ def scan_payload(mode: str = "PAPER_LIVE") -> PatternScanPayload:
 def bullish_result(action: str = "BUY") -> PatternResult:
     return PatternResult(
         pattern_type="DOUBLE_BOTTOM", pattern_status="CONFIRMED_BREAKOUT", score=90,
-        start_date=START, confirmed_at=datetime(2025,7,1,tzinfo=UTC), pivot_confirmed_date=START+timedelta(days=100),
+        start_date=START, confirmed_at=datetime.combine(START + timedelta(days=179), datetime.min.time(), UTC), pivot_confirmed_date=START+timedelta(days=100),
         neckline_price=108, breakout_price=108, current_price=110, target_price=130,
         invalidation_price=98, stop_loss_price=100, entry_price_low=108, entry_price_high=111,
         add_price=109, take_profit_1=120, take_profit_2=125, trailing_stop_price=102,

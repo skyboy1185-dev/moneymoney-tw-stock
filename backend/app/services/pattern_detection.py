@@ -163,6 +163,15 @@ def _status(
     return "NEAR_BREAKOUT" if distance <= 3 else "FORMING"
 
 
+def _breakout_confirmation_date(candles: list[Candle], neckline: float, atr: float) -> date:
+    """Return the latest actual cross above the threshold, not the later scan date."""
+    breakout_level = neckline + max(neckline * .005, atr * .25)
+    for index in range(len(candles) - 1, 0, -1):
+        if candles[index].close >= breakout_level and candles[index - 1].close < breakout_level:
+            return candles[index].trade_date
+    return candles[0].trade_date
+
+
 def _score_and_action(
     *, structure: float, symmetry: float, duration: float, volume_ratio: float,
     status: PatternStatus, market_regime: str, risk_reward: float, current: float,
@@ -250,7 +259,7 @@ def _finish(
     return PatternResult(
         pattern_type=pattern_type, pattern_status=status, score=score,
         start_date=points[0][1].trade_date,
-        confirmed_at=datetime.combine(candles[-1].trade_date, datetime.min.time()) if status == "CONFIRMED_BREAKOUT" else None,
+        confirmed_at=datetime.combine(_breakout_confirmation_date(candles, neckline, atr), datetime.min.time()) if status == "CONFIRMED_BREAKOUT" else None,
         pivot_confirmed_date=max(item.confirmed_date for _, item in points), neckline_price=round(neckline, 4),
         breakout_price=round(neckline, 4), current_price=round(current, 4), target_price=round(target, 4),
         invalidation_price=round(invalidation, 4), stop_loss_price=round(stop, 4),

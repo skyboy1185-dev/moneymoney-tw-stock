@@ -703,10 +703,14 @@ def process_pattern_scan(db: Session, payload: PatternScanPayload, *, force: boo
     record_daily_equity(db, settings, payload.trade_date, completed_at)
     run.status = "COMPLETED"
     run.scanned_count = eligible_count
-    alert_detections = [
-        item for item in detections
-        if item.pattern_status in BREAKOUT_RESULT_STATUSES and float(item.pattern_score) >= minimum_score
-    ]
+    alert_detections = [item for item in detections if (
+        item.pattern_status in {"NEAR_BREAKOUT", "INTRADAY_BREAKOUT"}
+        or (
+            item.pattern_status == "CONFIRMED_BREAKOUT"
+            and item.confirmed_at is not None
+            and item.confirmed_at.date() == payload.trade_date
+        )
+    ) and float(item.pattern_score) >= minimum_score]
     alert_status_counts = {
         status: len({item.stock_code for item in alert_detections if item.pattern_status == status})
         for status in BREAKOUT_RESULT_STATUSES
