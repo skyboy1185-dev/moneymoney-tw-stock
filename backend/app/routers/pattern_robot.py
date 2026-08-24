@@ -43,7 +43,7 @@ def _breakout_score_floor(db: Session, trade_date: date, requested: float = 0) -
     settings = ensure_pattern_settings(db)
     regime = db.scalar(select(PatternDetection.market_regime).where(
         PatternDetection.trade_date == trade_date,
-    ).limit(1))
+    ).order_by(PatternDetection.detected_at.desc()).limit(1))
     market_floor = 85 if regime == "strong_bear" else 80 if regime == "bear" else 0
     return max(float(settings.minimum_score), requested, market_floor)
 
@@ -77,6 +77,7 @@ def status(db: Session = Depends(get_db)) -> dict:
             PatternDetection.stock_code.in_(AI_RELATED_CODES),
             _breakout_focus(latest.trade_date),
             PatternDetection.pattern_score >= score_floor,
+            PatternDetection.detected_at >= latest.started_at,
         ).order_by(PatternDetection.pattern_score.desc()).limit(10)).all())
     return {
         **pattern_robot_automation.state, "enabled": settings.enabled,
@@ -152,9 +153,14 @@ def detections(
 ) -> dict:
     query = select(PatternDetection)
     clauses = [PatternDetection.stock_code.in_(AI_RELATED_CODES)]
+    latest_run = db.scalar(select(PatternRobotRun).order_by(PatternRobotRun.started_at.desc()).limit(1))
+    latest_trade_date = latest_run.trade_date if latest_run else None
     if not tradeDate and not dateFrom and not dateTo:
-        latest_trade_date = db.scalar(select(func.max(PatternRobotRun.trade_date)))
-        if latest_trade_date: clauses.append(PatternDetection.trade_date == latest_trade_date)
+        if latest_trade_date:
+            clauses.extend([
+                PatternDetection.trade_date == latest_trade_date,
+                PatternDetection.detected_at >= latest_run.started_at,
+            ])
     if tradeDate: clauses.append(PatternDetection.trade_date == tradeDate)
     if dateFrom: clauses.append(PatternDetection.trade_date >= dateFrom)
     if dateTo: clauses.append(PatternDetection.trade_date <= dateTo)
@@ -404,7 +410,8 @@ def trades(
 
 @router.get("/messages")
 def messages(unreadOnly: bool = False, page: int = 1, pageSize: int = 100, db: Session = Depends(get_db)) -> dict:
-    latest_trade_date = db.scalar(select(func.max(PatternRobotRun.trade_date)))
+    latest_run = db.scalar(select(PatternRobotRun).order_by(PatternRobotRun.started_at.desc()).limit(1))
+    latest_trade_date = latest_run.trade_date if latest_run else None
     query = select(PatternTradeMessage).outerjoin(
         PatternSignal, PatternTradeMessage.signal_id == PatternSignal.id,
     ).outerjoin(
@@ -422,6 +429,7 @@ def messages(unreadOnly: bool = False, page: int = 1, pageSize: int = 100, db: S
                     and_(
                         _breakout_focus(latest_trade_date),
                         PatternDetection.pattern_score >= score_floor,
+                        PatternDetection.detected_at >= latest_run.started_at,
                     ),
                 ),
             ),
