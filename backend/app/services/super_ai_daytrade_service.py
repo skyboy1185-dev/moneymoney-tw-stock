@@ -76,6 +76,8 @@ def settings_payload(row: SuperAIDaytradeSetting) -> dict[str, Any]:
         "minRiskReward": float(row.min_risk_reward),
         "maxPositions": row.max_positions,
         "maxPositionPct": float(row.max_position_pct),
+        "commissionDiscount": float(row.commission_discount),
+        "commissionDiscountLabel": f"{float(row.commission_discount) * 10:.1f}折",
         "emailEnabled": row.email_enabled,
         "emailBuyEnabled": row.email_buy_enabled,
         "emailSellEnabled": row.email_sell_enabled,
@@ -108,6 +110,7 @@ def update_settings(db: Session, values: dict[str, Any], user_id: str, at: datet
         "minRiskReward": "min_risk_reward",
         "maxPositions": "max_positions",
         "maxPositionPct": "max_position_pct",
+        "commissionDiscount": "commission_discount",
         "emailEnabled": "email_enabled",
         "emailBuyEnabled": "email_buy_enabled",
         "emailSellEnabled": "email_sell_enabled",
@@ -121,7 +124,7 @@ def update_settings(db: Session, values: dict[str, Any], user_id: str, at: datet
     decimal_fields = {
         "maxCapital", "availableCapital", "riskPerTradePct", "dailyMaxLossPct",
         "weeklyDrawdownPct", "minAiScoreToTrade", "minAiScoreToWatch",
-        "minRiskReward", "maxPositionPct",
+        "minRiskReward", "maxPositionPct", "commissionDiscount",
     }
     for source, target in mapping.items():
         if source not in values or values[source] is None:
@@ -129,6 +132,8 @@ def update_settings(db: Session, values: dict[str, Any], user_id: str, at: datet
         value = values[source]
         if source == "maxCapital":
             value = min(5_000_000, max(100_000, float(value)))
+        if source == "commissionDiscount":
+            value = min(1, max(0, float(value)))
         if source in decimal_fields:
             setattr(row, target, Decimal(str(value)))
         else:

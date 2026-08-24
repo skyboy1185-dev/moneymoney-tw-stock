@@ -149,6 +149,10 @@ def create_tables() -> None:
                 "ADD COLUMN IF NOT EXISTS exit_reasons_json TEXT NOT NULL DEFAULT '[]'"
             ))
             connection.execute(text(
+                "ALTER TABLE super_ai_daytrade_settings "
+                "ADD COLUMN IF NOT EXISTS commission_discount NUMERIC(7,4) NOT NULL DEFAULT 0.2"
+            ))
+            connection.execute(text(
                 "INSERT INTO super_ai_daytrade_settings (id, updated_at) "
                 "VALUES (1, CURRENT_TIMESTAMP) ON CONFLICT (id) DO NOTHING"
             ))

@@ -31,6 +31,8 @@ type Settings = {
   minRiskReward: number;
   maxPositions: number;
   maxPositionPct: number;
+  commissionDiscount: number;
+  commissionDiscountLabel: string;
   emailEnabled: boolean;
   emailBuyEnabled: boolean;
   emailSellEnabled: boolean;
@@ -149,7 +151,11 @@ type Trade = {
 
 type Performance = {
   systemName: string;
-  settings: Pick<Settings, "maxCapital" | "availableCapital" | "riskPerTradePct" | "dailyMaxLossPct" | "tradingMode">;
+  settings: Pick<Settings, "maxCapital" | "availableCapital" | "riskPerTradePct" | "dailyMaxLossPct" | "tradingMode" | "commissionDiscount" | "commissionDiscountLabel"> & {
+    commissionRate?: number;
+    taxRate?: number;
+    costFormula?: string;
+  };
   summary: {
     totalTrades: number;
     closedTrades: number;
@@ -513,6 +519,9 @@ export function AdaptiveElectronicPage({
             <label>單檔資金上限 %
               <input type="number" min="5" max="50" value={settings.maxPositionPct} onChange={(e) => setSettings({ ...settings, maxPositionPct: Number(e.target.value) })} />
             </label>
+            <label>退水折扣
+              <input type="number" min="0" max="1" step="0.05" value={settings.commissionDiscount} onChange={(e) => setSettings({ ...settings, commissionDiscount: Number(e.target.value) })} />
+            </label>
             <label className="check"><input type="checkbox" checked={settings.emailEnabled} onChange={(e) => setSettings({ ...settings, emailEnabled: e.target.checked })} />啟用Email通知</label>
             <label className="check"><input type="checkbox" checked={settings.emailBuyEnabled} onChange={(e) => setSettings({ ...settings, emailBuyEnabled: e.target.checked })} />買進/放空通知</label>
             <label className="check"><input type="checkbox" checked={settings.emailSellEnabled} onChange={(e) => setSettings({ ...settings, emailSellEnabled: e.target.checked })} />出場通知</label>
@@ -526,6 +535,7 @@ export function AdaptiveElectronicPage({
         <div className="pattern-run-strip">
           <span>交易模式 <b className={settings?.tradingMode === "LIVE" ? "pattern-loss" : ""}>{settings?.tradingMode === "LIVE" ? "實盤" : "模擬盤"}</b></span>
           <span>單筆風險金額 <b>{money((settings?.maxCapital ?? 0) * (settings?.riskPerTradePct ?? 0) / 100)}</b></span>
+          <span>退水計算 <b>{settings?.commissionDiscountLabel ?? `${((settings?.commissionDiscount ?? 0.2) * 10).toFixed(1)}折`}</b></span>
           <span>連續停損 <b>{risk?.consecutiveStopLosses ?? 0}/3</b></span>
           <span>設定版本 <b>v{settings?.settingsVersion ?? 0}</b></span>
           <span>最後成功執行 <b>{dt(status?.lastSuccessAt)}</b></span>
@@ -546,7 +556,16 @@ export function AdaptiveElectronicPage({
           <StatCard label="空單勝率" value={pct(summary.shortWinRate)} />
           <StatCard label="Profit Factor" value={summary.profitFactor >= 900 ? "∞" : summary.profitFactor.toFixed(2)} />
           <StatCard label="平均R" value={summary.averageR.toFixed(2)} tone={pnlClass(summary.averageR)} />
+          <StatCard label="退水折扣" value={performance.settings.commissionDiscountLabel ?? `${(performance.settings.commissionDiscount * 10).toFixed(1)}折`} />
+          <StatCard label="交易成本" value="手續費+證交稅" />
         </section>
+      )}
+
+      {performance?.settings.costFormula && (
+        <p className="pattern-risk-notice">
+          <CircleDollarSign />
+          交易成本公式：{performance.settings.costFormula}；目前退水折扣 {performance.settings.commissionDiscountLabel ?? `${(performance.settings.commissionDiscount * 10).toFixed(1)}折`}。
+        </p>
       )}
 
       <section className="pattern-panel">

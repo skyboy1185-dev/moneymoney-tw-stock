@@ -29,7 +29,7 @@ from .super_ai_daytrade_service import (
 
 AUTOMATION_USER_ID = "system-adaptive-electronic"
 COMMISSION_RATE = Decimal("0.001425")
-COMMISSION_DISCOUNT = Decimal("0.6")
+DEFAULT_COMMISSION_DISCOUNT = Decimal("0.2")
 SECURITIES_TAX_RATE = Decimal("0.003")
 MINIMUM_COMMISSION = Decimal("20")
 MONEY = Decimal("0.01")
@@ -53,12 +53,13 @@ def estimated_trade_result(
     exit_price: Decimal,
     quantity_shares: int,
     side: str = "LONG",
+    commission_discount: Decimal = DEFAULT_COMMISSION_DISCOUNT,
 ) -> dict[str, Decimal]:
     quantity = Decimal(quantity_shares)
     buy_amount = entry_price * quantity
     sell_amount = exit_price * quantity
-    buy_commission = max(MINIMUM_COMMISSION, buy_amount * COMMISSION_RATE * COMMISSION_DISCOUNT)
-    sell_commission = max(MINIMUM_COMMISSION, sell_amount * COMMISSION_RATE * COMMISSION_DISCOUNT)
+    buy_commission = max(MINIMUM_COMMISSION, buy_amount * COMMISSION_RATE * commission_discount)
+    sell_commission = max(MINIMUM_COMMISSION, sell_amount * COMMISSION_RATE * commission_discount)
     tax = sell_amount * SECURITIES_TAX_RATE
     gross = sell_amount - buy_amount if side != "SHORT" else buy_amount - sell_amount
     cost = buy_commission + sell_commission + tax
@@ -233,6 +234,7 @@ def _manage_open_trades(
 ) -> list[AdaptiveSignal]:
     stocks = {stock.stock_code: stock for stock in payload.stocks}
     emitted: list[AdaptiveSignal] = []
+    settings = ensure_super_ai_settings(db, payload.market.updated_at)
     open_trades = list(db.scalars(select(AdaptivePaperTrade).where(
         AdaptivePaperTrade.status == "open",
     )).all())
@@ -241,7 +243,13 @@ def _manage_open_trades(
         if stock is None or stock.price <= 0:
             continue
         price = Decimal(str(stock.price))
-        result = estimated_trade_result(trade.entry_price, price, trade.quantity_shares, trade.side)
+        result = estimated_trade_result(
+            trade.entry_price,
+            price,
+            trade.quantity_shares,
+            trade.side,
+            Decimal(settings.commission_discount),
+        )
         trade.last_price = price
         trade.unrealized_profit = result["netProfit"]
         trade.updated_at = payload.market.updated_at
@@ -488,6 +496,11 @@ def performance_payload(
             "riskPerTradePct": float(settings.risk_per_trade_pct),
             "dailyMaxLossPct": float(settings.daily_max_loss_pct),
             "tradingMode": settings.trading_mode,
+            "commissionRate": float(COMMISSION_RATE),
+            "commissionDiscount": float(settings.commission_discount),
+            "commissionDiscountLabel": f"{float(settings.commission_discount) * 10:.1f}折",
+            "taxRate": float(SECURITIES_TAX_RATE),
+            "costFormula": "手續費=max(20, 成交金額×0.1425%×退水折扣)；賣出另計證交稅=成交金額×0.3%",
         },
         "summary": {
             "totalTrades": len(closed) + len(open_trades),

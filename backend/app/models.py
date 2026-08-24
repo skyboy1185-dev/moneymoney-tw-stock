@@ -891,6 +891,7 @@ class SuperAIDaytradeSetting(Base):
     min_risk_reward: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=Decimal("2"))
     max_positions: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
     max_position_pct: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=Decimal("20"))
+    commission_discount: Mapped[Decimal] = mapped_column(Numeric(7, 4), nullable=False, default=Decimal("0.2"))
     email_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     email_buy_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     email_sell_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
