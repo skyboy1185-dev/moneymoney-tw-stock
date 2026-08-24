@@ -410,16 +410,16 @@ export async function getOfficialHistory(meta: StockMeta): Promise<DailyPrice[]>
   return request;
 }
 
-export async function getOfficialRecentHistory(meta: StockMeta): Promise<DailyPrice[]> {
+export async function getOfficialRecentHistory(meta: StockMeta, cacheResult = true): Promise<DailyPrice[]> {
   const full = historyCache.get(meta.symbol);
   if (full && full.expiresAt > Date.now()) return full.value;
-  const cached = scanHistoryCache.get(meta.symbol);
+  const cached = cacheResult ? scanHistoryCache.get(meta.symbol) : undefined;
   if (cached && cached.expiresAt > Date.now()) return cached.value;
   const pending = scanInFlight.get(meta.symbol);
   if (pending) return pending;
   const request = withScanHistoryConcurrency(() => loadRecentOfficialHistory(meta))
     .then((prices) => {
-      scanHistoryCache.set(meta.symbol, { value: prices, expiresAt: Date.now() + HISTORY_CACHE_MS });
+      if (cacheResult) scanHistoryCache.set(meta.symbol, { value: prices, expiresAt: Date.now() + HISTORY_CACHE_MS });
       return prices;
     })
     .finally(() => scanInFlight.delete(meta.symbol));

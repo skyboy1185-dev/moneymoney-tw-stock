@@ -11,12 +11,11 @@ type YahooPayload = { chart?: { result?: Array<{ timestamp?: number[]; indicator
 } }> } };
 
 const CACHE_MS = 5 * 60_000;
-const historyCache = new Map<string, { expiresAt: number; actual: Candle[]; adjusted: Candle[]; source: string }>();
 let scanCache: { expiresAt: number; value: unknown } | null = null;
 let scanInFlight: Promise<unknown> | null = null;
 let activeHistory = 0;
 const queue: Array<() => void> = [];
-const HISTORY_CONCURRENCY = 8;
+const HISTORY_CONCURRENCY = 4;
 
 function stringValue(row: Row, keys: string[]) {
   for (const key of keys) {
@@ -97,8 +96,6 @@ async function withConcurrency<T>(task: () => Promise<T>): Promise<T> {
 }
 
 async function patternHistory(company: Company) {
-  const cached = historyCache.get(company.symbol);
-  if (cached && cached.expiresAt > Date.now()) return cached;
   return withConcurrency(async () => {
     const suffix = company.market === "上市" ? "TW" : "TWO";
     try {
@@ -116,12 +113,10 @@ async function patternHistory(company: Company) {
         return { actual, adjusted:{ ...actual, open:open!*factor, high:high!*factor, low:low!*factor, close:close*factor } };
       }).filter((item): item is NonNullable<typeof item> => Boolean(item));
       if (rows.length < 180) throw new Error("有效日K不足180筆");
-      const value = { expiresAt:Date.now()+6*60*60_000, actual:rows.map((row)=>row.actual), adjusted:rows.map((row)=>row.adjusted), source:"Yahoo Finance adjusted-close corporate-action factors" };
-      historyCache.set(company.symbol, value);
-      return value;
+      return { actual:rows.map((row)=>row.actual), adjusted:rows.map((row)=>row.adjusted), source:"Yahoo Finance adjusted-close corporate-action factors" };
     } catch {
       const meta = { symbol:company.symbol, name:company.name, market:company.market, industry:company.sector, peRatio:null, dividendYield:null, priceToBook:null, eps:null, marketCap:null } satisfies StockMeta;
-      const rows = await getOfficialRecentHistory(meta);
+      const rows = await getOfficialRecentHistory(meta, false);
       if (rows.length < 180) throw new Error("官方日K不足180筆");
       const actual = rows.map((row) => ({ ...row, turnover:row.close*row.volume }));
       // Taiwan daily limits are ±10%; a >15% overnight discontinuity can safely
@@ -135,8 +130,7 @@ async function patternHistory(company: Company) {
         factors[index-1]=cumulative;
       }
       const adjusted=actual.map((row,index)=>({ ...row, open:row.open*factors[index], high:row.high*factors[index], low:row.low*factors[index], close:row.close*factors[index] }));
-      const value={ expiresAt:Date.now()+6*60*60_000, actual, adjusted, source:"TWSE/TPEx/FinMind history; discontinuity-adjusted fallback" };
-      historyCache.set(company.symbol,value); return value;
+      return { actual, adjusted, source:"TWSE/TPEx/FinMind history; discontinuity-adjusted fallback" };
     }
   });
 }
@@ -163,13 +157,12 @@ async function buildUncached() {
   const today=`${part("year")}-${part("month")}-${part("day")}`;
   const currentTime=`${part("hour")}:${part("minute")}:${part("second")}`;
   const closeComplete=currentTime>="13:40:00";
-  const histories=await Promise.all(companies.map(async(company)=>{
+  let validHistoryCount=0;
+  const candidates=await Promise.all(companies.map(async(company)=>{
     const quote=quoteMap.get(company.symbol);
     if(!quote?.price||!quote.volume)return null;
-    try{return {company,quote,history:await patternHistory(company)};}catch{return null;}
-  }));
-  const valid=histories.filter((item):item is NonNullable<typeof item>=>Boolean(item));
-  const stocks=valid.map(({company,quote,history})=>{
+    let history:Awaited<ReturnType<typeof patternHistory>>;
+    try{history=await patternHistory(company);validHistoryCount+=1;}catch{return null;}
     const actual=[...history.actual];
     const adjusted=[...history.adjusted];
     const latest=actual.at(-1);
@@ -183,21 +176,21 @@ async function buildUncached() {
     const current=actual.at(-1)!;
     const avgTurnover=actual.slice(-20).reduce((sum,row)=>sum+row.turnover,0)/Math.min(20,actual.length);
     const vwap=current.volume?current.turnover/current.volume:null;
-    return {stock_code:company.symbol,stock_name:company.name,market_type:company.market,sector_name:company.sector,listing_date:company.listingDate,
+    const stock={stock_code:company.symbol,stock_name:company.name,market_type:company.market,sector_name:company.sector,listing_date:company.listingDate,
       is_etf:false,is_etn:false,is_warrant:false,is_disposed:disposed.has(company.symbol),is_full_delivery:fullDelivery.has(company.symbol),
       current_price:current.close,current_volume:current.volume,current_turnover:current.turnover,vwap,
       quote_time:`${quote.date||today}T${currentTime}+08:00`,quote_realtime:quote.date===today&&!closeComplete,quote_source:quote.source,
       close_complete:quote.date<today||closeComplete,adjusted_prices:adjusted.slice(-200),actual_prices:actual.slice(-30),average_turnover_20d:avgTurnover,history_source:history.source};
-  }).filter((item)=>{
-    const listingDays=item.listing_date?Math.floor((Date.parse(today)-Date.parse(item.listing_date))/86_400_000):9999;
-    return !item.is_disposed&&!item.is_full_delivery&&item.current_volume>0&&item.average_turnover_20d>=30_000_000&&listingDays>=168&&item.adjusted_prices.length>=180;
-  });
+    const listingDays=stock.listing_date?Math.floor((Date.parse(today)-Date.parse(stock.listing_date))/86_400_000):9999;
+    return !stock.is_disposed&&!stock.is_full_delivery&&stock.current_volume>0&&stock.average_turnover_20d>=30_000_000&&listingDays>=168&&stock.adjusted_prices.length>=180?stock:null;
+  }));
+  const stocks=candidates.filter((item):item is NonNullable<typeof item>=>Boolean(item));
   if(!stocks.length)throw new Error("沒有股票通過真實行情完整性與流動性門檻，取消本次掃描");
   const latestDate=stocks.map((item)=>item.actual_prices.at(-1)?.date??"").sort().at(-1)??today;
   const weekday=Number(new Intl.DateTimeFormat("en-US",{timeZone:"Asia/Taipei",weekday:"short"}).format(now)!=="Sun"&&new Intl.DateTimeFormat("en-US",{timeZone:"Asia/Taipei",weekday:"short"}).format(now)!=="Sat");
   return {trade_date:latestDate,generated_at:now.toISOString(),is_trading_day:Boolean(weekday)&&latestDate===today,market_regime:regime.regime,market_score:regime.score,stocks,
     sources:["TWSE listed company/open data","TPEx listed company/open data","TWSE/TPEx daily quote","Yahoo Finance adjusted close","TWSE MIS/official close"],
-    source_status:{universe:`${companies.length} listed/OTC ordinary shares`,history:`${valid.length} stocks read with >=180 daily bars; ${stocks.length} passed eligibility`,adjustment:"adjusted close factor; official discontinuity fallback"}};
+    source_status:{universe:`${companies.length} listed/OTC ordinary shares`,history:`${validHistoryCount} stocks read with >=180 daily bars; ${stocks.length} passed eligibility`,adjustment:"adjusted close factor; official discontinuity fallback"}};
 }
 
 export async function buildPatternRobotScan() {
