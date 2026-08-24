@@ -431,6 +431,22 @@ def test_message_mark_read_and_snooze_use_database_state(client, db, monkeypatch
     assert read.status_code == 200 and read.json()["isRead"] is True
 
 
+def test_message_api_only_shows_current_ai_breakout_notifications(client, db, monkeypatch):
+    result = bullish_result("PREPARE")
+    result.pattern_status = "NEAR_BREAKOUT"
+    monkeypatch.setattr("app.services.pattern_robot_service.detect_patterns", lambda *args, **kwargs: [result])
+    process_pattern_scan(db, scan_payload())
+    db.add(PatternTradeMessage(
+        signal_id=None, message_type="WATCH", message_version=1, stock_code="2603",
+        stock_name="長榮", title="舊形成中提醒", message="不應顯示", reasons_json="[]",
+        created_at=datetime.now(UTC),
+    ))
+    db.commit()
+    listing = client.get("/api/v1/pattern-robot/messages?pageSize=100").json()["items"]
+    assert any(item["messageType"] == "PREPARE" and item["stockCode"] == "2330" for item in listing)
+    assert all(item["messageType"] != "WATCH" for item in listing)
+
+
 def test_equity_curve_and_pattern_performance_apis(client, db, monkeypatch):
     monkeypatch.setattr("app.services.pattern_robot_service.detect_patterns", lambda *args, **kwargs: [bullish_result()])
     process_pattern_scan(db, scan_payload())

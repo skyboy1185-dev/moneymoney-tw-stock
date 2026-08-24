@@ -378,7 +378,23 @@ def trades(
 
 @router.get("/messages")
 def messages(unreadOnly: bool = False, page: int = 1, pageSize: int = 100, db: Session = Depends(get_db)) -> dict:
-    query = select(PatternTradeMessage).where(PatternTradeMessage.message_type != "WATCH")
+    latest_trade_date = db.scalar(select(func.max(PatternRobotRun.trade_date)))
+    query = select(PatternTradeMessage).outerjoin(
+        PatternSignal, PatternTradeMessage.signal_id == PatternSignal.id,
+    ).where(PatternTradeMessage.message_type != "WATCH")
+    if latest_trade_date:
+        query = query.where(or_(
+            and_(
+                PatternTradeMessage.signal_id.is_not(None),
+                PatternSignal.trade_date == latest_trade_date,
+                PatternSignal.stock_code.in_(AI_RELATED_CODES),
+            ),
+            and_(
+                PatternTradeMessage.signal_id.is_(None),
+                PatternTradeMessage.message_type.in_(["SCAN_COMPLETED", "MANUAL"]),
+                func.date(PatternTradeMessage.created_at) == latest_trade_date.isoformat(),
+            ),
+        ))
     if unreadOnly: query = query.where(PatternTradeMessage.is_read.is_(False))
     rows = list(db.scalars(query.order_by(PatternTradeMessage.created_at.desc())).all())
     return _page(rows, page, pageSize, lambda item: {
