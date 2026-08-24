@@ -392,7 +392,7 @@ def messages(unreadOnly: bool = False, page: int = 1, pageSize: int = 100, db: S
             and_(
                 PatternTradeMessage.signal_id.is_(None),
                 PatternTradeMessage.message_type.in_(["SCAN_COMPLETED", "MANUAL"]),
-                func.date(PatternTradeMessage.created_at) == latest_trade_date.isoformat(),
+                func.date(PatternTradeMessage.created_at) == latest_trade_date,
             ),
         ))
     if unreadOnly: query = query.where(PatternTradeMessage.is_read.is_(False))
