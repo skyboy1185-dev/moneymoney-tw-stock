@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from decimal import Decimal
 import csv
 import io
@@ -685,18 +685,17 @@ def process_pattern_scan(db: Session, payload: PatternScanPayload, *, force: boo
                 signal = _record_signal(db, detection, "ADD", now)
                 if signal:
                     _buy_signal(db, settings, detection, signal, stock, now)
-    record_daily_equity(db, settings, payload.trade_date, now)
+    completed_at = datetime.now(UTC)
+    record_daily_equity(db, settings, payload.trade_date, completed_at)
     run.status = "COMPLETED"
     run.scanned_count = eligible_count
     run.matched_count = len({item.stock_code for item in detections if float(item.pattern_score) >= minimum_score})
     run.counts_json = _json({"patterns": counts, "statuses": status_counts})
     run.source_json = _json({"sources": payload.sources, "sourceStatus": payload.source_status})
-    run.completed_at = now
-    day_start = datetime.combine(payload.trade_date, datetime.min.time(), UTC)
+    run.completed_at = completed_at
     existing_scan_message = db.scalar(select(PatternTradeMessage.id).where(
         PatternTradeMessage.signal_id.is_(None), PatternTradeMessage.message_type == "SCAN_COMPLETED",
-        PatternTradeMessage.created_at >= day_start,
-        PatternTradeMessage.created_at < day_start + timedelta(days=1),
+        PatternTradeMessage.reasons_json.like(f'%"runId":{run.id}%'),
     ))
     if not existing_scan_message:
         matched = run.matched_count
@@ -708,7 +707,7 @@ def process_pattern_scan(db: Session, payload: PatternScanPayload, *, force: boo
                      f"{status_counts['NEAR_BREAKOUT']}檔接近突破、"
                      f"{status_counts['FORMING']}檔形成中。型態僅代表技術結構，仍需等待量價、買點及風險報酬確認。"),
             reasons_json=_json({"patterns": counts, "statuses": status_counts, "runId": run.id}),
-            created_at=now,
+            created_at=completed_at,
         ))
     db.commit()
     return {
