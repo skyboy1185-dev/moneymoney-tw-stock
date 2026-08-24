@@ -19,6 +19,7 @@ from ..models import (
 from .adaptive_entry_window import adaptive_entry_window_open
 from .super_ai_daytrade_service import (
     SYSTEM_NAME,
+    discount_label,
     ensure_settings as ensure_super_ai_settings,
     record_notification,
     strategy_analytics,
@@ -498,7 +499,7 @@ def performance_payload(
             "tradingMode": settings.trading_mode,
             "commissionRate": float(COMMISSION_RATE),
             "commissionDiscount": float(settings.commission_discount),
-            "commissionDiscountLabel": f"{float(settings.commission_discount) * 10:.1f}折",
+            "commissionDiscountLabel": discount_label(Decimal(settings.commission_discount)),
             "taxRate": float(SECURITIES_TAX_RATE),
             "costFormula": "手續費=max(20, 成交金額×0.1425%×退水折扣)；賣出另計證交稅=成交金額×0.3%",
         },

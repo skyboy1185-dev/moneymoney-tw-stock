@@ -52,6 +52,11 @@ def _loads(value: str, fallback: Any) -> Any:
         return fallback
 
 
+def discount_label(value: Decimal) -> str:
+    tenths = value * Decimal("10")
+    return f"{int(tenths)}折" if tenths == tenths.to_integral_value() else f"{float(tenths):.1f}折"
+
+
 def ensure_settings(db: Session, at: datetime | None = None) -> SuperAIDaytradeSetting:
     row = db.get(SuperAIDaytradeSetting, 1)
     if row is None:
@@ -77,7 +82,7 @@ def settings_payload(row: SuperAIDaytradeSetting) -> dict[str, Any]:
         "maxPositions": row.max_positions,
         "maxPositionPct": float(row.max_position_pct),
         "commissionDiscount": float(row.commission_discount),
-        "commissionDiscountLabel": f"{float(row.commission_discount) * 10:.1f}折",
+        "commissionDiscountLabel": discount_label(Decimal(row.commission_discount)),
         "emailEnabled": row.email_enabled,
         "emailBuyEnabled": row.email_buy_enabled,
         "emailSellEnabled": row.email_sell_enabled,
