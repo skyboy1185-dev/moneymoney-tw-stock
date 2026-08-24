@@ -18,6 +18,7 @@ from ..models import (
 )
 from ..pattern_schemas import PatternScanPayload, PatternStockInput
 from .pattern_detection import Candle, PatternResult, detect_patterns, risk_sized_quantity
+from .theme_stock_universe import is_ai_related_theme_symbol
 
 
 COMMISSION_RATE = .001425
@@ -592,8 +593,11 @@ def process_pattern_scan(db: Session, payload: PatternScanPayload, *, force: boo
     detections: list[PatternDetection] = []
     counts = {key: 0 for key in PATTERN_LABELS}
     status_counts = {key: 0 for key in ["FORMING", "NEAR_BREAKOUT", "INTRADAY_BREAKOUT", "CONFIRMED_BREAKOUT", "FAILED_BREAKOUT", "INVALIDATED"]}
-    stock_map = {stock.stock_code: stock for stock in payload.stocks}
-    for stock in payload.stocks:
+    stock_map = {
+        stock.stock_code: stock for stock in payload.stocks
+        if is_ai_related_theme_symbol(stock.stock_code)
+    }
+    for stock in stock_map.values():
         eligible, _ = _eligible(stock, payload.trade_date)
         if not eligible:
             continue
@@ -623,6 +627,11 @@ def process_pattern_scan(db: Session, payload: PatternScanPayload, *, force: boo
     for position in list(db.scalars(select(PatternPosition).where(
         PatternPosition.status == "OPEN", PatternPosition.performance_mode == settings.performance_mode,
     )).all()):
+        if not is_ai_related_theme_symbol(position.stock_code):
+            position.auto_trade_paused = True
+            scope_note = "策略母體已改為 AI 核心與延伸供應鏈；保留歷史部位，停止自動加碼。"
+            if scope_note not in position.note:
+                position.note = f"{position.note}\n{scope_note}".strip()
         stock = stock_map.get(position.stock_code)
         if stock:
             _manage_position(db, settings, position, stock, now)
@@ -693,22 +702,32 @@ def process_pattern_scan(db: Session, payload: PatternScanPayload, *, force: boo
     run.counts_json = _json({"patterns": counts, "statuses": status_counts})
     run.source_json = _json({"sources": payload.sources, "sourceStatus": payload.source_status})
     run.completed_at = completed_at
-    existing_scan_message = db.scalar(select(PatternTradeMessage.id).where(
+    scan_message = (f"本次 AI 核心與延伸供應鏈偵測到{run.matched_count}檔股票符合多方技術型態，其中"
+                    f"{status_counts['CONFIRMED_BREAKOUT']}檔有效突破、"
+                    f"{status_counts['NEAR_BREAKOUT']}檔接近突破、"
+                    f"{status_counts['FORMING']}檔形成中。型態僅代表技術結構，仍需等待量價、買點及風險報酬確認。")
+    scan_reasons = _json({"patterns": counts, "statuses": status_counts, "runId": run.id,
+                          "universeScope": "AI_CORE_AND_EXTENDED"})
+    existing_scan_message = db.scalar(select(PatternTradeMessage).where(
         PatternTradeMessage.signal_id.is_(None), PatternTradeMessage.message_type == "SCAN_COMPLETED",
         PatternTradeMessage.reasons_json.like(f'%"runId":{run.id}%'),
     ))
-    if not existing_scan_message:
-        matched = run.matched_count
+    if existing_scan_message is None:
         db.add(PatternTradeMessage(
             signal_id=None, message_type="SCAN_COMPLETED", message_version=1,
             title="型態選股機器人掃描完成",
-            message=(f"本次偵測到{matched}檔股票符合多方技術型態，其中"
-                     f"{status_counts['CONFIRMED_BREAKOUT']}檔有效突破、"
-                     f"{status_counts['NEAR_BREAKOUT']}檔接近突破、"
-                     f"{status_counts['FORMING']}檔形成中。型態僅代表技術結構，仍需等待量價、買點及風險報酬確認。"),
-            reasons_json=_json({"patterns": counts, "statuses": status_counts, "runId": run.id}),
+            message=scan_message, reasons_json=scan_reasons,
             created_at=completed_at,
         ))
+    else:
+        existing_scan_message.title = "型態選股機器人掃描完成"
+        existing_scan_message.message = scan_message
+        existing_scan_message.reasons_json = scan_reasons
+        existing_scan_message.created_at = completed_at
+        existing_scan_message.is_read = False
+        existing_scan_message.read_at = None
+        existing_scan_message.displayed_at = None
+        existing_scan_message.remind_after = None
     db.commit()
     return {
         "status": "completed", "runId": run.id, "tradeDate": payload.trade_date.isoformat(),

@@ -270,6 +270,16 @@ def test_non_trading_day_never_scans_even_when_force_requested(db):
     assert db.scalar(select(func.count(PatternRobotRun.id))) == 0
 
 
+def test_backend_rejects_non_ai_stocks_even_if_scanner_sends_them(db, monkeypatch):
+    payload = scan_payload()
+    payload.stocks[0].stock_code = "2603"
+    payload.stocks[0].stock_name = "長榮"
+    monkeypatch.setattr("app.services.pattern_robot_service.detect_patterns", lambda *args, **kwargs: [bullish_result()])
+    result = process_pattern_scan(db, payload)
+    assert result["scannedCount"] == 0
+    assert db.scalar(select(func.count(PatternDetection.id))) == 0
+
+
 def test_manual_sell_cannot_exceed_holdings(db, monkeypatch):
     monkeypatch.setattr("app.services.pattern_robot_service.detect_patterns", lambda *args, **kwargs: [bullish_result()])
     process_pattern_scan(db, scan_payload())
@@ -291,6 +301,9 @@ def test_scan_completed_message_is_not_duplicated(db, monkeypatch):
     process_pattern_scan(db, scan_payload())
     process_pattern_scan(db, scan_payload(), force=True)
     assert db.scalar(select(func.count(PatternTradeMessage.id)).where(PatternTradeMessage.message_type == "SCAN_COMPLETED")) == 1
+    message = db.scalar(select(PatternTradeMessage).where(PatternTradeMessage.message_type == "SCAN_COMPLETED"))
+    assert "AI 核心與延伸供應鏈" in message.message
+    assert message.is_read is False
 
 
 def test_database_uniqueness_rejects_duplicate_signal_version(db, monkeypatch):
@@ -324,12 +337,25 @@ AUTH = {"x-user-id": "test-user-0001"}
 def test_status_and_settings_api_restore_database_configuration(client):
     response = client.get("/api/v1/pattern-robot/status")
     assert response.status_code == 200
+    assert response.json()["universeScope"] == "AI_CORE_AND_EXTENDED"
+    assert response.json()["universeSize"] > 100
     assert response.json()["settings"]["robotMode"] == "SWING"
     changed = client.put("/api/v1/pattern-robot/settings", headers=AUTH, json={"robotMode":"DAY_TRADE","riskPerTradePct":.8})
     assert changed.status_code == 200
     restored = client.get("/api/v1/pattern-robot/settings").json()
     assert restored["robotMode"] == "DAY_TRADE"
     assert restored["riskPerTradePct"] == .8
+
+
+def test_pattern_universe_contains_ai_extensions_and_excludes_unrelated_stocks(client):
+    response = client.get("/api/v1/pattern-robot/universe")
+    assert response.status_code == 200
+    payload = response.json()
+    symbols = {item["stockCode"] for item in payload["items"]}
+    assert payload["scope"] == "AI_CORE_AND_EXTENDED"
+    assert payload["count"] == len(symbols)
+    assert {"2330", "3363", "2449", "2308"} <= symbols
+    assert {"2603", "2723"}.isdisjoint(symbols)
 
 
 def test_mutating_settings_api_requires_user_identity(client):

@@ -1,10 +1,17 @@
 import type { Market, StockMeta } from "@/lib/types";
+import { backendJson } from "@/services/backend-client";
 import { getOfficialRecentHistory } from "@/services/market-data/official-history-provider";
 import { withScanLoadLock } from "@/services/scan-load-coordinator";
+import { THEME_STOCKS } from "@/services/theme-stock-universe";
 
 type Row = Record<string, unknown>;
 type Company = { symbol: string; name: string; market: Market; sector: string; listingDate: string | null };
 type Candle = { date: string; open: number; high: number; low: number; close: number; volume: number; turnover: number };
+type PatternUniversePayload = {
+  scope: "AI_CORE_AND_EXTENDED";
+  count: number;
+  items: Array<{ stockCode: string; stockName: string; market: string; industry: string; themes: string[] }>;
+};
 type YahooPayload = { chart?: { result?: Array<{ timestamp?: number[]; indicators?: {
   quote?: Array<{ open?: (number|null)[]; high?: (number|null)[]; low?: (number|null)[]; close?: (number|null)[]; volume?: (number|null)[] }>;
   adjclose?: Array<{ adjclose?: (number|null)[] }>;
@@ -12,6 +19,7 @@ type YahooPayload = { chart?: { result?: Array<{ timestamp?: number[]; indicator
 
 const CACHE_MS = 5 * 60_000;
 let universeCache: { expiresAt: number; value: Awaited<ReturnType<typeof loadOfficialUniverse>> } | null = null;
+let aiUniverseCache: { expiresAt: number; value: PatternUniversePayload } | null = null;
 const scanCache = new Map<string, { expiresAt: number; value: unknown }>();
 const scanInFlight = new Map<string, Promise<unknown>>();
 let activeHistory = 0;
@@ -96,6 +104,27 @@ async function officialUniverse() {
   return value;
 }
 
+async function aiPatternUniverse() {
+  if (aiUniverseCache && aiUniverseCache.expiresAt > Date.now()) return aiUniverseCache.value;
+  let value: PatternUniversePayload;
+  try {
+    value = await backendJson<PatternUniversePayload>("/pattern-robot/universe", undefined, 10_000);
+    if (value.scope !== "AI_CORE_AND_EXTENDED" || !value.items.length) throw new Error("AI universe is empty");
+  } catch {
+    // A backend outage must never widen the scan to the full market.
+    value = {
+      scope: "AI_CORE_AND_EXTENDED",
+      count: Object.keys(THEME_STOCKS).length,
+      items: Object.keys(THEME_STOCKS).map((stockCode) => ({
+        stockCode, stockName: "", market: "", industry: "",
+        themes: [...THEME_STOCKS[stockCode as keyof typeof THEME_STOCKS]],
+      })),
+    };
+  }
+  aiUniverseCache = { value, expiresAt: Date.now() + CACHE_MS };
+  return value;
+}
+
 function taipeiDate(timestamp: number) {
   return new Intl.DateTimeFormat("en-CA", { timeZone:"Asia/Taipei", year:"numeric", month:"2-digit", day:"2-digit" }).format(new Date(timestamp * 1000));
 }
@@ -162,7 +191,11 @@ async function marketRegime() {
 }
 
 async function buildUncached(page: number, pageSize: number) {
-  const [{companies,quoteMap,unavailable,fullDelivery,disposed}, regime] = await Promise.all([officialUniverse(),marketRegime()]);
+  const [{companies,quoteMap,unavailable,fullDelivery,disposed}, regime, aiUniverse] = await Promise.all([
+    officialUniverse(), marketRegime(), aiPatternUniverse(),
+  ]);
+  const aiCodes = new Set(aiUniverse.items.map((item) => item.stockCode));
+  const scopedCompanies = companies.filter((company) => aiCodes.has(company.symbol));
   const now=new Date();
   const taipeiParts=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Taipei",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false}).formatToParts(now);
   const part=(type:string)=>taipeiParts.find((item)=>item.type===type)?.value??"";
@@ -170,8 +203,8 @@ async function buildUncached(page: number, pageSize: number) {
   const currentTime=`${part("hour")}:${part("minute")}:${part("second")}`;
   const closeComplete=currentTime>="13:40:00";
   let validHistoryCount=0;
-  const pageCount=Math.max(1,Math.ceil(companies.length/pageSize));
-  const pageCompanies=companies.slice((page-1)*pageSize,page*pageSize);
+  const pageCount=Math.max(1,Math.ceil(scopedCompanies.length/pageSize));
+  const pageCompanies=scopedCompanies.slice((page-1)*pageSize,page*pageSize);
   const candidates=await Promise.all(pageCompanies.map(async(company)=>{
     const quote=quoteMap.get(company.symbol);
     if(!quote?.price||!quote.volume)return null;
@@ -204,7 +237,7 @@ async function buildUncached(page: number, pageSize: number) {
   const weekday=Number(new Intl.DateTimeFormat("en-US",{timeZone:"Asia/Taipei",weekday:"short"}).format(now)!=="Sun"&&new Intl.DateTimeFormat("en-US",{timeZone:"Asia/Taipei",weekday:"short"}).format(now)!=="Sat");
   return {trade_date:latestDate,generated_at:now.toISOString(),is_trading_day:Boolean(weekday)&&latestDate===today,market_regime:regime.regime,market_score:regime.score,stocks,page,page_count:pageCount,
     sources:["TWSE listed company/open data","TPEx listed company/open data","TWSE/TPEx daily quote","Yahoo Finance adjusted close","TWSE MIS/official close"],
-    source_status:{universe:`${companies.length} listed/OTC ordinary shares`,history:`${validHistoryCount} stocks read with >=180 daily bars; ${stocks.length} passed eligibility`,adjustment:"adjusted close factor; official discontinuity fallback",degraded:unavailable.length?unavailable.join(", "):"none"}};
+    source_status:{scope:"AI core and extended supply chain",universe:`${scopedCompanies.length}/${companies.length} curated AI-related listed/OTC ordinary shares`,history:`${validHistoryCount} stocks read with >=180 daily bars; ${stocks.length} passed eligibility`,adjustment:"adjusted close factor; official discontinuity fallback",degraded:unavailable.length?unavailable.join(", "):"none"}};
 }
 
 export async function buildPatternRobotScan(page = 1, pageSize = 60) {

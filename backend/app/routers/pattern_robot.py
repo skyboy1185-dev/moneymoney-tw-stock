@@ -18,6 +18,7 @@ from ..models import (
 )
 from ..pattern_schemas import PatternManualTrade, PatternPositionUpdate, PatternSettingsUpdate, PatternWatchlistCreate
 from ..services.pattern_robot_automation import pattern_robot_automation
+from ..services.theme_stock_universe import AI_RELATED_THEME_STOCKS, AI_RELATED_THEME_STOCKS_BY_SYMBOL
 from ..services.pattern_robot_service import (
     PATTERN_LABELS, detection_dict, ensure_pattern_settings, manual_position_trade,
     performance, performance_by_pattern, position_dict, settings_dict, trades_csv, update_settings,
@@ -25,6 +26,7 @@ from ..services.pattern_robot_service import (
 
 
 router = APIRouter(prefix="/pattern-robot", tags=["pattern-robot"])
+AI_RELATED_CODES = tuple(AI_RELATED_THEME_STOCKS_BY_SYMBOL)
 
 
 def _user_id(x_user_id: str = Header(min_length=8, max_length=80)) -> str:
@@ -52,9 +54,11 @@ def status(db: Session = Depends(get_db)) -> dict:
     if latest:
         top = list(db.scalars(select(PatternDetection).where(
             PatternDetection.trade_date == latest.trade_date,
+            PatternDetection.stock_code.in_(AI_RELATED_CODES),
         ).order_by(PatternDetection.pattern_score.desc()).limit(10)).all())
     return {
         **pattern_robot_automation.state, "enabled": settings.enabled,
+        "universeScope": "AI_CORE_AND_EXTENDED", "universeSize": len(AI_RELATED_CODES),
         "settings": settings_dict(settings),
         "lastRun": None if latest is None else {
             "id": latest.id, "tradeDate": latest.trade_date.isoformat(), "status": latest.status,
@@ -67,6 +71,17 @@ def status(db: Session = Depends(get_db)) -> dict:
             "id": reminder.id, "title": reminder.title, "message": reminder.message,
             "createdAt": reminder.created_at.isoformat(), "top": [detection_dict(item) for item in top],
         },
+    }
+
+
+@router.get("/universe")
+def universe() -> dict:
+    return {
+        "scope": "AI_CORE_AND_EXTENDED", "count": len(AI_RELATED_THEME_STOCKS),
+        "items": [{
+            "stockCode": item.symbol, "stockName": item.name, "market": item.market,
+            "industry": item.industry, "themes": list(item.themes),
+        } for item in AI_RELATED_THEME_STOCKS],
     }
 
 
@@ -114,7 +129,7 @@ def detections(
     db: Session = Depends(get_db),
 ) -> dict:
     query = select(PatternDetection)
-    clauses = []
+    clauses = [PatternDetection.stock_code.in_(AI_RELATED_CODES)]
     if tradeDate: clauses.append(PatternDetection.trade_date == tradeDate)
     if dateFrom: clauses.append(PatternDetection.trade_date >= dateFrom)
     if dateTo: clauses.append(PatternDetection.trade_date <= dateTo)
@@ -134,6 +149,8 @@ def detections(
 
 @router.get("/detections/{stock_code}")
 def stock_detections(stock_code: str, db: Session = Depends(get_db)) -> dict:
+    if stock_code not in AI_RELATED_THEME_STOCKS_BY_SYMBOL:
+        return {"items": []}
     rows = list(db.scalars(select(PatternDetection).where(
         PatternDetection.stock_code == stock_code,
     ).order_by(PatternDetection.trade_date.desc(), PatternDetection.pattern_score.desc())).all())
@@ -144,6 +161,7 @@ def stock_detections(stock_code: str, db: Session = Depends(get_db)) -> dict:
 def watchlist(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -> dict:
     rows = list(db.scalars(select(PatternWatchlist).where(
         PatternWatchlist.user_id.in_([user_id, "system-pattern-robot"]), PatternWatchlist.active.is_(True),
+        PatternWatchlist.stock_code.in_(AI_RELATED_CODES),
     ).order_by(PatternWatchlist.added_at.desc())).all())
     deduplicated: dict[tuple[str, str], PatternWatchlist] = {}
     for row in rows:
@@ -220,7 +238,7 @@ def remove_watchlist(item_id: int, user_id: str = Depends(_user_id), db: Session
 
 @router.get("/signals")
 def signals(action: str = "", page: int = 1, pageSize: int = 100, db: Session = Depends(get_db)) -> dict:
-    query = select(PatternSignal)
+    query = select(PatternSignal).where(PatternSignal.stock_code.in_(AI_RELATED_CODES))
     if action: query = query.where(PatternSignal.action == action)
     rows = list(db.scalars(query.order_by(PatternSignal.signal_time.desc())).all())
     return _page(rows, page, pageSize, lambda item: {
