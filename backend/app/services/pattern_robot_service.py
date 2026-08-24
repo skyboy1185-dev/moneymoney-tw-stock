@@ -32,6 +32,7 @@ STATUS_LABELS = {
     "FORMING": "形成中", "NEAR_BREAKOUT": "接近突破", "INTRADAY_BREAKOUT": "盤中暫時突破",
     "CONFIRMED_BREAKOUT": "收盤有效突破", "FAILED_BREAKOUT": "突破失敗", "INVALIDATED": "型態失效",
 }
+BREAKOUT_RESULT_STATUSES = frozenset({"NEAR_BREAKOUT", "INTRADAY_BREAKOUT", "CONFIRMED_BREAKOUT"})
 
 
 def _d(value: float | Decimal, digits: int = 4) -> Decimal:
@@ -642,7 +643,11 @@ def process_pattern_scan(db: Session, payload: PatternScanPayload, *, force: boo
     minimum_score = _threshold(settings, payload.market_regime)
     for detection in sorted(detections, key=lambda item: float(item.pattern_score), reverse=True):
         if detection.pattern_status in {"FORMING", "NEAR_BREAKOUT"}:
-            signal = _record_signal(db, detection, detection.action, now) if float(detection.pattern_score) >= 60 else None
+            signal = (
+                _record_signal(db, detection, "PREPARE", now)
+                if detection.pattern_status == "NEAR_BREAKOUT" and float(detection.pattern_score) >= minimum_score
+                else None
+            )
             if signal:
                 signal.processed_at = now
             system_watch = db.scalar(select(PatternWatchlist).where(
@@ -698,15 +703,27 @@ def process_pattern_scan(db: Session, payload: PatternScanPayload, *, force: boo
     record_daily_equity(db, settings, payload.trade_date, completed_at)
     run.status = "COMPLETED"
     run.scanned_count = eligible_count
-    run.matched_count = len({item.stock_code for item in detections if float(item.pattern_score) >= minimum_score})
-    run.counts_json = _json({"patterns": counts, "statuses": status_counts})
+    alert_detections = [
+        item for item in detections
+        if item.pattern_status in BREAKOUT_RESULT_STATUSES and float(item.pattern_score) >= minimum_score
+    ]
+    alert_status_counts = {
+        status: len({item.stock_code for item in alert_detections if item.pattern_status == status})
+        for status in BREAKOUT_RESULT_STATUSES
+    }
+    run.matched_count = len({item.stock_code for item in alert_detections})
+    run.counts_json = _json({
+        "patterns": counts, "statuses": status_counts, "alertStatusStocks": alert_status_counts,
+    })
     run.source_json = _json({"sources": payload.sources, "sourceStatus": payload.source_status})
     run.completed_at = completed_at
-    scan_message = (f"本次 AI 核心與延伸供應鏈偵測到{run.matched_count}檔股票符合多方技術型態，其中"
-                    f"{status_counts['CONFIRMED_BREAKOUT']}檔有效突破、"
-                    f"{status_counts['NEAR_BREAKOUT']}檔接近突破、"
-                    f"{status_counts['FORMING']}檔形成中。型態僅代表技術結構，仍需等待量價、買點及風險報酬確認。")
+    scan_message = (f"本次 AI 核心與延伸供應鏈找到{run.matched_count}檔突破焦點，其中"
+                    f"{alert_status_counts['CONFIRMED_BREAKOUT']}檔收盤有效突破、"
+                    f"{alert_status_counts['INTRADAY_BREAKOUT']}檔盤中暫時突破、"
+                    f"{alert_status_counts['NEAR_BREAKOUT']}檔距關鍵線3%內、即將突破。"
+                    "形成中與失效型態仍保存追蹤，但不列入主要掃描結果。")
     scan_reasons = _json({"patterns": counts, "statuses": status_counts, "runId": run.id,
+                          "alertStatusStocks": alert_status_counts,
                           "universeScope": "AI_CORE_AND_EXTENDED"})
     existing_scan_message = db.scalar(select(PatternTradeMessage).where(
         PatternTradeMessage.signal_id.is_(None), PatternTradeMessage.message_type == "SCAN_COMPLETED",

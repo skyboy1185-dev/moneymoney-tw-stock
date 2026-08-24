@@ -20,7 +20,7 @@ from ..pattern_schemas import PatternManualTrade, PatternPositionUpdate, Pattern
 from ..services.pattern_robot_automation import pattern_robot_automation
 from ..services.theme_stock_universe import AI_RELATED_THEME_STOCKS, AI_RELATED_THEME_STOCKS_BY_SYMBOL
 from ..services.pattern_robot_service import (
-    PATTERN_LABELS, detection_dict, ensure_pattern_settings, manual_position_trade,
+    BREAKOUT_RESULT_STATUSES, PATTERN_LABELS, detection_dict, ensure_pattern_settings, manual_position_trade,
     performance, performance_by_pattern, position_dict, settings_dict, trades_csv, update_settings,
 )
 
@@ -55,6 +55,8 @@ def status(db: Session = Depends(get_db)) -> dict:
         top = list(db.scalars(select(PatternDetection).where(
             PatternDetection.trade_date == latest.trade_date,
             PatternDetection.stock_code.in_(AI_RELATED_CODES),
+            PatternDetection.pattern_status.in_(BREAKOUT_RESULT_STATUSES),
+            PatternDetection.pattern_score >= settings.minimum_score,
         ).order_by(PatternDetection.pattern_score.desc()).limit(10)).all())
     return {
         **pattern_robot_automation.state, "enabled": settings.enabled,
@@ -130,13 +132,19 @@ def detections(
 ) -> dict:
     query = select(PatternDetection)
     clauses = [PatternDetection.stock_code.in_(AI_RELATED_CODES)]
+    if not tradeDate and not dateFrom and not dateTo:
+        latest_trade_date = db.scalar(select(func.max(PatternRobotRun.trade_date)))
+        if latest_trade_date: clauses.append(PatternDetection.trade_date == latest_trade_date)
     if tradeDate: clauses.append(PatternDetection.trade_date == tradeDate)
     if dateFrom: clauses.append(PatternDetection.trade_date >= dateFrom)
     if dateTo: clauses.append(PatternDetection.trade_date <= dateTo)
     if stock: clauses.append(or_(PatternDetection.stock_code.ilike(f"%{stock}%"), PatternDetection.stock_name.ilike(f"%{stock}%")))
     if pattern: clauses.append(PatternDetection.pattern_type == pattern)
-    if status: clauses.append(PatternDetection.pattern_status == status)
-    if minScore: clauses.append(PatternDetection.pattern_score >= minScore)
+    if status:
+        clauses.append(PatternDetection.pattern_status == status)
+    else:
+        clauses.append(PatternDetection.pattern_status.in_(BREAKOUT_RESULT_STATUSES))
+    clauses.append(PatternDetection.pattern_score >= (minScore or ensure_pattern_settings(db).minimum_score))
     if action: clauses.append(PatternDetection.action == action)
     if notified is True: clauses.append(PatternDetection.notified_at.is_not(None))
     if notified is False: clauses.append(PatternDetection.notified_at.is_(None))
@@ -370,7 +378,7 @@ def trades(
 
 @router.get("/messages")
 def messages(unreadOnly: bool = False, page: int = 1, pageSize: int = 100, db: Session = Depends(get_db)) -> dict:
-    query = select(PatternTradeMessage)
+    query = select(PatternTradeMessage).where(PatternTradeMessage.message_type != "WATCH")
     if unreadOnly: query = query.where(PatternTradeMessage.is_read.is_(False))
     rows = list(db.scalars(query.order_by(PatternTradeMessage.created_at.desc())).all())
     return _page(rows, page, pageSize, lambda item: {

@@ -306,6 +306,26 @@ def test_scan_completed_message_is_not_duplicated(db, monkeypatch):
     assert message.is_read is False
 
 
+def test_forming_pattern_is_saved_but_not_counted_or_notified(db, monkeypatch):
+    result = bullish_result("WATCH")
+    result.pattern_status = "FORMING"
+    monkeypatch.setattr("app.services.pattern_robot_service.detect_patterns", lambda *args, **kwargs: [result])
+    outcome = process_pattern_scan(db, scan_payload())
+    assert outcome["matchedCount"] == 0
+    assert db.scalar(select(func.count(PatternDetection.id))) == 1
+    assert db.scalar(select(func.count(PatternTradeMessage.id)).where(PatternTradeMessage.message_type == "WATCH")) == 0
+
+
+def test_near_breakout_is_counted_and_creates_prepare_reminder(db, monkeypatch):
+    result = bullish_result("PREPARE")
+    result.pattern_status = "NEAR_BREAKOUT"
+    monkeypatch.setattr("app.services.pattern_robot_service.detect_patterns", lambda *args, **kwargs: [result])
+    outcome = process_pattern_scan(db, scan_payload())
+    assert outcome["matchedCount"] == 1
+    reminder = db.scalar(select(PatternTradeMessage).where(PatternTradeMessage.message_type == "PREPARE"))
+    assert reminder is not None and "接近突破" in reminder.title
+
+
 def test_database_uniqueness_rejects_duplicate_signal_version(db, monkeypatch):
     monkeypatch.setattr("app.services.pattern_robot_service.detect_patterns", lambda *args, **kwargs: [bullish_result()])
     process_pattern_scan(db, scan_payload())
@@ -370,6 +390,15 @@ def test_detection_filter_and_stock_detail_apis(client, db, monkeypatch):
     assert listing.status_code == 200 and listing.json()["total"] == 1
     detail = client.get("/api/v1/pattern-robot/detections/2330")
     assert detail.status_code == 200 and detail.json()["items"][0]["patternLabel"] == "W底／雙重底"
+
+
+def test_default_detection_api_hides_forming_but_explicit_filter_can_retrieve_it(client, db, monkeypatch):
+    result = bullish_result("WATCH")
+    result.pattern_status = "FORMING"
+    monkeypatch.setattr("app.services.pattern_robot_service.detect_patterns", lambda *args, **kwargs: [result])
+    process_pattern_scan(db, scan_payload())
+    assert client.get("/api/v1/pattern-robot/detections").json()["total"] == 0
+    assert client.get("/api/v1/pattern-robot/detections?status=FORMING").json()["total"] == 1
 
 
 def test_watchlist_api_also_writes_existing_shared_monitor(client, db, monkeypatch):
