@@ -2301,6 +2301,17 @@ footer span { color: #566177; }
 .dt-robot-roster span { color: #68bfe7; font-size: 9px; }
 .dt-robot-roster b { font-size: 11px; }
 .dt-robot-roster small { font-size: 9px; line-height: 1.4; }
+.phase-long-only { color: #67e2a5; border-color: rgba(35,200,117,.28); }
+.dt-direction-policy { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; }
+.dt-direction-policy article { padding: 15px; display: grid; gap: 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+.dt-direction-policy article.long { border-top: 3px solid #ef6671; }
+.dt-direction-policy article.short { border-top: 3px solid #45d59e; }
+.dt-direction-policy article.overnight { border-top: 3px solid #8b7cf6; }
+.dt-direction-policy article > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.dt-direction-policy span { color: var(--muted); font-size: 11px; }
+.dt-direction-policy strong { font-size: 14px; }
+.dt-direction-policy article > b { color: #dce6f3; font-size: 12px; }
+.dt-direction-policy p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.65; }
 .day-trading-adaptive .automation-banner { padding: 16px 18px; background: var(--surface); border-color: var(--line); border-radius: 14px; }
 .day-trading-adaptive .dt-system-strip { padding: 0; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; overflow: visible; background: transparent; border: 0; border-radius: 0; }
 .day-trading-adaptive .dt-system-strip > div { min-height: 72px; padding: 13px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
@@ -2341,6 +2352,7 @@ footer span { color: #566177; }
   .dt-robot-status { grid-column: 2; justify-self: start; }
   .dt-robot-confidence { grid-column: 1 / -1; }
   .dt-active-robot-rules, .dt-robot-roster { grid-template-columns: 1fr; }
+  .dt-direction-policy { grid-template-columns: 1fr; }
   .day-trading-heading-actions { margin-top: 12px; justify-items: start; }
   .day-trading-adaptive .dt-hero-status { justify-content: flex-start; }
   .day-trading-adaptive .dt-system-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }

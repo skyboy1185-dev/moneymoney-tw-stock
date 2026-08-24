@@ -15,7 +15,10 @@ MIN_DAY_TRADING_VOLUME_SHARES = 1_000_000
 MIN_DAY_TRADING_TURNOVER = 100_000_000
 MIN_LIQUIDITY_PROGRESS = 0.10
 DAY_TRADING_SIGNAL_START = "09:05"
+# Short entries retain the original 11:00 risk cutoff. Long entries may continue
+# while the regular market is open, but stop shortly before the closing workflow.
 DAY_TRADING_ENTRY_CUTOFF = "11:00"
+DAY_TRADING_LONG_ENTRY_CUTOFF = "13:20"
 DAY_TRADING_CLOSE_REMINDER = "13:25"
 DAY_TRADING_FORCED_EXIT = "13:30"
 
@@ -80,6 +83,7 @@ def trading_session_state(
         signal_start,
     )
     latest_entry = _at(today, config.latest_entry_time, timezone)
+    long_entry_cutoff = _at(today, DAY_TRADING_LONG_ENTRY_CUTOFF, timezone)
     close_reminder = _at(today, config.close_reminder_time, timezone)
     market_close = _at(today, config.market_close_time, timezone)
 
@@ -103,7 +107,7 @@ def trading_session_state(
             phase, robot_status, message, next_transition = (
                 "health_check", "系統準備中", "系統準備中：正在檢查行情、Redis、即時推送與資料庫。", market_open,
             )
-        elif local_now < latest_entry and (
+        elif local_now < long_entry_cutoff and (
             local_now < warmup_end
             or quote_samples < config.minimum_live_samples
             or recovering
@@ -118,7 +122,13 @@ def trading_session_state(
                 next_transition = None
         elif local_now < latest_entry:
             phase, robot_status, message, next_transition = (
-                "scanning", "5 分 K 強勢股掃描中", "AI 當沖機器人正在用 5 分 K 掃描強勢股；11:00 後停止新進場。", latest_entry,
+                "scanning", "5 分 K 強勢股掃描中", "多方可掃描至 13:20；空方維持 11:00 停止新進場。", latest_entry,
+            )
+        elif local_now < long_entry_cutoff:
+            phase, robot_status, message, next_transition = (
+                "long_only", "午後僅掃描多方",
+                "空方已於 11:00 停止新進場；午後只允許通過風控的多方正式訊號。",
+                long_entry_cutoff,
             )
         elif local_now < close_reminder:
             phase, robot_status, message, next_transition = (
@@ -134,11 +144,15 @@ def trading_session_state(
             )
 
     healthy = data_status == "normal" and infrastructure_ok
-    formal_allowed = phase == "scanning" and healthy
-    if not healthy and phase in {"health_check", "warmup", "scanning", "entry_closed", "closing"}:
+    formal_long_allowed = phase in {"scanning", "long_only"} and healthy
+    formal_short_allowed = phase == "scanning" and healthy
+    formal_allowed = formal_long_allowed or formal_short_allowed
+    if not healthy and phase in {"health_check", "warmup", "scanning", "long_only", "entry_closed", "closing"}:
         robot_status = "行情異常，暫停新訊號"
         message = "行情資料異常，暫停產生新交易訊號。"
         formal_allowed = False
+        formal_long_allowed = False
+        formal_short_allowed = False
 
     return {
         "timezone": config.timezone,
@@ -149,6 +163,8 @@ def trading_session_state(
         "robotStatus": robot_status,
         "statusMessage": message,
         "formalSignalsAllowed": formal_allowed,
+        "formalLongSignalsAllowed": formal_long_allowed,
+        "formalShortSignalsAllowed": formal_short_allowed,
         "warmupMinutes": config.warmup_minutes,
         "warmupUntil": warmup_end.isoformat(),
         "quoteSamples": quote_samples,
@@ -161,6 +177,8 @@ def trading_session_state(
             "marketOpenTime": config.market_open_time,
             "signalStartTime": config.signal_start_time,
             "latestEntryTime": config.latest_entry_time,
+            "shortEntryCutoffTime": config.latest_entry_time,
+            "longEntryCutoffTime": DAY_TRADING_LONG_ENTRY_CUTOFF,
             "closeReminderTime": config.close_reminder_time,
             "marketCloseTime": config.market_close_time,
         },
@@ -203,8 +221,20 @@ def recommendation_qualification(
     ))
     if not in_momentum_universe:
         failures.append("不屬於大單動能雷達股票池")
-    if not session["formalSignalsAllowed"]:
-        failures.append(str(session["statusMessage"]))
+    direction = str(candidate.get("direction", ""))
+    direction_allowed = (
+        bool(session.get("formalLongSignalsAllowed", session["formalSignalsAllowed"]))
+        if direction == "long"
+        else bool(session.get("formalShortSignalsAllowed", session["formalSignalsAllowed"]))
+        if direction == "short"
+        else False
+    )
+    if not direction_allowed:
+        failures.append(
+            "空方已超過 11:00 進場截止時間"
+            if direction == "short" and session.get("phase") == "long_only"
+            else str(session["statusMessage"])
+        )
     if candidate.get("dataStatus", "normal") != "normal":
         failures.append("行情資料異常")
     if candidate.get("dataMode") != "official":

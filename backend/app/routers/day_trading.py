@@ -58,6 +58,7 @@ from ..services.automated_position_tracker import (
 from ..services.day_trading_schedule import (
     DAY_TRADING_CLOSE_REMINDER,
     DAY_TRADING_ENTRY_CUTOFF,
+    DAY_TRADING_LONG_ENTRY_CUTOFF,
     DAY_TRADING_SIGNAL_START,
     DAY_TRADING_FORCED_EXIT,
     MIN_DAY_TRADING_TURNOVER,
@@ -295,7 +296,10 @@ def _settings_payload(item: DayTradingSettings, schedule: DayTradingScheduleSett
         "minimumRiskReward": item.minimum_risk_reward, "maximumSpread": item.maximum_spread,
         "minimumVolume": max(item.minimum_volume, MIN_DAY_TRADING_VOLUME_SHARES),
         "minimumTurnover": max(item.minimum_turnover, MIN_DAY_TRADING_TURNOVER),
-        "latestEntryTime": DAY_TRADING_ENTRY_CUTOFF, "closeReminderTime": DAY_TRADING_CLOSE_REMINDER,
+        "latestEntryTime": DAY_TRADING_ENTRY_CUTOFF,
+        "shortEntryCutoffTime": DAY_TRADING_ENTRY_CUTOFF,
+        "longEntryCutoffTime": DAY_TRADING_LONG_ENTRY_CUTOFF,
+        "closeReminderTime": DAY_TRADING_CLOSE_REMINDER,
         "notificationEnabled": item.notification_enabled, "soundEnabled": item.sound_enabled,
         "entryNotification": item.entry_notification, "exitNotification": item.exit_notification,
         "stopNotification": item.stop_notification, "targetNotification": item.target_notification,
@@ -430,6 +434,15 @@ def _position_payload(item: DayTradingPosition) -> dict[str, Any]:
         "updatedAt": datetime.now(UTC).isoformat(),
         "automationStrategy": strategy["key"] if strategy else None,
         "automationStrategyLabel": strategy["label"] if strategy else None,
+        "holdingPeriod": item.holding_period,
+        "holdingPeriodLabel": "隔日多單" if item.holding_period == "overnight_long" else "當沖",
+        "entryConfidence": item.entry_confidence,
+        "strategyConfidence": item.strategy_confidence,
+        "overnightEligible": (
+            item.direction == "long"
+            and item.entry_confidence >= 85
+            and item.strategy_confidence >= 85
+        ),
     }
 
 
@@ -465,7 +478,7 @@ def get_market_regime(
     selection = _selection(db, user_id)
     payload = {
         **selection["regime"],
-        "marketOpen": selection["session"]["phase"] in {"warmup", "scanning", "entry_closed", "closing"},
+        "marketOpen": selection["session"]["phase"] in {"warmup", "scanning", "long_only", "entry_closed", "closing"},
         "automation": selection["session"],
         "infrastructure": selection["infrastructure"],
         "recommendationSummary": selection["summary"],
@@ -1076,7 +1089,7 @@ async def _stream_events(request: Request, user_id: str):
             }
             regime = {
                 **selection["regime"],
-                "marketOpen": selection["session"]["phase"] in {"warmup", "scanning", "entry_closed", "closing"},
+                "marketOpen": selection["session"]["phase"] in {"warmup", "scanning", "long_only", "entry_closed", "closing"},
                 "automation": selection["session"],
                 "infrastructure": selection["infrastructure"],
                 "recommendationSummary": selection["summary"],

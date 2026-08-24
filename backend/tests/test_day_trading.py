@@ -280,7 +280,7 @@ def test_zero_minute_warmup_still_requires_enough_ticks() -> None:
     assert not state["formalSignalsAllowed"]
 
 
-def test_non_trading_day_and_entry_cutoff_block_formal_signals() -> None:
+def test_long_entries_continue_after_short_entry_cutoff() -> None:
     config = TradingScheduleConfig()
     saturday = trading_session_state(
         config, datetime(2026, 7, 25, 10, 0, tzinfo=TAIPEI),
@@ -294,12 +294,22 @@ def test_non_trading_day_and_entry_cutoff_block_formal_signals() -> None:
         config, datetime(2026, 7, 21, 11, 0, tzinfo=TAIPEI),
         quote_samples=10, infrastructure_ok=True,
     )
+    long_cutoff = trading_session_state(
+        config, datetime(2026, 7, 21, 13, 20, tzinfo=TAIPEI),
+        quote_samples=10, infrastructure_ok=True,
+    )
     assert saturday["phase"] == "non_trading"
     assert before_cutoff["phase"] == "scanning"
     assert before_cutoff["formalSignalsAllowed"]
-    assert cutoff["phase"] == "entry_closed"
+    assert cutoff["phase"] == "long_only"
     assert not saturday["formalSignalsAllowed"]
-    assert not cutoff["formalSignalsAllowed"]
+    assert cutoff["formalSignalsAllowed"]
+    assert cutoff["formalLongSignalsAllowed"]
+    assert not cutoff["formalShortSignalsAllowed"]
+    assert cutoff["schedule"]["shortEntryCutoffTime"] == "11:00"
+    assert cutoff["schedule"]["longEntryCutoffTime"] == "13:20"
+    assert long_cutoff["phase"] == "entry_closed"
+    assert not long_cutoff["formalSignalsAllowed"]
 
 
 def _five_minute_quotes(prices: list[float], *, opening: float) -> list[OfficialStockQuote]:
@@ -425,6 +435,28 @@ def test_recommendation_hard_filters_and_short_qualification() -> None:
     )
     assert not short_no_sell_passed
     assert "大戶尚未持續加空" in short_no_sell_failures
+
+
+def test_afternoon_qualification_allows_long_and_blocks_new_short() -> None:
+    now = datetime(2026, 7, 21, 12, 0, tzinfo=TAIPEI)
+    config = TradingScheduleConfig()
+    session = trading_session_state(config, now, quote_samples=10, infrastructure_ok=True)
+    timing = {
+        "generatedAt": now.isoformat(),
+        "expiresAt": (now + timedelta(minutes=20)).isoformat(),
+    }
+
+    long_passed, long_failures = recommendation_qualification(
+        _candidate("afternoon-long", **timing), config, session, now,
+    )
+    short_passed, short_failures = recommendation_qualification(
+        _candidate("afternoon-short", direction="short", **timing), config, session, now,
+    )
+
+    assert session["phase"] == "long_only"
+    assert long_passed, long_failures
+    assert not short_passed
+    assert "空方已超過 11:00 進場截止時間" in short_failures
 
 
 def test_disposal_stock_is_never_qualified_for_day_trading() -> None:

@@ -131,6 +131,9 @@ class DayTradingPosition(Base):
     exit_price: Mapped[float | None] = mapped_column(Float)
     realized_profit: Mapped[float | None] = mapped_column(Float)
     sound_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    holding_period: Mapped[str] = mapped_column(String(20), default="intraday")
+    entry_confidence: Mapped[float] = mapped_column(Float, default=0)
+    strategy_confidence: Mapped[float] = mapped_column(Float, default=0)
 
 
 class DayTradingAlert(Base):

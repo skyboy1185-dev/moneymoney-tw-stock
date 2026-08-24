@@ -10,6 +10,8 @@ export interface TradingAutomationState {
   robotStatus: string;
   statusMessage: string;
   formalSignalsAllowed: boolean;
+  formalLongSignalsAllowed: boolean;
+  formalShortSignalsAllowed: boolean;
   warmupMinutes: number;
   warmupUntil: string;
   quoteSamples: number;
@@ -22,6 +24,8 @@ export interface TradingAutomationState {
     marketOpenTime: string;
     signalStartTime: string;
     latestEntryTime: string;
+    shortEntryCutoffTime: string;
+    longEntryCutoffTime: string;
     closeReminderTime: string;
     marketCloseTime: string;
   };
@@ -209,6 +213,11 @@ export interface DayTradingPosition {
   automaticTracking?: boolean;
   automationStrategy?: string;
   automationStrategyLabel?: string;
+  holdingPeriod?: "intraday" | "overnight_long";
+  holdingPeriodLabel?: string;
+  entryConfidence?: number;
+  strategyConfidence?: number;
+  overnightEligible?: boolean;
 }
 
 export interface DayTradingAlert {

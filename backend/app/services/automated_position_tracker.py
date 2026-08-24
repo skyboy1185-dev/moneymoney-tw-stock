@@ -75,6 +75,15 @@ def _position_payload(position: DayTradingPosition) -> dict[str, Any]:
         "unrealizedProfit": position.unrealized_profit,
         "latestAction": position.latest_action,
         "status": position.status,
+        "holdingPeriod": position.holding_period,
+        "holdingPeriodLabel": "隔日多單" if position.holding_period == "overnight_long" else "當沖",
+        "entryConfidence": position.entry_confidence,
+        "strategyConfidence": position.strategy_confidence,
+        "overnightEligible": (
+            position.direction == "long"
+            and position.entry_confidence >= 85
+            and position.strategy_confidence >= 85
+        ),
         "automaticTracking": True,
         "automationStrategy": strategy["key"],
         "automationStrategyLabel": strategy["label"],
@@ -326,6 +335,9 @@ def ensure_positions_for_official_recommendations(
                     else f"{strategy['label']}・自動追蹤空單 {quantity_lots:g} 張"
                 ),
                 status="open",
+                holding_period="intraday",
+                entry_confidence=float(signal.get("confidenceScore", 0)),
+                strategy_confidence=float(signal.get("strategyConfidence", 0)),
             )
             db.add(position)
             db.flush()
@@ -378,11 +390,48 @@ def pending_automatic_position_events(
         position.unrealized_profit = (
             price - position.entry_price
         ) * position.quantity * 1000 * factor
-        if force_close:
+        opened_at = position.opened_at if position.opened_at.tzinfo else position.opened_at.replace(tzinfo=UTC)
+        opened_day = opened_at.astimezone(TAIPEI).date()
+        current_day = current.astimezone(TAIPEI).date()
+        overnight_eligible = (
+            position.direction == "long"
+            and position.entry_confidence >= 85
+            and position.strategy_confidence >= 85
+        )
+        if (
+            force_close
+            and position.holding_period == "overnight_long"
+            and opened_day == current_day
+        ):
+            position.latest_action = "隔日多單持續監控"
+            continue
+        if (
+            force_close
+            and position.direction == "long"
+            and position.holding_period == "intraday"
+            and opened_day == current_day
+            and overnight_eligible
+        ):
             result = {
                 "level": "important",
-                "action": "收盤前全部賣出" if position.direction == "long" else "收盤前全部回補",
-                "reason": "當沖策略於收盤前強制平倉",
+                "action": "轉為隔日多單",
+                "reason": "個股與盤勢策略信心度皆達 85，保留至下一交易日並持續執行停損",
+            }
+        elif force_close:
+            result = {
+                "level": "important",
+                "action": (
+                    "隔日多單到期，全部賣出"
+                    if position.direction == "long" and position.holding_period == "overnight_long"
+                    else "收盤前全部賣出"
+                    if position.direction == "long"
+                    else "收盤前全部回補"
+                ),
+                "reason": (
+                    "隔日多單最多持有至下一交易日收盤前"
+                    if position.direction == "long" and position.holding_period == "overnight_long"
+                    else "當沖策略於收盤前強制平倉"
+                ),
             }
         elif position.direction == "long" and risk_for is not None:
             result = risk_for(position.symbol) or evaluate_position(
@@ -431,6 +480,7 @@ def pending_automatic_position_events(
             "position": _position_payload(position),
             "_positionId": position.id,
             "_terminal": terminal,
+            "_transitionOnly": result["action"] == "轉為隔日多單",
         })
     return events
 
@@ -472,6 +522,10 @@ def finalize_automatic_position_event(
         price=exit_price,
         created_at=exit_time,
     ))
+    if bool(event.get("_transitionOnly")):
+        position.holding_period = "overnight_long"
+        position.latest_action = str(event["action"])
+        return position
     terminal = bool(event.get("_terminal"))
     close_quantity = position.quantity if terminal else position.quantity * 0.5
     factor = 1 if position.direction == "long" else -1

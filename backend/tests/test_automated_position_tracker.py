@@ -331,6 +331,63 @@ def test_closing_phase_forces_intraday_position_exit() -> None:
         assert events[0]["_terminal"] is True
 
 
+def test_high_confidence_long_transitions_to_one_night_position() -> None:
+    with _session() as db:
+        position = _automatic_position(db)
+        position.entry_confidence = 90
+        position.strategy_confidence = 88
+        db.commit()
+        current = datetime(2026, 7, 30, 5, 25, tzinfo=UTC)
+
+        event = pending_automatic_position_events(
+            db,
+            lambda _: 2260,
+            data_status="normal",
+            force_close=True,
+            now=current,
+        )[0]
+
+        assert event["action"] == "轉為隔日多單"
+        assert event["_transitionOnly"] is True
+        assert event["_terminal"] is False
+        finalize_automatic_position_event(db, event, now=current)
+        db.commit()
+        db.refresh(position)
+        assert position.status == "open"
+        assert position.quantity == 1
+        assert position.holding_period == "overnight_long"
+        assert db.scalar(select(func.count()).select_from(DayTradingTrade)) == 0
+
+        repeated = pending_automatic_position_events(
+            db,
+            lambda _: 2260,
+            data_status="normal",
+            force_close=True,
+            now=current,
+        )
+        assert repeated == []
+
+
+def test_overnight_long_is_closed_by_next_trading_day_close() -> None:
+    with _session() as db:
+        position = _automatic_position(db)
+        position.holding_period = "overnight_long"
+        position.entry_confidence = 90
+        position.strategy_confidence = 90
+        db.commit()
+
+        event = pending_automatic_position_events(
+            db,
+            lambda _: 2270,
+            data_status="normal",
+            force_close=True,
+            now=datetime(2026, 7, 31, 5, 25, tzinfo=UTC),
+        )[0]
+
+        assert event["action"] == "隔日多單到期，全部賣出"
+        assert event["_terminal"] is True
+
+
 def test_force_close_uses_last_known_price_when_quote_is_unavailable() -> None:
     with _session() as db:
         _automatic_position(db)

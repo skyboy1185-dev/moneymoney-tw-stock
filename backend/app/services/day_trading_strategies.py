@@ -106,6 +106,10 @@ def strategy_context(
         status, status_label = "warming_up", "暖機確認中"
     elif phase == "scanning" and formal_allowed:
         status, status_label = "active", "目前使用中"
+    elif phase == "long_only" and selected["direction"] == "short":
+        status, status_label = "paused", "空方 11:00 已截止・等待多方盤勢"
+    elif phase == "long_only" and formal_allowed:
+        status, status_label = "active", "午後僅允許多方進場"
     elif phase in {"entry_closed", "closing"}:
         status, status_label = "managing", "停止新進場・持倉管理中"
     else:

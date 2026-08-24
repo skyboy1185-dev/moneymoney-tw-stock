@@ -46,7 +46,7 @@ QUOTE_HISTORY_CACHE_KEY = "day-trading-official-quote-history"
 BASELINE_QUOTE_REFRESH_SECONDS = 30
 PRIORITY_QUOTE_REFRESH_SECONDS = 5
 ACTIVE_QUOTE_PHASES = frozenset({
-    "loading", "health_check", "warmup", "scanning", "entry_closed", "closing",
+    "loading", "health_check", "warmup", "scanning", "long_only", "entry_closed", "closing",
 })
 
 
@@ -344,7 +344,7 @@ class DayTradingAutomationSupervisor:
                 self._last_scan_at is None
                 or now - self._last_scan_at >= timedelta(seconds=config.recommendation_refresh_seconds)
             )
-            if scan_due and session["phase"] in {"warmup", "scanning"}:
+            if scan_due and session["phase"] in {"warmup", "scanning", "long_only"}:
                 candidates = self._confirm_continuous_large_orders(
                     day_trading_restrictions.enrich_short_eligibility(
                         day_trading_restrictions.filter_candidates(
@@ -377,7 +377,7 @@ class DayTradingAutomationSupervisor:
                 day_trading_cache.put("automation-recommendations", self._recommendations, ttl=86_400)
                 if session["formalSignalsAllowed"]:
                     self._today_signal_ids.update(str(item["id"]) for item in self._recommendations)
-            elif session["phase"] not in {"warmup", "scanning"} or not session["formalSignalsAllowed"]:
+            elif session["phase"] not in {"warmup", "scanning", "long_only"} or not session["formalSignalsAllowed"]:
                 self._recommendations = []
             self._state = {
                 "status": "running",

@@ -92,6 +92,18 @@ def create_tables() -> None:
                 "ALTER TABLE long_term_positions "
                 "ADD COLUMN IF NOT EXISTS quantity INTEGER NOT NULL DEFAULT 0"
             ))
+            connection.execute(text(
+                "ALTER TABLE day_trading_positions "
+                "ADD COLUMN IF NOT EXISTS holding_period VARCHAR(20) NOT NULL DEFAULT 'intraday'"
+            ))
+            connection.execute(text(
+                "ALTER TABLE day_trading_positions "
+                "ADD COLUMN IF NOT EXISTS entry_confidence DOUBLE PRECISION NOT NULL DEFAULT 0"
+            ))
+            connection.execute(text(
+                "ALTER TABLE day_trading_positions "
+                "ADD COLUMN IF NOT EXISTS strategy_confidence DOUBLE PRECISION NOT NULL DEFAULT 0"
+            ))
     # Database synchronization can merge two independently created portfolio
     # batches. Quarantine overflow before enforcing one open row per symbol.
     from .services.long_term_selection import repair_long_term_position_overflow
