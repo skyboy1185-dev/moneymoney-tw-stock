@@ -39,6 +39,8 @@ TRADE_EMAIL_CATEGORIES = {
     "BUY", "SHORT", "ADD", "REDUCE", "STOP_LOSS", "TAKE_PROFIT", "EXIT", "RISK", "ERROR",
 }
 
+MARKET_WEIGHTS["RECOVERY"].update({"long": 100, "short": 0})
+
 
 def _money(value: Decimal | float | int) -> Decimal:
     return Decimal(str(value)).quantize(MONEY, rounding=ROUND_HALF_UP)
@@ -349,6 +351,8 @@ def trading_gate(
         failures.append("invalid_trading_mode")
     if risk["stopNewTrades"]:
         failures.append(str(risk["stopReason"] or "risk_stop"))
+    if side == "SHORT" and regime in {"BREAKOUT", "RECOVERY"}:
+        failures.append("market_strength_blocks_short")
     if len(open_trades) >= settings.max_positions:
         failures.append("max_positions")
     if score < settings.min_ai_score_to_trade:

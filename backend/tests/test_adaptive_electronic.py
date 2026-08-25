@@ -24,6 +24,7 @@ from app.services.adaptive_strategies import BreakoutStrategy, RangeTradingStrat
 from app.services.electronic_stock_universe_service import common_filter_failures
 from app.services.market_regime_service import evaluate_market_regime
 from app.services.risk_management_service import position_size_shares
+from app.services.super_ai_daytrade_service import market_state
 
 
 TAIPEI = ZoneInfo("Asia/Taipei")
@@ -186,6 +187,12 @@ def test_super_ai_short_exits_when_market_recovers() -> None:
         Trade(), Decimal("101"), "RECOVERY", None,
         datetime(2026, 7, 31, 10, 30, tzinfo=TAIPEI),
     ) == "MARKET_RISK"
+
+
+def test_recovery_market_shows_no_short_weight() -> None:
+    state = market_state("RECOVERY")
+    assert state["longWeight"] == 100
+    assert state["shortWeight"] == 0
 
 
 def test_breakout_strategy_is_traceable_and_meets_direct_entry_score() -> None:
