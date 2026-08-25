@@ -431,7 +431,7 @@ class DayTradingAutomationSupervisor:
                 ))
             if session["formalSignalsAllowed"] and self._recommendations:
                 line_tasks.append(
-                    self._send_recommendations_and_track(self._recommendations[:5]),
+                    self._send_recommendations_and_track(self._recommendations[:config.maximum_recommendations]),
                 )
             if quote_refresh_due:
                 evaluated, exits_sent = await self._monitor_automatic_positions(

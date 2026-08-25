@@ -44,7 +44,7 @@ class TradingScheduleConfig:
     minimum_volume: float = MIN_DAY_TRADING_VOLUME_SHARES
     minimum_turnover: float = MIN_DAY_TRADING_TURNOVER
     maximum_stop_distance: float = 3.0
-    maximum_recommendations: int = 5
+    maximum_recommendations: int = 10
     holidays: frozenset[date] = field(default_factory=frozenset)
 
 

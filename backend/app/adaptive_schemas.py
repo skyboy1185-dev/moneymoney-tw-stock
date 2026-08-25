@@ -210,6 +210,6 @@ class AdaptiveBacktestRequest(BaseModel):
     prices: list[AdaptiveBacktestPrice] = Field(min_length=80, max_length=1500)
     benchmark_prices: list[AdaptiveBacktestPrice] = Field(default_factory=list, max_length=1500)
     commission_rate: float = Field(default=0.001425, ge=0, le=0.02)
-    commission_discount: float = Field(default=0.6, ge=0, le=1)
+    commission_discount: float = Field(default=0.2, ge=0, le=1)
     tax_rate: float = Field(default=0.003, ge=0, le=0.02)
     slippage_rate: float = Field(default=0.001, ge=0, le=0.02)

@@ -72,6 +72,9 @@ from ..services.line_messaging import line_notification_dispatcher
 router = APIRouter(prefix="/day-trading", tags=["day-trading"])
 settings = get_settings()
 TAIPEI = ZoneInfo("Asia/Taipei")
+DAY_TRADING_COMMISSION_RATE = 0.001425
+DAY_TRADING_COMMISSION_DISCOUNT = 0.2
+DAY_TRADING_COMMISSION_DISCOUNT_LABEL = "2折"
 
 
 def _user_id(x_user_id: str | None = Header(default=None, min_length=8, max_length=80)) -> str:
@@ -140,6 +143,8 @@ def _performance_summary(
     fee = round(sum(item.fee for item in items), 2)
     tax = round(sum(item.tax for item in items), 2)
     slippage = round(sum(item.slippage for item in items), 2)
+    gross_commission = round(fee / DAY_TRADING_COMMISSION_DISCOUNT, 2) if fee else 0
+    commission_rebate = round(max(0, gross_commission - fee), 2)
     consecutive_losses = 0
     maximum_consecutive_losses = 0
     for item in sorted(items, key=lambda trade: trade.exit_time):
@@ -154,6 +159,11 @@ def _performance_summary(
         "grossProfit": round(realized_profit + fee + tax + slippage, 2),
         "fee": fee, "tax": tax, "slippage": slippage,
         "tradingCost": round(fee + tax + slippage, 2),
+        "commissionDiscount": DAY_TRADING_COMMISSION_DISCOUNT,
+        "commissionDiscountLabel": DAY_TRADING_COMMISSION_DISCOUNT_LABEL,
+        "grossCommission": gross_commission,
+        "commissionRebate": commission_rebate,
+        "rebateAccumulated": commission_rebate,
         "openPositionCount": len(open_positions),
         "averageProfit": round(realized_profit / len(items), 2) if items else 0,
         "maxLoss": min([item.profit for item in items], default=0),
@@ -741,7 +751,7 @@ def close_position(
     factor = 1 if item.direction == "long" else -1
     gross = (exit_price - item.entry_price) * close_quantity * 1000 * factor
     turnover = (exit_price + item.entry_price) * close_quantity * 1000
-    fee = round(turnover * 0.001425 * 0.6, 2)
+    fee = round(turnover * DAY_TRADING_COMMISSION_RATE * DAY_TRADING_COMMISSION_DISCOUNT, 2)
     sell_price = exit_price if item.direction == "long" else item.entry_price
     tax = round(sell_price * close_quantity * 1000 * 0.0015, 2)
     slippage = round(exit_price * close_quantity * 1000 * 0.0002, 2)

@@ -168,6 +168,10 @@ type Performance = {
     shortWinRate: number;
     grossProfit: number;
     tradingCost: number;
+    grossCommission: number;
+    actualCommission: number;
+    commissionRebate: number;
+    rebateAccumulated: number;
     netProfit: number;
     unrealizedProfit: number;
     averageProfit: number;
@@ -560,6 +564,7 @@ export function AdaptiveElectronicPage({
           <StatCard label="Profit Factor" value={summary.profitFactor >= 900 ? "∞" : summary.profitFactor.toFixed(2)} />
           <StatCard label="平均R" value={summary.averageR.toFixed(2)} tone={pnlClass(summary.averageR)} />
           <StatCard label="退水折扣" value={performance.settings.commissionDiscountLabel ?? `${(performance.settings.commissionDiscount * 10).toFixed(1)}折`} />
+          <StatCard label="退水累積" value={money(summary.commissionRebate)} />
           <StatCard label="交易成本" value="手續費+證交稅" />
         </section>
       )}
@@ -567,7 +572,7 @@ export function AdaptiveElectronicPage({
       {performance?.settings.costFormula && (
         <p className="pattern-risk-notice">
           <CircleDollarSign />
-          交易成本公式：{performance.settings.costFormula}；目前退水折扣 {performance.settings.commissionDiscountLabel ?? `${(performance.settings.commissionDiscount * 10).toFixed(1)}折`}。
+          交易成本公式：{performance.settings.costFormula}；目前退水折扣 {performance.settings.commissionDiscountLabel ?? `${(performance.settings.commissionDiscount * 10).toFixed(1)}折`}；退水累積 {money(summary?.commissionRebate)}。
         </p>
       )}
 

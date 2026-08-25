@@ -533,7 +533,7 @@ def finalize_automatic_position_event(
         exit_price - position.entry_price
     ) * close_quantity * 1000 * factor
     turnover = (exit_price + position.entry_price) * close_quantity * 1000
-    fee = round(turnover * 0.001425 * 0.6, 2)
+    fee = round(turnover * 0.001425 * 0.2, 2)
     sell_price = exit_price if position.direction == "long" else position.entry_price
     tax = round(sell_price * close_quantity * 1000 * 0.0015, 2)
     slippage = round(exit_price * close_quantity * 1000 * 0.0002, 2)

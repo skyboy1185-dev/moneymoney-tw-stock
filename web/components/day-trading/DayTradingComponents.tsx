@@ -395,7 +395,7 @@ export function DayTradingPerformancePanel({
       ["已實現損益", todayRealized, "未實現損益", liveTodayUnrealized, "今日總盈虧", todayTotal],
       ["今日多單已實現", todayLongRealized, "多單未實現", todayLongUnrealized, "多單合計", todayLongTotal],
       ["今日空單已實現", todayShortRealized, "空單未實現", todayShortUnrealized, "空單合計", todayShortTotal],
-      ["手續費", performance?.today?.fee ?? 0, "交易稅", performance?.today?.tax ?? 0, "滑價", performance?.today?.slippage ?? 0, "交易成本", performance?.today?.tradingCost ?? 0],
+      ["手續費", performance?.today?.fee ?? 0, "退水累積", performance?.today?.commissionRebate ?? 0, "交易稅", performance?.today?.tax ?? 0, "滑價", performance?.today?.slippage ?? 0, "交易成本", performance?.today?.tradingCost ?? 0],
       [],
       ["代號", "名稱", "方向", "狀態", "進場時間", "進場點位", "出場／現價", "數量（張）", "盈虧", "報酬率", "進場原因", "出場原因"],
       ...todayPositions.map((item) => [
@@ -422,7 +422,7 @@ export function DayTradingPerformancePanel({
       ["已實現損益", monthRealized, "未實現損益", liveMonthUnrealized, "本月總盈虧", monthTotal],
       ["本月多單已實現", monthLongRealized, "多單未實現", monthLongUnrealized, "多單合計", monthLongTotal],
       ["本月空單已實現", monthShortRealized, "空單未實現", monthShortUnrealized, "空單合計", monthShortTotal],
-      ["手續費", performance?.fee ?? 0, "交易稅", performance?.tax ?? 0, "滑價", performance?.slippage ?? 0, "交易成本", performance?.tradingCost ?? 0],
+      ["手續費", performance?.fee ?? 0, "退水累積", performance?.commissionRebate ?? 0, "交易稅", performance?.tax ?? 0, "滑價", performance?.slippage ?? 0, "交易成本", performance?.tradingCost ?? 0],
       [],
       ["代號", "名稱", "方向", "狀態", "進場時間", "進場點位", "出場時間", "出場／現價", "數量（張）", "手續費", "交易稅", "滑價", "盈虧", "報酬率", "進場原因", "出場原因", "策略"],
       ...monthPositions.map((item) => [
@@ -450,6 +450,7 @@ export function DayTradingPerformancePanel({
       <article><span>本月完成交易</span><b>{performance?.tradeCount ?? 0} 筆</b><small>獲利 {performance?.wins ?? 0} · 虧損 {performance?.losses ?? 0}</small></article>
       <article className={monthTotal >= 0 ? "profit" : "loss"}><span>本月總盈虧</span><b>{number(monthTotal, 0)} 元</b><small>已實現 {number(monthRealized, 0)} · 未實現 {number(liveMonthUnrealized, 0)}</small></article>
       <article><span>本月交易成本</span><b>{number(performance?.tradingCost ?? 0, 0)} 元</b><small>手續費、交易稅與滑價</small></article>
+      <article><span>退水累積</span><b>{number(performance?.commissionRebate ?? 0, 0)} 元</b><small>已用 2 折計算，顯示 10 折與 2 折差額</small></article>
     </div>
     <div className="day-trading-directional-pnl">
       <article className={monthLongTotal >= 0 ? "profit" : "loss"}>

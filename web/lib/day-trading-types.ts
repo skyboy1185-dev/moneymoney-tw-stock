@@ -276,6 +276,11 @@ export interface DayTradingPerformanceSummary {
   tax: number;
   slippage: number;
   tradingCost: number;
+  commissionDiscount: number;
+  commissionDiscountLabel: string;
+  grossCommission: number;
+  commissionRebate: number;
+  rebateAccumulated: number;
   openPositionCount: number;
   averageProfit: number;
   maxLoss: number;

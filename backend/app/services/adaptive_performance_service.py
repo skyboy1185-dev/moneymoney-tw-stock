@@ -77,6 +77,26 @@ def estimated_trade_result(
     }
 
 
+def _commission(amount: Decimal, commission_discount: Decimal) -> Decimal:
+    if amount <= 0:
+        return Decimal("0")
+    return max(MINIMUM_COMMISSION, amount * COMMISSION_RATE * commission_discount)
+
+
+def _commission_totals(
+    trade: AdaptivePaperTrade,
+    commission_discount: Decimal,
+    include_exit: bool,
+) -> tuple[Decimal, Decimal]:
+    quantity = Decimal(trade.quantity_shares)
+    gross = _commission(trade.entry_price * quantity, Decimal("1"))
+    actual = _commission(trade.entry_price * quantity, commission_discount)
+    if include_exit and trade.exit_price is not None:
+        gross += _commission(trade.exit_price * quantity, Decimal("1"))
+        actual += _commission(trade.exit_price * quantity, commission_discount)
+    return _money(gross), _money(actual)
+
+
 def win_rate_from_profits(profits: Iterable[Decimal]) -> float:
     values = list(profits)
     if not values:
@@ -490,6 +510,18 @@ def performance_payload(
     gross_loss = abs(sum((item.net_profit for item in closed if item.net_profit < 0), Decimal("0")))
     profit_factor = float(sum((item.net_profit for item in closed if item.net_profit > 0), Decimal("0")) / gross_loss) if gross_loss else (999 if net_profit > 0 else 0)
     settings = ensure_super_ai_settings(db)
+    commission_discount = Decimal(settings.commission_discount)
+    gross_commission = Decimal("0")
+    actual_commission = Decimal("0")
+    for item in closed:
+        item_gross, item_actual = _commission_totals(item, commission_discount, include_exit=True)
+        gross_commission += item_gross
+        actual_commission += item_actual
+    for item in open_trades:
+        item_gross, item_actual = _commission_totals(item, commission_discount, include_exit=False)
+        gross_commission += item_gross
+        actual_commission += item_actual
+    commission_rebate = max(Decimal("0"), gross_commission - actual_commission)
     return {
         "mode": "paper",
         "systemName": SYSTEM_NAME,
@@ -519,6 +551,10 @@ def performance_payload(
             "shortWinRate": win_rate_from_profits(item.net_profit for item in short_closed),
             "grossProfit": float(_money(gross_profit)),
             "tradingCost": float(_money(costs)),
+            "grossCommission": float(_money(gross_commission)),
+            "actualCommission": float(_money(actual_commission)),
+            "commissionRebate": float(_money(commission_rebate)),
+            "rebateAccumulated": float(_money(commission_rebate)),
             "netProfit": float(_money(net_profit)),
             "unrealizedProfit": float(_money(unrealized)),
             "averageProfit": float(_money(average)),

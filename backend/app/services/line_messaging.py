@@ -639,7 +639,7 @@ class LineNotificationDispatcher:
         status_processed_dates: set[str] = set()
         with SessionLocal() as db:
             notification_settings = get_line_notification_settings(db)
-        for signal in recommendations[:5]:
+        for signal in recommendations:
             if not signal.get("isOfficialRecommendation"):
                 continue
             action = str(signal.get("action", ""))
