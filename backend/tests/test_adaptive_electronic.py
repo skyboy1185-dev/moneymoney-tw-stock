@@ -14,7 +14,12 @@ from app.services.adaptive_electronic_service import _display_candidate_status, 
 from app.services.adaptive_electronic_automation import _normalize_scan_payload
 from app.services.adaptive_entry_window import adaptive_entry_window_open
 from app.services.adaptive_parameters import DEFAULT_PARAMETERS
-from app.services.adaptive_performance_service import _exit_reason, estimated_trade_result, win_rate_from_profits
+from app.services.adaptive_performance_service import (
+    _exit_reason,
+    _release_reserved_capital,
+    estimated_trade_result,
+    win_rate_from_profits,
+)
 from app.services.adaptive_strategies import BreakoutStrategy, RangeTradingStrategy
 from app.services.electronic_stock_universe_service import common_filter_failures
 from app.services.market_regime_service import evaluate_market_regime
@@ -220,6 +225,19 @@ def test_paper_trade_profit_deducts_commission_and_tax() -> None:
     assert result["tradingCost"] > Decimal("0")
     assert result["netProfit"] < result["grossProfit"]
     assert result["netProfit"] > Decimal("0")
+
+
+def test_super_ai_exit_restores_reserved_capital_after_net_loss() -> None:
+    class Settings:
+        available_capital = Decimal("1844940")
+
+    class Trade:
+        entry_price = Decimal("100")
+        quantity_shares = 1000
+
+    _release_reserved_capital(Settings, Trade(), Decimal("-8000"))
+
+    assert Settings.available_capital == Decimal("1936940.00")
 
 
 def test_paper_trade_win_rate_uses_closed_net_profit_only() -> None:

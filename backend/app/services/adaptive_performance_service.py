@@ -78,6 +78,16 @@ def estimated_trade_result(
     }
 
 
+def _release_reserved_capital(settings: Any, trade: AdaptivePaperTrade, net_profit: Decimal) -> None:
+    """Restore paper cash when a Super AI position is closed.
+
+    Entries reserve entry notional from available_capital. On exit, release that
+    reserved notional plus the realized net P/L after fee, tax and rebate rules.
+    """
+    released = Decimal(trade.entry_price) * Decimal(trade.quantity_shares) + Decimal(net_profit)
+    settings.available_capital = _money(max(Decimal("0"), Decimal(settings.available_capital) + released))
+
+
 def _commission(amount: Decimal, commission_discount: Decimal) -> Decimal:
     if amount <= 0:
         return Decimal("0")
@@ -299,6 +309,7 @@ def _manage_open_trades(
         trade.gross_profit = result["grossProfit"]
         trade.trading_cost = result["tradingCost"]
         trade.net_profit = result["netProfit"]
+        _release_reserved_capital(settings, trade, result["netProfit"])
         trade.return_percentage = result["returnPercentage"]
         trade.realized_r = (
             result["netProfit"] / trade.risk_amount
