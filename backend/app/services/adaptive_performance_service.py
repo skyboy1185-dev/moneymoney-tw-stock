@@ -104,8 +104,12 @@ def _exit_reason(
             return "TAKE_PROFIT"
         if regime == "CRASH":
             return "MARKET_RISK"
-    if candidate is not None and candidate.health_score < Decimal("55"):
-        return "SCORE_WEAKENED"
+    if candidate is not None:
+        if trade.side == "SHORT":
+            if candidate.strategy_type != "CRASH" or candidate.total_score < Decimal("60"):
+                return "SCORE_WEAKENED"
+        elif candidate.health_score < Decimal("55"):
+            return "SCORE_WEAKENED"
     return None
 
 
