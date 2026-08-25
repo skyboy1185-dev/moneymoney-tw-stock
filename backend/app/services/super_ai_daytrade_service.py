@@ -166,12 +166,22 @@ def trade_side_for(regime: str, candidate: AdaptiveStockCandidate) -> str:
         return "SHORT"
     if regime == "BREAKOUT":
         return "LONG"
+    if candidate.strategy_type == "CRASH":
+        severe_weak = (
+            float(candidate.relative_strength) <= -3
+            or float(candidate.industry_strength) <= 45
+            or candidate.candidate_status in {"market_risk_high", "breakout_watch", "can_enter"}
+        )
+        if severe_weak:
+            return "SHORT"
     weak = (
         float(candidate.relative_strength) < -3
         or float(candidate.industry_strength) < 35
         or candidate.candidate_status == "market_risk_high"
     )
     if regime in {"RANGE", "UNCERTAIN"} and weak:
+        return "SHORT"
+    if regime == "RECOVERY" and candidate.strategy_type == "CRASH" and weak:
         return "SHORT"
     return "LONG"
 
@@ -199,7 +209,20 @@ def risk_reward(entry: Decimal, stop: Decimal, target2: Decimal, side: str) -> D
     return (reward / risk).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
 
 
-def ai_score(candidate: AdaptiveStockCandidate, regime: str) -> Decimal:
+def ai_score(candidate: AdaptiveStockCandidate, regime: str, side: str = "LONG") -> Decimal:
+    if side == "SHORT":
+        base = Decimal(candidate.total_score) * Decimal("0.80")
+        market_bonus = (
+            Decimal("14") if regime == "CRASH"
+            else Decimal("7") if regime in {"RANGE", "UNCERTAIN"}
+            else Decimal("4") if regime == "RECOVERY"
+            else Decimal("-30")
+        )
+        weakness_bonus = min(Decimal("12"), max(Decimal("0"), -Decimal(candidate.relative_strength)) * Decimal("1.5"))
+        if Decimal(candidate.industry_strength) <= Decimal("40"):
+            weakness_bonus += Decimal("4")
+        score = max(Decimal("0"), min(Decimal("100"), base + market_bonus + weakness_bonus))
+        return score.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     base = Decimal(candidate.total_score) * Decimal("0.60") + Decimal(candidate.health_score) * Decimal("0.40")
     market_bonus = Decimal("10") if regime in {"BREAKOUT", "RECOVERY"} else Decimal("4") if regime in {"RANGE", "UNCERTAIN"} else Decimal("0")
     score = max(Decimal("0"), min(Decimal("100"), base + market_bonus))
@@ -291,7 +314,7 @@ def trading_gate(
     side = trade_side_for(regime, candidate)
     entry, stop, tp1, tp2 = levels_for_side(candidate, side)
     rr = risk_reward(entry, stop, tp2, side)
-    score = ai_score(candidate, regime)
+    score = ai_score(candidate, regime, side)
     risk = risk_status(db, settings, at)
     open_trades = list(db.scalars(select(AdaptivePaperTrade).where(
         AdaptivePaperTrade.status == "open",

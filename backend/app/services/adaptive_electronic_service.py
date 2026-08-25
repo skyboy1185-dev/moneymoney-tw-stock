@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 import json
-from typing import Any
+from typing import Any, Sequence
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -67,6 +67,16 @@ def _candidate_levels(stock: AdaptiveStockInput, strategy: str) -> dict[str, flo
     price = stock.price
     atr = stock.atr14 or price * .025
     breakout = stock.range_high or price
+    if strategy == "CRASH":
+        entry_low, entry_high = price * .995, price * 1.005
+        stop = min(price * 1.08, price + atr * 1.8)
+        risk = max(.01, stop - entry_low)
+        return {
+            "entry_low": round(entry_low, 2), "entry_high": round(entry_high, 2),
+            "breakout": round(stock.range_low or price, 2), "stop": round(stop, 2),
+            "target1": round(max(.01, entry_low - risk * 1.5), 2),
+            "target2": round(max(.01, entry_low - risk * 2.5), 2),
+        }
     if strategy == "RANGE":
         entry_low = max(.01, stock.range_low or price * .98)
         entry_high = min(price * 1.01, entry_low * 1.02)
@@ -89,6 +99,60 @@ def _candidate_levels(stock: AdaptiveStockInput, strategy: str) -> dict[str, flo
         "target1": round(entry_high + risk * 1.5, 2),
         "target2": round(entry_high + risk * 2.5, 2),
     }
+
+
+def _short_score(stock: AdaptiveStockInput, regime: str) -> StrategyScore:
+    market_score = {"CRASH": 20, "RANGE": 14, "UNCERTAIN": 12, "RECOVERY": 8, "BREAKOUT": -25}.get(regime, 0)
+    trend_items = [
+        (stock.price < (stock.ma5 or stock.price * 2), 5, "price_below_ma5"),
+        (stock.price < (stock.ma20 or stock.price * 2), 8, "price_below_ma20"),
+        (stock.ma20_slope is not None and stock.ma20_slope < 0, 6, "ma20_slope_down"),
+        (stock.ma60 is not None and stock.price < stock.ma60, 5, "price_below_ma60"),
+        (stock.higher_low is False, 4, "no_higher_low"),
+    ]
+    momentum_items = [
+        (stock.return_1d < 0, 6, "intraday_weak"),
+        (stock.return_3d < 0, 6, "three_day_weak"),
+        (stock.relative_strength_market <= -3, 8, "underperform_market_3pct"),
+        (stock.relative_strength_market <= -6, 6, "underperform_market_6pct"),
+        (stock.relative_strength_electronic <= -3, 5, "underperform_electronic"),
+        ((stock.rsi14 or 100) < 45, 4, "rsi_weak"),
+    ]
+    volume_items = [
+        ((stock.volume_ratio_20d or 0) >= 1.2 and stock.return_1d < 0, 8, "down_on_volume"),
+        (stock.down_volume_less_than_up is False, 5, "down_volume_dominates"),
+        ((stock.close_location or 1) <= .35, 4, "close_near_low"),
+        ((stock.upper_shadow_ratio or 0) >= .45, 4, "upper_shadow_supply"),
+    ]
+    sector_items = [
+        (stock.industry_strength_score <= 40, 8, "weak_sector"),
+        (stock.industry_rank_percentile >= .65, 5, "sector_lagging_rank"),
+        (stock.same_industry_strong_count <= 1, 3, "few_strong_peers"),
+    ]
+    def points(items: Sequence[tuple[bool, int | float, str]]) -> tuple[float, list[str]]:
+        return sum(weight for passed, weight, _ in items if passed), [reason for passed, _, reason in items if passed]
+    trend, trend_reasons = points(trend_items)
+    momentum, momentum_reasons = points(momentum_items)
+    volume, volume_reasons = points(volume_items)
+    sector, sector_reasons = points(sector_items)
+    components = {
+        "market_short": max(0, market_score),
+        "trend_short": min(28, trend),
+        "momentum_short": min(35, momentum),
+        "volume_short": min(18, volume),
+        "sector_short": min(19, sector),
+    }
+    total = round(max(0, min(100, sum(components.values()) + min(6, max(0, -stock.gap_percent)))), 2)
+    reasons = tuple([*trend_reasons, *momentum_reasons, *volume_reasons, *sector_reasons])
+    risks: list[str] = []
+    if regime == "BREAKOUT":
+        risks.append("strong_bull_blocks_short")
+    if stock.price >= (stock.ma20 or stock.price * 2) and regime != "CRASH":
+        risks.append("not_below_major_average")
+    if (stock.volume_ratio_20d or 0) < .8:
+        risks.append("volume_too_light_for_short")
+    status = "can_enter" if total >= 80 and not risks[:1] else "breakout_watch"
+    return StrategyScore(total, components, reasons, tuple(risks), status, 0)
 
 
 def _health(stock: AdaptiveStockInput, regime: str) -> tuple[float, dict[str, float], list[str]]:
@@ -221,7 +285,7 @@ def process_adaptive_scan(db: Session, payload: AdaptiveScanPayload) -> dict[str
         else:
             for key, value in values.items(): setattr(stored, key, value)
 
-    scored: list[tuple[AdaptiveStockInput, StrategyScore, float, dict[str, float], list[str]]] = []
+    scored: list[tuple[AdaptiveStockInput, str, StrategyScore, float, dict[str, float], list[str]]] = []
     selection_strategy = _selection_strategy(evaluation, payload)
     for stock in payload.stocks:
         mapping = db.scalar(select(ElectronicIndustryMapping).where(ElectronicIndustryMapping.stock_code == stock.stock_code))
@@ -261,17 +325,30 @@ def process_adaptive_scan(db: Session, payload: AdaptiveScanPayload) -> dict[str
                 "等待確認",
                 result.false_breakout_risk,
             )
-        if result.total < minimum:
-            continue
         health, health_breakdown, missing = _health(stock, evaluation.regime)
-        scored.append((stock, result, health, health_breakdown, missing))
+        if result.total >= minimum:
+            scored.append((stock, strategy_key, result, health, health_breakdown, missing))
+        short_result = _short_score(stock, evaluation.regime)
+        short_minimum = 55 if evaluation.regime == "CRASH" else 62 if evaluation.regime in {"RANGE", "UNCERTAIN"} else 70
+        if short_result.total >= short_minimum:
+            scored.append((stock, "CRASH", short_result, health, health_breakdown, missing))
 
-    scored.sort(key=lambda row: (row[1].total, row[2], row[0].industry_strength_score), reverse=True)
+    scored.sort(key=lambda row: (row[2].total, row[3], row[0].industry_strength_score), reverse=True)
     maximum = int(parameters["monitor.maximum_candidates"])
     db.execute(delete(AdaptiveStockCandidate).where(AdaptiveStockCandidate.trade_date == payload.market.trade_date))
     candidates: list[AdaptiveStockCandidate] = []
-    for rank, (stock, result, health, health_breakdown, missing) in enumerate(scored[:maximum], 1):
-        levels = _candidate_levels(stock, selection_strategy)
+    deduped: list[tuple[AdaptiveStockInput, str, StrategyScore, float, dict[str, float], list[str]]] = []
+    seen_strategy_symbols: set[tuple[str, str]] = set()
+    for item in scored:
+        key = (item[0].stock_code, item[1])
+        if key in seen_strategy_symbols:
+            continue
+        seen_strategy_symbols.add(key)
+        deduped.append(item)
+        if len(deduped) >= maximum:
+            break
+    for rank, (stock, candidate_strategy, result, health, health_breakdown, missing) in enumerate(deduped, 1):
+        levels = _candidate_levels(stock, candidate_strategy)
         status = _status_code(result.status)
         # A MIS five-level reference price is official market data and may be
         # shown for observation, but it is not an executed trade price.
@@ -280,10 +357,14 @@ def process_adaptive_scan(db: Session, payload: AdaptiveScanPayload) -> dict[str
             or stock.quote_source.startswith("Yahoo Finance")
         ):
             status = "waiting_confirmation"
-        if evaluation.regime == "CRASH": status = "market_risk_high"
+        if candidate_strategy == "CRASH":
+            status = "can_enter" if result.total >= 80 and entry_window_open else "breakout_watch"
+        elif evaluation.regime == "CRASH": status = "market_risk_high"
         elif not entry_window_open: status = "next_day_watch"
         if result.status == "可以進場" and health < parameters.get("recovery.entry_health_minimum", 75):
             status = "waiting_confirmation" if entry_window_open else "next_day_watch"
+        if candidate_strategy == "CRASH":
+            status = "can_enter" if result.total >= 80 and entry_window_open else "breakout_watch"
         selected_reasons = list(result.reasons[:12])
         if status == "next_day_watch":
             selected_reasons.append("已超過 13:20 新進場截止時間，隔日開盤後必須重新確認")
@@ -291,7 +372,7 @@ def process_adaptive_scan(db: Session, payload: AdaptiveScanPayload) -> dict[str
             trade_date=payload.market.trade_date, stock_code=stock.stock_code,
             stock_name=stock.stock_name, market_type=stock.market_type,
             main_industry=stock.main_industry, sub_industry=stock.sub_industry,
-            strategy_type=selection_strategy, total_score=_decimal(result.total),
+            strategy_type=candidate_strategy, total_score=_decimal(result.total),
             technical_score=_decimal(sum(value for key, value in result.components.items() if key not in {"法人與大戶籌碼", "營收與基本面", "電子次產業強度", "基本面與產業題材"})),
             chip_score=_decimal(result.components.get("法人與大戶籌碼", result.components.get("籌碼穩定度", 0))),
             fundamental_score=_decimal(result.components.get("營收與基本面", result.components.get("基本面與營收", result.components.get("基本面與產業題材", 0)))),

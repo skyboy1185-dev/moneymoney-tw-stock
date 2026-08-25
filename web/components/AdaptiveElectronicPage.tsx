@@ -415,7 +415,7 @@ export function AdaptiveElectronicPage({
 
   const visibleCandidates = useMemo(() => candidates.filter((item) => {
     const textMatch = !query || `${item.stockCode}${item.stockName}${item.subIndustry}${item.strategyName}`.includes(query);
-    const side = status?.marketState.regime === "CRASH" ? "SHORT" : item.relativeStrength < -3 ? "SHORT" : "LONG";
+    const side = status?.marketState.regime === "CRASH" || item.strategyType === "CRASH" || item.relativeStrength < -3 ? "SHORT" : "LONG";
     const sideMatch = !sideFilter || sideFilter === side;
     return textMatch && sideMatch;
   }), [candidates, query, sideFilter, status?.marketState.regime]);
@@ -606,7 +606,7 @@ export function AdaptiveElectronicPage({
             </thead>
             <tbody>
               {visibleCandidates.map((item) => {
-                const inferredSide = market?.regime === "CRASH" || item.relativeStrength < -3 ? "SHORT" : "LONG";
+                const inferredSide = market?.regime === "CRASH" || item.strategyType === "CRASH" || item.relativeStrength < -3 ? "SHORT" : "LONG";
                 const aiScore = Math.min(100, item.totalScore * 0.6 + item.healthScore * 0.4 + (market?.regime === "BREAKOUT" || market?.regime === "RECOVERY" ? 10 : 4));
                 const risk = Math.max(0.01, Math.abs(item.currentPrice - item.stopLossPrice));
                 const reward = Math.max(0, Math.abs(item.targetPrice2 - item.currentPrice));
