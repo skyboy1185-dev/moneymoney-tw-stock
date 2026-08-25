@@ -47,6 +47,16 @@ function rsi(values:number[], days=14) { if(values.length<days+1)return null; le
 function atr(prices:DailyPrice[], days=14) { if(prices.length<days+1)return null; return avg(prices.slice(-days).map((row,i)=>{const prev=prices[prices.length-days+i-1].close; return Math.max(row.high-row.low,Math.abs(row.high-prev),Math.abs(row.low-prev));})); }
 function subIndustry(symbol:string, main:string) { const tags=themesForSymbol(symbol); return tags.find((tag)=>["IC設計","PCB","ABF載板","被動元件","記憶體","玻纖布","低軌衛星","廠務工程"].includes(tag)) ?? main; }
 
+function taipeiToday() { return new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Taipei",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date()); }
+function isTaiwanMarketSessionNow() {
+  const parts=new Intl.DateTimeFormat("en-GB",{timeZone:"Asia/Taipei",weekday:"short",hour:"2-digit",minute:"2-digit",hour12:false}).formatToParts(new Date());
+  const value=(type:string)=>parts.find((part)=>part.type===type)?.value ?? "";
+  const weekday=value("weekday"), hour=Number(value("hour")), minute=Number(value("minute"));
+  if(weekday==="Sat"||weekday==="Sun"||!Number.isFinite(hour)||!Number.isFinite(minute))return false;
+  const minutes=hour*60+minute;
+  return minutes>=9*60&&minutes<=13*60+30;
+}
+
 async function json(url:string) {
   let lastError:unknown;
   for(let attempt=1;attempt<=2;attempt+=1){
@@ -194,10 +204,21 @@ async function buildAdaptiveElectronicScanUncached(scope: ScanScope) {
   const currentTime=new Date().toLocaleTimeString("en-GB",{timeZone:"Asia/Taipei",hour12:false});
   valid=valid.map((item)=>{const latest=item.prices.at(-1);if(!latest||latest.date<=item.quote.date)return item;return {...item,quote:{symbol:item.meta.symbol,price:latest.close,open:latest.open,high:latest.high,low:latest.low,volume:latest.volume,turnover:latest.close*latest.volume,date:latest.date,time:currentTime,source:"Yahoo Finance 準即時",realtime:false}};});
   if(!valid.length)throw new Error("掃描股票皆無法取得足夠的官方歷史行情");
+  const applyLiveQuote=(item:(typeof valid)[number],live:StockQuote|undefined)=>{if(!live?.isRealtime)return item;const candle={symbol:item.meta.symbol,name:item.meta.name,date:live.date,open:live.open,high:live.high,low:live.low,close:live.price,volume:live.volume};return {...item,quote:{symbol:item.meta.symbol,price:live.price,open:live.open,high:live.high,low:live.low,volume:live.volume,turnover:live.price*live.volume,date:live.date,time:live.time,source:live.source,realtime:true},prices:[...item.prices.filter((p)=>p.date!==live.date),candle].sort((a,b)=>a.date.localeCompare(b.date))};};
   const liveQuotes=await getOfficialSnapshotQuotes(valid.map((item)=>item.meta));
-  valid=valid.map((item)=>{const live=liveQuotes.get(item.meta.symbol);if(!live?.isRealtime||!live.source.startsWith("TWSE MIS"))return item;const candle={symbol:item.meta.symbol,name:item.meta.name,date:live.date,open:live.open,high:live.high,low:live.low,close:live.price,volume:live.volume};return {...item,quote:{symbol:item.meta.symbol,price:live.price,open:live.open,high:live.high,low:live.low,volume:live.volume,turnover:live.price*live.volume,date:live.date,time:live.time,source:live.source,realtime:true},prices:[...item.prices.filter((p)=>p.date!==live.date),candle].sort((a,b)=>a.date.localeCompare(b.date))};});
+  valid=valid.map((item)=>applyLiveQuote(item,liveQuotes.get(item.meta.symbol)));
+  let hasLiveMarket=valid.some((item)=>item.quote.realtime===true);
+  if(!hasLiveMarket&&isTaiwanMarketSessionNow()){
+    const priority=valid.slice().sort((a,b)=>(b.quote?.turnover??0)-(a.quote?.turnover??0)).slice(0,260);
+    const fallbackQuotes=await getOfficialQuotes(priority.map((item)=>item.meta));
+    const prioritySymbols=new Set(priority.map((item)=>item.meta.symbol));
+    valid=valid.map((item)=>prioritySymbols.has(item.meta.symbol)?applyLiveQuote(item,fallbackQuotes.get(item.meta.symbol)):item);
+    hasLiveMarket=valid.some((item)=>item.quote.realtime===true);
+  }
+  const freshDate=taipeiToday();
+  const freshValid=hasLiveMarket?valid.filter((item)=>item.quote.realtime===true||item.quote.date===freshDate):[];
+  if(freshValid.length>=20)valid=freshValid;
   const stockTradeDate=valid.map((item)=>item.quote.date).sort().at(-1);
-  const hasLiveMarket=valid.some((item)=>item.quote.realtime===true);
   const indexCloses=indexLive&&hasLiveMarket&&indexLive.date===stockTradeDate?[...indexHistory,indexLive.price]:indexHistory;
   const electronic20=avg(valid.map((item)=>pct(item.prices.map((p)=>p.close),20))), market20=pct(indexCloses,20);
   const base=valid.map((item)=>features(item.meta,item.prices,item.quote,market20,electronic20));
