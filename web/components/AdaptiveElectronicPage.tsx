@@ -185,17 +185,17 @@ type Performance = {
     strategy: string;
     trades: number;
     winRate: number;
-    averageR: number;
-    profitFactor: number;
-    recent30ProfitFactor: number;
+    averageR: number | string;
+    profitFactor: number | string;
+    recent30ProfitFactor: number | string;
     weightStatus: "ACTIVE" | "REDUCED" | "PAUSED" | string;
   }>;
   timeBucketAnalytics: Array<{
     bucket: string;
     trades: number;
     winRate: number;
-    averageR: number;
-    profitFactor: number;
+    averageR: number | string;
+    profitFactor: number | string;
   }>;
 };
 
@@ -238,6 +238,11 @@ function price(value: number | null | undefined) {
 function pct(value: number | null | undefined) {
   const safe = Number(value ?? 0);
   return `${safe > 0 ? "+" : ""}${safe.toFixed(2)}%`;
+}
+
+function num(value: number | string | null | undefined) {
+  const safe = Number(value ?? 0);
+  return Number.isFinite(safe) ? safe : 0;
 }
 
 function dt(value: string | null | undefined) {
@@ -713,9 +718,9 @@ export function AdaptiveElectronicPage({
                     <td>{strategyLabel(item.strategy)}</td>
                     <td>{item.trades}</td>
                     <td>{pct(item.winRate)}</td>
-                    <td className={pnlClass(item.averageR)}>{item.averageR.toFixed(2)}</td>
-                    <td>{item.profitFactor >= 900 ? "∞" : item.profitFactor.toFixed(2)}</td>
-                    <td>{item.recent30ProfitFactor >= 900 ? "∞" : item.recent30ProfitFactor.toFixed(2)}</td>
+                    <td className={pnlClass(num(item.averageR))}>{num(item.averageR).toFixed(2)}</td>
+                    <td>{num(item.profitFactor) >= 900 ? "∞" : num(item.profitFactor).toFixed(2)}</td>
+                    <td>{num(item.recent30ProfitFactor) >= 900 ? "∞" : num(item.recent30ProfitFactor).toFixed(2)}</td>
                     <td>{item.weightStatus}</td>
                   </tr>
                 ))}
@@ -735,8 +740,8 @@ export function AdaptiveElectronicPage({
                     <td>{item.bucket}</td>
                     <td>{item.trades}</td>
                     <td>{pct(item.winRate)}</td>
-                    <td className={pnlClass(item.averageR)}>{item.averageR.toFixed(2)}</td>
-                    <td>{item.profitFactor >= 900 ? "∞" : item.profitFactor.toFixed(2)}</td>
+                    <td className={pnlClass(num(item.averageR))}>{num(item.averageR).toFixed(2)}</td>
+                    <td>{num(item.profitFactor) >= 900 ? "∞" : num(item.profitFactor).toFixed(2)}</td>
                   </tr>
                 ))}
               </tbody>
