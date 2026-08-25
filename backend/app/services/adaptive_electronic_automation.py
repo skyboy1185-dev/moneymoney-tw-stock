@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 import json
 import logging
 import math
@@ -98,13 +98,23 @@ async def fetch_adaptive_scan_payload() -> AdaptiveScanPayload:
     }
     if settings.adaptive_electronic_scanner_token:
         headers["X-Adaptive-Scanner-Token"] = settings.adaptive_electronic_scanner_token
+    last_error: Exception | None = None
     async with httpx.AsyncClient(
         timeout=settings.adaptive_electronic_scanner_timeout_seconds,
         follow_redirects=True,
     ) as client:
-        response = await client.get(url, headers=headers)
-        response.raise_for_status()
-        return AdaptiveScanPayload.model_validate(_normalize_scan_payload(response.json()))
+        for attempt in range(3):
+            try:
+                response = await client.get(url, headers=headers)
+                response.raise_for_status()
+                return AdaptiveScanPayload.model_validate(_normalize_scan_payload(response.json()))
+            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError, httpx.TimeoutException) as error:
+                last_error = error
+                if attempt < 2:
+                    await asyncio.sleep(1.5 * (attempt + 1))
+                    continue
+                raise
+    raise last_error or RuntimeError("adaptive scanner failed")
 
 
 class AdaptiveElectronicAutomation:
@@ -119,6 +129,18 @@ class AdaptiveElectronicAutomation:
     @property
     def state(self) -> dict:
         return dict(self._state)
+
+    def _has_recent_success(self, now: datetime, max_age: timedelta = timedelta(minutes=20)) -> bool:
+        value = self._state.get("lastSuccessAt")
+        if not isinstance(value, str):
+            return False
+        try:
+            last_success = datetime.fromisoformat(value)
+        except ValueError:
+            return False
+        if last_success.tzinfo is None:
+            last_success = last_success.replace(tzinfo=UTC)
+        return now - last_success.astimezone(UTC) <= max_age
 
     async def start(self) -> None:
         if self._task and not self._task.done():
@@ -296,7 +318,12 @@ class AdaptiveElectronicAutomation:
                 raise
             except Exception as error:
                 logger.exception("Adaptive electronic automation cycle failed")
-                self._state.update({"status": "error", "lastError": str(error)[:500]})
+                current = datetime.now(UTC)
+                status = "running" if self._has_recent_success(current) else "error"
+                self._state.update({
+                    "status": status,
+                    "lastError": f"scanner transient error: {str(error)[:450]}",
+                })
             await asyncio.sleep(interval)
 
 
