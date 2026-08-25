@@ -121,7 +121,7 @@ def _exit_reason(
             return "STOP_LOSS"
         if price <= trade.target_price_2:
             return "TAKE_PROFIT"
-        if regime == "BREAKOUT":
+        if regime in {"BREAKOUT", "RECOVERY"}:
             return "MARKET_RISK"
     else:
         if price <= trade.stop_loss_price:

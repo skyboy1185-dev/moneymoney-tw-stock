@@ -167,7 +167,7 @@ def market_state(regime: str) -> dict[str, Any]:
 def trade_side_for(regime: str, candidate: AdaptiveStockCandidate) -> str:
     if regime == "CRASH":
         return "SHORT"
-    if regime == "BREAKOUT":
+    if regime in {"BREAKOUT", "RECOVERY"}:
         return "LONG"
     if candidate.strategy_type == "CRASH":
         severe_weak = (
@@ -183,8 +183,6 @@ def trade_side_for(regime: str, candidate: AdaptiveStockCandidate) -> str:
         or candidate.candidate_status == "market_risk_high"
     )
     if regime in {"RANGE", "UNCERTAIN"} and weak:
-        return "SHORT"
-    if regime == "RECOVERY" and candidate.strategy_type == "CRASH" and weak:
         return "SHORT"
     return "LONG"
 
@@ -277,7 +275,9 @@ def risk_status(db: Session, settings: SuperAIDaytradeSetting, at: datetime) -> 
     open_trades = list(db.scalars(select(AdaptivePaperTrade).where(
         AdaptivePaperTrade.status == "open",
     )).all())
-    today_pnl = sum((trade.net_profit for trade in closed), Decimal("0"))
+    realized_pnl = sum((trade.net_profit for trade in closed), Decimal("0"))
+    unrealized_pnl = sum((trade.unrealized_profit for trade in open_trades), Decimal("0"))
+    today_pnl = realized_pnl + unrealized_pnl
     daily_limit = Decimal(settings.max_capital) * Decimal(settings.daily_max_loss_pct) / Decimal("100")
     stop_losses = [trade for trade in closed if trade.net_profit < 0 and "STOP" in (trade.exit_reason or "").upper()]
     stop_new = (
