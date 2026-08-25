@@ -548,6 +548,20 @@ export function AdaptiveElectronicPage({
           <span>最後成功執行 <b>{dt(status?.lastSuccessAt)}</b></span>
           <button disabled={working} onClick={() => void sendTestEmail()}><Mail />發送測試Email</button>
         </div>
+        <div className="super-ai-email-policy">
+          <article>
+            <h3><Mail />會寄 Email 的正式訊號</h3>
+            <p>BUY 做多買進、SHORT 放空、ADD 加碼、REDUCE 減碼、STOP_LOSS 停損、TAKE_PROFIT 停利、EXIT 出場、RISK 風控警告、ERROR 系統異常。</p>
+          </article>
+          <article>
+            <h3><Bell />只做網頁通知，不寄 Email</h3>
+            <p>WATCH 觀察、候選股掃描、接近條件但尚未通過風控、尚未形成正式交易動作的提醒。</p>
+          </article>
+          <article>
+            <h3><ShieldAlert />判斷規則</h3>
+            <p>Email 代表正式交易/風控/異常訊號；所有訊號仍先經過市場、流動性、資金、風險、R/R 與重複訊號檢查，且目前預設為模擬盤。</p>
+          </article>
+        </div>
         {settings?.tradingMode === "LIVE" && (
           <p className="pattern-risk-notice"><AlertTriangle />目前為實盤交易模式。此模式保存在後端，不會因重新整理自動切回模擬盤。</p>
         )}
