@@ -285,6 +285,9 @@ export function DayTradingDashboard() {
 
   return <div className="adaptive-page day-trading-page day-trading-adaptive">
     <DayTradingDisclaimer mode={regime.mode} notice={regime.dataNotice} />
+    <p className="pattern-risk-notice">
+      <ShieldAlert />策略隔離：本頁是「當沖機器人」，使用原版盤中訊號、三關價、即時持倉監控與 day_trading_* 績效；可共用行情資料，但不沿用「超強AI當沖系統」的 SUPER_AI_DAYTRADE AI 評分、空方候選池或獨立績效。
+    </p>
     {error && <div className="dt-error"><AlertTriangleIcon />{error}<button onClick={() => { setError(""); void refresh(userId); }}><RefreshCw />重試</button></div>}
     {toast && <div className="dt-toast" role="status"><Activity />{toast}</div>}
     {lineToasts.length > 0 && <div className="dt-line-toast-stack" aria-live="polite">
