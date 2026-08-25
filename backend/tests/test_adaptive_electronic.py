@@ -14,7 +14,7 @@ from app.services.adaptive_electronic_service import _display_candidate_status, 
 from app.services.adaptive_electronic_automation import _normalize_scan_payload
 from app.services.adaptive_entry_window import adaptive_entry_window_open
 from app.services.adaptive_parameters import DEFAULT_PARAMETERS
-from app.services.adaptive_performance_service import estimated_trade_result, win_rate_from_profits
+from app.services.adaptive_performance_service import _exit_reason, estimated_trade_result, win_rate_from_profits
 from app.services.adaptive_strategies import BreakoutStrategy, RangeTradingStrategy
 from app.services.electronic_stock_universe_service import common_filter_failures
 from app.services.market_regime_service import evaluate_market_regime
@@ -143,20 +143,32 @@ def test_yahoo_fallback_quote_remains_observable() -> None:
     assert failures == []
 
 
-def test_new_entry_window_closes_exactly_at_1320() -> None:
+def test_new_entry_window_closes_exactly_at_1325() -> None:
     assert adaptive_entry_window_open(
-        datetime(2026, 7, 31, 13, 19, 59, tzinfo=TAIPEI), True, date(2026, 7, 31),
+        datetime(2026, 7, 31, 13, 24, 59, tzinfo=TAIPEI), True, date(2026, 7, 31),
     ) is True
     assert adaptive_entry_window_open(
-        datetime(2026, 7, 31, 13, 20, tzinfo=TAIPEI), True, date(2026, 7, 31),
+        datetime(2026, 7, 31, 13, 25, tzinfo=TAIPEI), True, date(2026, 7, 31),
     ) is False
     assert adaptive_entry_window_open(
         datetime(2026, 7, 31, 13, 10, tzinfo=TAIPEI), False, date(2026, 7, 31),
     ) is False
     assert _display_candidate_status(
         "can_enter", date(2026, 7, 31),
-        datetime(2026, 7, 31, 13, 20, tzinfo=TAIPEI),
+        datetime(2026, 7, 31, 13, 25, tzinfo=TAIPEI),
     ) == "next_day_watch"
+
+
+def test_super_ai_daytrade_forces_exit_after_1325() -> None:
+    class Trade:
+        side = "LONG"
+        stop_loss_price = Decimal("90")
+        target_price_2 = Decimal("120")
+
+    assert _exit_reason(
+        Trade(), Decimal("100"), "RANGE", None,
+        datetime(2026, 7, 31, 13, 25, tzinfo=TAIPEI),
+    ) == "DAY_TRADE_CLOSE"
 
 
 def test_breakout_strategy_is_traceable_and_meets_direct_entry_score() -> None:

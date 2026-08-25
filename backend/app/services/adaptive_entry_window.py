@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 TAIPEI = ZoneInfo("Asia/Taipei")
 ENTRY_START = time(9, 0)
-ENTRY_CUTOFF = time(13, 20)
+ENTRY_CUTOFF = time(13, 25)
 
 
 def adaptive_entry_window_open(

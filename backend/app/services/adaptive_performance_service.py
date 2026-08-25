@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time
 from decimal import Decimal, ROUND_HALF_UP
 import json
 from typing import Any, Iterable
@@ -35,6 +35,7 @@ SECURITIES_TAX_RATE = Decimal("0.003")
 MINIMUM_COMMISSION = Decimal("20")
 MONEY = Decimal("0.01")
 TAIPEI = ZoneInfo("Asia/Taipei")
+FORCED_DAY_TRADE_CLOSE_START = time(13, 25)
 
 
 def _money(value: Decimal) -> Decimal:
@@ -109,7 +110,12 @@ def _exit_reason(
     price: Decimal,
     regime: str,
     candidate: AdaptiveStockCandidate | None,
+    at: datetime | None = None,
 ) -> str | None:
+    current = at or datetime.now(UTC)
+    local = current if current.tzinfo else current.replace(tzinfo=UTC)
+    if local.astimezone(TAIPEI).time().replace(tzinfo=None) >= FORCED_DAY_TRADE_CLOSE_START:
+        return "DAY_TRADE_CLOSE"
     if trade.side == "SHORT":
         if price >= trade.stop_loss_price:
             return "STOP_LOSS"
@@ -280,7 +286,7 @@ def _manage_open_trades(
         trade.last_price = price
         trade.unrealized_profit = result["netProfit"]
         trade.updated_at = payload.market.updated_at
-        reason = _exit_reason(trade, price, regime, candidates.get(trade.stock_code))
+        reason = _exit_reason(trade, price, regime, candidates.get(trade.stock_code), payload.market.updated_at)
         if reason is None:
             continue
 
