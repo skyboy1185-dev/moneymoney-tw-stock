@@ -63,6 +63,21 @@ def _session(now: datetime) -> str:
     return "pre_open"
 
 
+def _seconds_until_open(now: datetime) -> int | None:
+    local = now.astimezone(TAIPEI)
+    holidays: set[date] = set()
+    for raw in get_settings().twse_holidays.split(","):
+        try:
+            holidays.add(date.fromisoformat(raw.strip()))
+        except ValueError:
+            continue
+    if not is_twse_trading_day(local.date(), holidays):
+        return None
+    market_open = datetime.combine(local.date(), time(9, 0), TAIPEI)
+    seconds = int((market_open - local).total_seconds())
+    return seconds if seconds > 0 else None
+
+
 def _list(value: str) -> list[str]:
     try:
         parsed = json.loads(value)
@@ -270,6 +285,10 @@ class AdaptiveElectronicAutomation:
             try:
                 with SessionLocal() as db:
                     interval = max(60, int(load_parameters(db)["automation.scan_interval_seconds"]))
+                current = datetime.now(UTC)
+                seconds_until_open = _seconds_until_open(current)
+                if seconds_until_open is not None:
+                    interval = max(1, min(interval, seconds_until_open))
                 self._state["nextScanSeconds"] = interval
                 await self.run_once()
             except asyncio.CancelledError:
