@@ -36,6 +36,29 @@ interface AdaptiveSignal {
   createdAt: string;
 }
 
+interface AdaptiveNotification {
+  id: number;
+  category: string;
+  level: string;
+  symbol: string | null;
+  symbolName: string | null;
+  title: string;
+  message: string;
+  strategy: string | null;
+  side: string | null;
+  price: number | null;
+  quantity: number | null;
+  aiScore: number | null;
+  riskReward: number | null;
+  timestamp: string;
+  stockCode?: string | null;
+  stockName?: string | null;
+  action?: string;
+  reasons?: string[];
+  healthScore?: number | null;
+  createdAt?: string;
+}
+
 interface RegimeResponse {
   automation: TradingAutomationState;
   supervisor?: {
@@ -46,6 +69,7 @@ interface RegimeResponse {
 
 const headers = { "x-user-id": AUTOMATION_USER_ID };
 const ROCKET_TRADE_TYPES = new Set(["BUY", "ADD", "REDUCE", "TAKE_PROFIT", "SELL", "STOP_LOSS"]);
+const SUPER_AI_TOAST_CATEGORIES = new Set(["BUY", "SHORT", "ADD", "REDUCE", "STOP_LOSS", "TAKE_PROFIT", "EXIT"]);
 
 function time(value: string): string {
   const parsed = new Date(value);
@@ -119,13 +143,13 @@ export function DayTradingRobotNotifier({ onOpen }: { onOpen?: (target: RobotTar
       if (document.visibilityState === "hidden") return;
       try {
         const [
-          regimeResponse, signalResponse, alertResponse, adaptiveSignalResponse,
+          regimeResponse, signalResponse, alertResponse, adaptiveNotificationResponse,
           rocketResponse, longOnlyResponse, focusedLongResponse,
         ] = await Promise.all([
           fetch("/api/day-trading/market-regime", { cache: "no-store", headers }),
           fetch("/api/day-trading/signals/today", { cache: "no-store", headers }),
           fetch("/api/day-trading/alerts", { cache: "no-store", headers }),
-          fetch("/api/adaptive-electronic/signals?limit=50", { cache: "no-store" }),
+          fetch("/api/adaptive-electronic/notifications?source=SUPER_AI_DAYTRADE&limit=80", { cache: "no-store" }),
           fetch("/api/rocket-radar/notifications?period=today&limit=100", { cache: "no-store" }),
           fetch("/api/long-term/events?mode=long_only&afterId=0&limit=100", { cache: "no-store" }),
           fetch("/api/long-term/events?mode=focused_long&afterId=0&limit=100", { cache: "no-store" }),
@@ -138,9 +162,24 @@ export function DayTradingRobotNotifier({ onOpen }: { onOpen?: (target: RobotTar
         const alerts = alertResponse.ok
           ? await alertResponse.json() as { items: DayTradingAlert[] }
           : { items: [] };
-        const adaptiveSignals = adaptiveSignalResponse.ok
-          ? await adaptiveSignalResponse.json() as { items: AdaptiveSignal[] }
+        const adaptiveNotificationPayload = adaptiveNotificationResponse.ok
+          ? await adaptiveNotificationResponse.json() as { items: AdaptiveNotification[] }
           : { items: [] };
+        const adaptiveNotifications = {
+          items: adaptiveNotificationPayload.items.map((item) => ({
+            ...item,
+            stockCode: item.symbol,
+            stockName: item.symbolName,
+            action: item.category,
+            reasons: [
+              item.strategy ? `策略 ${item.strategy}` : "",
+              item.aiScore == null ? "" : `AI ${item.aiScore.toFixed(0)}`,
+              item.riskReward == null ? "" : `R/R 1:${item.riskReward.toFixed(2)}`,
+            ].filter(Boolean),
+            healthScore: item.aiScore,
+            createdAt: item.timestamp,
+          })),
+        };
         const rocketSignals = rocketResponse.ok
           ? await rocketResponse.json() as { items: RocketNotification[] }
           : { items: [] };
@@ -205,17 +244,17 @@ export function DayTradingRobotNotifier({ onOpen }: { onOpen?: (target: RobotTar
           });
         });
 
-        adaptiveSignals.items
+        adaptiveNotifications.items
           .filter((signal) => (
-            ["entry_confirmed", "exit_triggered"].includes(signal.signalType)
-            && taipeiDate(signal.createdAt) === signals.tradingDate
+            SUPER_AI_TOAST_CATEGORIES.has(signal.category)
+            && taipeiDate(signal.timestamp) === signals.tradingDate
           ))
           .forEach((signal) => {
-            const isEntry = signal.signalType === "entry_confirmed";
+            const isEntry = ["BUY", "SHORT", "ADD"].includes(signal.category);
             const price = signal.price == null ? "—" : signal.price.toFixed(2);
             items.push({
-              id: `adaptive-signal:${signal.id}`,
-              kind: isEntry ? "buy" : "sell",
+              id: `adaptive-notification:${signal.id}`,
+              kind: signal.category === "STOP_LOSS" ? "stop" : isEntry ? (signal.category === "SHORT" ? "short" : "buy") : "sell",
               target: "adaptive-electronic",
               title: isEntry ? "超強AI當沖系統｜模擬買進" : "超強AI當沖系統｜模擬賣出",
               stock: `${signal.stockCode ?? "—"} ${signal.stockName ?? ""}`.trim(),

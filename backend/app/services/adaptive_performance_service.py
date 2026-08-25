@@ -190,6 +190,7 @@ def _record_watch_notification(
             f"\u7b56\u7565\uff1a{candidate.strategy_type}\n"
             f"\u65b9\u5411\uff1a{gate['side']}\n"
             f"\u672a\u901a\u904e\u689d\u4ef6\uff1a{', '.join(gate['failures'])}\n"
+            f"\u505c\u640d\u8ddd\u96e2\uff1a{float(gate['stopDistancePct']):.2f}% / \u4e0a\u9650 {float(gate['maxStopDistancePct']):.2f}%\n"
             f"R/R\uff1a1:{float(gate['riskReward']):.2f}"
         ),
         dedupe_key=f"super-ai-watch:{payload.market.trade_date}:{candidate.stock_code}:{candidate.strategy_type}",
@@ -230,6 +231,7 @@ def _record_entry_notification(
             f"\u9032\u5834\u50f9\uff1a{float(gate['entry']):,.2f}\n"
             f"\u80a1\u6578\uff1a{quantity:,}\n"
             f"\u505c\u640d\uff1a{float(gate['stop']):,.2f}\n"
+            f"\u505c\u640d\u8ddd\u96e2\uff1a{float(gate['stopDistancePct']):.2f}%\n"
             f"TP1\uff1a{float(gate['takeProfit1']):,.2f}\n"
             f"TP2\uff1a{float(gate['takeProfit2']):,.2f}\n"
             f"R/R\uff1a1:{float(gate['riskReward']):.2f}\n"

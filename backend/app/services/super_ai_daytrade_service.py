@@ -23,6 +23,9 @@ SYSTEM_NAME = "超強AI當沖系統"
 SOURCE = "SUPER_AI_DAYTRADE"
 TAIPEI = ZoneInfo("Asia/Taipei")
 MONEY = Decimal("0.01")
+LONG_MAX_STOP_DISTANCE_PCT = Decimal("2.0")
+SHORT_MAX_STOP_DISTANCE_PCT = Decimal("1.8")
+A_PLUS_MAX_STOP_DISTANCE_PCT = Decimal("2.5")
 
 MARKET_WEIGHTS: dict[str, dict[str, float | str]] = {
     "BREAKOUT": {"label": "強多", "long": 100, "short": 0},
@@ -209,6 +212,20 @@ def risk_reward(entry: Decimal, stop: Decimal, target2: Decimal, side: str) -> D
     return (reward / risk).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
 
 
+def stop_distance_pct(entry: Decimal, stop: Decimal) -> Decimal:
+    if entry <= 0:
+        return Decimal("999")
+    return (abs(entry - stop) / entry * Decimal("100")).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+
+
+def max_stop_distance_pct(side: str, score: Decimal) -> Decimal:
+    if score >= Decimal("90"):
+        return A_PLUS_MAX_STOP_DISTANCE_PCT
+    if side == "SHORT":
+        return SHORT_MAX_STOP_DISTANCE_PCT
+    return LONG_MAX_STOP_DISTANCE_PCT
+
+
 def ai_score(candidate: AdaptiveStockCandidate, regime: str, side: str = "LONG") -> Decimal:
     if side == "SHORT":
         base = Decimal(candidate.total_score) * Decimal("0.80")
@@ -315,6 +332,8 @@ def trading_gate(
     entry, stop, tp1, tp2 = levels_for_side(candidate, side)
     rr = risk_reward(entry, stop, tp2, side)
     score = ai_score(candidate, regime, side)
+    stop_pct = stop_distance_pct(entry, stop)
+    max_stop_pct = max_stop_distance_pct(side, score)
     risk = risk_status(db, settings, at)
     open_trades = list(db.scalars(select(AdaptivePaperTrade).where(
         AdaptivePaperTrade.status == "open",
@@ -336,6 +355,8 @@ def trading_gate(
         failures.append("ai_score_below_trade_threshold")
     if rr < settings.min_risk_reward:
         failures.append("risk_reward_below_threshold")
+    if stop_pct > max_stop_pct:
+        failures.append("stop_distance_too_wide")
     if quantity <= 0:
         failures.append("quantity_zero")
     if candidate.quote_source.startswith("Yahoo Finance"):
@@ -351,6 +372,8 @@ def trading_gate(
         "takeProfit1": tp1,
         "takeProfit2": tp2,
         "riskReward": rr,
+        "stopDistancePct": stop_pct,
+        "maxStopDistancePct": max_stop_pct,
         "aiScore": score,
         "quantity": quantity,
         "riskAmount": risk_amount,

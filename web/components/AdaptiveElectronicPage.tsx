@@ -91,6 +91,7 @@ type Candidate = {
   entryPriceHigh: number;
   breakoutPrice: number;
   stopLossPrice: number;
+  stopDistancePct?: number;
   targetPrice1: number;
   targetPrice2: number;
   relativeStrength: number;
@@ -639,7 +640,7 @@ export function AdaptiveElectronicPage({
                     <td><b>{sideLabel(inferredSide)}</b><small>{strategyLabel(item.strategyType)}</small></td>
                     <td><strong>{aiScore.toFixed(0)}</strong><small>{item.statusLabel}</small></td>
                     <td>{price(item.currentPrice)}<small>{price(item.entryPriceLow)} - {price(item.entryPriceHigh)}</small></td>
-                    <td><span className="pattern-loss">{price(item.stopLossPrice)}</span><small className="pattern-profit">TP1 {price(item.targetPrice1)} / TP2 {price(item.targetPrice2)}</small></td>
+                    <td><span className="pattern-loss">{price(item.stopLossPrice)}（{(item.stopDistancePct ?? (risk / item.currentPrice * 100)).toFixed(2)}%）</span><small className="pattern-profit">TP1 {price(item.targetPrice1)} / TP2 {price(item.targetPrice2)}</small></td>
                     <td>{item.subIndustry}<small>族群 {item.industryStrength.toFixed(0)}｜RS {item.relativeStrength.toFixed(1)}｜R/R {rr.toFixed(2)}</small></td>
                     <td><DecisionReasonList reasons={[...item.selectedReasons, ...item.riskReasons]} /></td>
                     <td><button onClick={() => onSelectStock(item.stockCode)}>查看個股</button></td>
@@ -667,7 +668,7 @@ export function AdaptiveElectronicPage({
                     <td>{item.quantityShares.toLocaleString()}<small>{item.quantityLots.toFixed(2)} 張</small></td>
                     <td className={pnlClass(item.unrealizedProfit)}>{money(item.unrealizedProfit)}</td>
                     <td className={pnlClass(item.realizedR)}>{item.realizedR.toFixed(2)}R</td>
-                    <td><span className="pattern-loss">{price(item.stopLossPrice)}</span><small className="pattern-profit">{price(item.targetPrice1)} / {price(item.targetPrice2)}</small></td>
+                    <td><span className="pattern-loss">{price(item.stopLossPrice)}（{(item.entryPrice > 0 ? Math.abs(item.entryPrice - item.stopLossPrice) / item.entryPrice * 100 : 0).toFixed(2)}%）</span><small className="pattern-profit">{price(item.targetPrice1)} / {price(item.targetPrice2)}</small></td>
                     <td>{item.unrealizedProfit > item.riskAmount ? "續抱/移動停損" : item.unrealizedProfit < 0 ? "嚴守停損，不攤平" : "等待突破確認"}</td>
                   </tr>
                 ))}

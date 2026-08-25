@@ -497,6 +497,13 @@ def regime_payload(item: MarketRegime) -> dict[str, Any]:
 
 def candidate_payload(item: AdaptiveStockCandidate) -> dict[str, Any]:
     status = _display_candidate_status(item.candidate_status, item.trade_date, datetime.now(UTC))
+    current_price = float(item.current_price)
+    stop_loss_price = float(item.stop_loss_price)
+    stop_distance_pct = (
+        abs(current_price - stop_loss_price) / current_price * 100
+        if current_price > 0
+        else 0
+    )
     return {
         "rank": item.rank, "stockCode": item.stock_code, "stockName": item.stock_name,
         "marketType": item.market_type, "mainIndustry": item.main_industry,
@@ -506,7 +513,8 @@ def candidate_payload(item: AdaptiveStockCandidate) -> dict[str, Any]:
         "previousHealthScore": float(item.previous_health_score) if item.previous_health_score is not None else None,
         "currentPrice": float(item.current_price), "entryPriceLow": float(item.entry_price_low),
         "entryPriceHigh": float(item.entry_price_high), "breakoutPrice": float(item.breakout_price),
-        "stopLossPrice": float(item.stop_loss_price), "targetPrice1": float(item.target_price_1),
+        "stopLossPrice": stop_loss_price, "stopDistancePct": round(stop_distance_pct, 2),
+        "targetPrice1": float(item.target_price_1),
         "targetPrice2": float(item.target_price_2), "allocationPercent": float(item.allocation_percent),
         "relativeStrength": float(item.relative_strength), "volumeStatus": item.volume_status,
         "foreignNetBuy": float(item.foreign_net_buy) if item.foreign_net_buy is not None else None,
