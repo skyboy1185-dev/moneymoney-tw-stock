@@ -149,19 +149,19 @@ def test_yahoo_fallback_quote_remains_observable() -> None:
     assert failures == []
 
 
-def test_new_entry_window_closes_exactly_at_1325() -> None:
+def test_new_entry_window_closes_exactly_at_1300() -> None:
     assert adaptive_entry_window_open(
-        datetime(2026, 7, 31, 13, 24, 59, tzinfo=TAIPEI), True, date(2026, 7, 31),
+        datetime(2026, 7, 31, 12, 59, 59, tzinfo=TAIPEI), True, date(2026, 7, 31),
     ) is True
     assert adaptive_entry_window_open(
-        datetime(2026, 7, 31, 13, 25, tzinfo=TAIPEI), True, date(2026, 7, 31),
+        datetime(2026, 7, 31, 13, 0, tzinfo=TAIPEI), True, date(2026, 7, 31),
     ) is False
     assert adaptive_entry_window_open(
         datetime(2026, 7, 31, 13, 10, tzinfo=TAIPEI), False, date(2026, 7, 31),
     ) is False
     assert _display_candidate_status(
         "can_enter", date(2026, 7, 31),
-        datetime(2026, 7, 31, 13, 25, tzinfo=TAIPEI),
+        datetime(2026, 7, 31, 13, 0, tzinfo=TAIPEI),
     ) == "next_day_watch"
 
 
