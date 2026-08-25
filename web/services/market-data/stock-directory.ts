@@ -12,6 +12,20 @@ const DIRECTORY_CACHE_MS = 6 * 60 * 60 * 1_000;
 
 let directoryCache: { stocks: StockMeta[]; expiresAt: number } | null = null;
 
+const EXTRA_FALLBACK_STOCKS: StockMeta[] = [
+  {
+    symbol: "8096",
+    name: "擎亞",
+    industry: "電子通路",
+    market: "上櫃" as Market,
+    peRatio: null,
+    dividendYield: null,
+    priceToBook: null,
+    eps: null,
+    marketCap: null,
+  },
+];
+
 function text(row: DirectoryRow, keys: string[]): string {
   for (const key of keys) {
     const value = row[key];
@@ -54,14 +68,17 @@ export function parseOfficialStockDirectory(listedRows: DirectoryRow[], otcRows:
 }
 
 function fallbackDirectory(): StockMeta[] {
-  return stockCatalog.map((stock) => ({
-    ...stock,
-    peRatio: null,
-    dividendYield: null,
-    priceToBook: null,
-    eps: null,
-    marketCap: null,
-  }));
+  return [
+    ...stockCatalog.map((stock) => ({
+      ...stock,
+      peRatio: null,
+      dividendYield: null,
+      priceToBook: null,
+      eps: null,
+      marketCap: null,
+    })),
+    ...EXTRA_FALLBACK_STOCKS,
+  ];
 }
 
 async function fetchRows(url: string): Promise<DirectoryRow[]> {

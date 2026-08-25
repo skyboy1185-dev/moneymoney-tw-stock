@@ -31,6 +31,21 @@ NEWS = [
     {"id": "n5", "title": "電子紙應用擴張帶動光電族群話題", "summary": "零售、物流與低耗能顯示應用持續擴張。", "category": "光電", "symbols": ["8069", "3008"], "source": "展示新聞中心", "publishedAt": "2026-07-23T14:35:00+08:00", "sentiment": "positive"},
 ]
 
+EXTRA_STOCKS = [
+    {
+        "symbol": "8096",
+        "name": "擎亞",
+        "industry": "電子通路",
+        "market": "上櫃",
+        "base": 35,
+        "peRatio": None,
+        "dividendYield": None,
+        "priceToBook": None,
+        "eps": None,
+        "marketCap": None,
+    },
+]
+
 
 def _business_dates(count: int) -> list[str]:
     cursor = date(2026, 7, 24)
@@ -44,9 +59,10 @@ def _business_dates(count: int) -> list[str]:
 
 def find_stock(query: str) -> dict | None:
     normalized = query.strip().lower()
+    universe = [*EXTRA_STOCKS, *STOCKS]
     return next(
-        (item for item in STOCKS if item["symbol"] == normalized or item["name"].lower() == normalized),
-        next((item for item in STOCKS if normalized in item["symbol"] or normalized in item["name"].lower()), None),
+        (item for item in universe if item["symbol"] == normalized or item["name"].lower() == normalized),
+        next((item for item in universe if normalized in item["symbol"] or normalized in item["name"].lower()), None),
     )
 
 
