@@ -5,6 +5,7 @@ from contextlib import suppress
 from datetime import UTC, date, datetime, time
 import json
 import logging
+import math
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
@@ -74,7 +75,7 @@ def _seconds_until_open(now: datetime) -> int | None:
     if not is_twse_trading_day(local.date(), holidays):
         return None
     market_open = datetime.combine(local.date(), time(9, 0), TAIPEI)
-    seconds = int((market_open - local).total_seconds())
+    seconds = math.ceil((market_open - local).total_seconds())
     return seconds if seconds > 0 else None
 
 
