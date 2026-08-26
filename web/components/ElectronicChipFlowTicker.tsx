@@ -14,10 +14,12 @@ import type {
 } from "@/lib/electronic-chip-flow-alerts";
 import type { StockDeductionSignals } from "@/lib/deduction-signals";
 import type { MarketSnapshot } from "@/lib/market-types";
+import type { MarketIndexDefenseResponse } from "@/lib/market-index-defense";
 import { evaluateThreeGateLevels } from "@/lib/three-gate-price";
 import { detectGroupResonances } from "@/lib/group-resonance";
 import { evaluateLargeOrderGuidance } from "@/lib/large-order-action";
 import { evaluateLargeOrderOutcomes } from "@/lib/large-order-outcome";
+import { buildTaiwanIndexKeyLevels, formatIndexLevel } from "@/lib/taiwan-index-key-levels";
 
 interface ElectronicChipFlowTickerProps {
   onSelectStock?: (symbol: string) => void;
@@ -141,34 +143,14 @@ function TrendIcon({ alert }: { alert: ElectronicChipFlowAlert }) {
   return <Activity size={11} />;
 }
 
-const TAIWAN_INDEX_DAILY_LEVELS = {
-  tradeDateLabel: "",
-  bullishPivot: 45_000,
-  supportMin: 44_780,
-  supportMax: 44_800,
-  firstDownside: 44_500,
-  nightLow: 44_261,
-} as const;
-
-function taiwanIndexLevelState(price: number | null | undefined): {
-  label: string;
-  tone: "bullish" | "neutral" | "warning" | "bearish";
-} {
-  if (!price || price <= 0) return { label: "等待即時價", tone: "neutral" };
-  if (price >= TAIWAN_INDEX_DAILY_LEVELS.bullishPivot) return { label: "45K 上方・確認站穩", tone: "bullish" };
-  if (price > TAIWAN_INDEX_DAILY_LEVELS.supportMax) return { label: "壓力下方・震盪偏空", tone: "neutral" };
-  if (price >= TAIWAN_INDEX_DAILY_LEVELS.supportMin) return { label: "正在測試支撐帶", tone: "warning" };
-  if (price >= TAIWAN_INDEX_DAILY_LEVELS.firstDownside) return { label: "跌破支撐・短線轉弱", tone: "warning" };
-  if (price >= TAIWAN_INDEX_DAILY_LEVELS.nightLow) return { label: "偏空・留意夜盤低點", tone: "bearish" };
-  return { label: "跌破夜低・空方加速", tone: "bearish" };
-}
-
 function TaiwanIndexPulseBar({
   data,
   marketSnapshot,
+  marketDefense,
 }: {
   data: ElectronicChipFlowAlertsResponse | null;
   marketSnapshot?: MarketSnapshot | null;
+  marketDefense?: MarketIndexDefenseResponse | null;
 }) {
   const pulse = data?.marketPulse;
   const futures = marketSnapshot?.context;
@@ -179,8 +161,16 @@ function TaiwanIndexPulseBar({
   const referencePrice = (futures?.futuresPrice && futures.futuresPrice > 0)
     ? futures.futuresPrice
     : futures?.indexPrice;
-  const keyLevelDate = formatMonthDay(futures?.futuresQuoteAt ?? futures?.indexQuoteAt ?? marketSnapshot?.updatedAt);
-  const keyLevelState = taiwanIndexLevelState(referencePrice);
+  const keyLevels = buildTaiwanIndexKeyLevels(futures, marketDefense);
+  const pivotText = keyLevels.pivot
+    ? `多空 ${formatIndexLevel(keyLevels.pivot.value)}（${keyLevels.pivot.source}）`
+    : "多空 等待資料";
+  const supportText = keyLevels.support
+    ? `支撐 ${formatIndexLevel(keyLevels.support.low)}～${formatIndexLevel(keyLevels.support.high)}（${keyLevels.support.source}）`
+    : "支撐 等待資料";
+  const downsideText = keyLevels.downsideTargets.length
+    ? `下看 ${keyLevels.downsideTargets.map((item) => `${formatIndexLevel(item.value)}（${item.source}）`).join("／")}`
+    : "下看 資料不足";
   return <div
     className={`taiwan-index-pulse direction-${direction}`}
     title={`${pulse?.source ?? "監控池逐筆成交方向聚合推估"}；台指期價格採官方行情，大／小單不是期貨投資人身分資料。`}
@@ -196,14 +186,14 @@ function TaiwanIndexPulseBar({
       </span>
     </div>
     <div
-      className={`taiwan-index-key-levels state-${keyLevelState.tone}`}
-      title="45,000 站穩才轉多；44,780～44,800 為支撐帶；跌破後依序留意 44,500 與夜盤低點 44,261。"
+      className={`taiwan-index-key-levels state-${keyLevels.tone}`}
+      title={keyLevels.title}
     >
-      <small><Crosshair size={11} />{keyLevelDate} 關鍵</small>
-      <strong>{keyLevelState.label}</strong>
-      <span className="pivot">多空 45,000</span>
-      <span className="support">支撐 44,780～44,800</span>
-      <span className="downside">下看 44,500／44,261</span>
+      <small><Crosshair size={11} />{keyLevels.tradeDateLabel} 關鍵</small>
+      <strong>{keyLevels.stateLabel}</strong>
+      <span className="pivot">{pivotText}</span>
+      <span className="support">{supportText}</span>
+      <span className="downside">{downsideText}</span>
     </div>
     <div className="taiwan-index-pulse-flow large">
       <small>監控池大單淨額</small>
@@ -687,6 +677,7 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
   const [quoteLoading, setQuoteLoading] = useState(false);
   const [deductionSignals, setDeductionSignals] = useState<Record<string, StockDeductionSignals>>({});
   const [deductionLoading, setDeductionLoading] = useState(false);
+  const [marketDefense, setMarketDefense] = useState<MarketIndexDefenseResponse | null>(null);
 
   useEffect(() => {
     try {
@@ -720,6 +711,31 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
       window.localStorage.removeItem(PINNED_MOMENTUM_ALERTS_KEY);
     }
   }, []);
+
+  useEffect(() => {
+    let timer: number | null = null;
+    let stopped = false;
+    const load = async () => {
+      try {
+        const response = await fetch("/api/market-index/defense", { cache: "no-store" });
+        const payload = await response.json() as MarketIndexDefenseResponse & { error?: string };
+        if (!response.ok || payload.error) throw new Error(payload.error ?? "market defense unavailable");
+        if (!stopped) setMarketDefense(payload);
+      } catch {
+        if (!stopped) setMarketDefense(null);
+      } finally {
+        if (!stopped) {
+          const refreshMs = marketSnapshot?.marketOpen || marketSnapshot?.futuresMarketOpen ? 60_000 : 300_000;
+          timer = window.setTimeout(load, refreshMs);
+        }
+      }
+    };
+    void load();
+    return () => {
+      stopped = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [marketSnapshot?.marketOpen, marketSnapshot?.futuresMarketOpen]);
 
   const togglePin = (alert: ElectronicChipFlowAlert) => {
     const isPinned = pinnedSymbols.includes(alert.symbol);
@@ -1254,7 +1270,7 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
     aria-label="熱門股與電子股大單動能提醒"
     title={data?.notice}
   >
-    <TaiwanIndexPulseBar data={data} marketSnapshot={marketSnapshot} />
+    <TaiwanIndexPulseBar data={data} marketSnapshot={marketSnapshot} marketDefense={marketDefense} />
     <div className="chip-alert-row long-row">
       <button className="chip-alert-label" type="button" onClick={() => setExpanded((current) => current === "long" ? null : "long")} aria-expanded={expanded === "long"}>
         {data?.warningCount ? <AlertTriangle size={14} /> : hasAlerts ? <Zap size={14} /> : <Radio size={13} />}
