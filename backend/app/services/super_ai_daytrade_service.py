@@ -26,6 +26,7 @@ MONEY = Decimal("0.01")
 LONG_MAX_STOP_DISTANCE_PCT = Decimal("2.0")
 SHORT_MAX_STOP_DISTANCE_PCT = Decimal("1.8")
 A_PLUS_MAX_STOP_DISTANCE_PCT = Decimal("2.5")
+INTRADAY_BULL_BREAKOUT_BONUS = Decimal("8")
 
 MARKET_WEIGHTS: dict[str, dict[str, float | str]] = {
     "BREAKOUT": {"label": "強多", "long": 100, "short": 0},
@@ -226,6 +227,19 @@ def max_stop_distance_pct(side: str, score: Decimal) -> Decimal:
     return LONG_MAX_STOP_DISTANCE_PCT
 
 
+def _intraday_bull_breakout_bonus(candidate: AdaptiveStockCandidate, regime: str, side: str) -> Decimal:
+    if (
+        side == "LONG"
+        and regime == "BREAKOUT"
+        and candidate.strategy_type == "BREAKOUT"
+        and Decimal(candidate.total_score) >= Decimal("65")
+        and Decimal(candidate.current_price) >= Decimal(candidate.breakout_price)
+        and str(candidate.quote_source).startswith("TWSE MIS")
+    ):
+        return INTRADAY_BULL_BREAKOUT_BONUS
+    return Decimal("0")
+
+
 def ai_score(candidate: AdaptiveStockCandidate, regime: str, side: str = "LONG") -> Decimal:
     if side == "SHORT":
         base = Decimal(candidate.total_score) * Decimal("0.80")
@@ -242,7 +256,8 @@ def ai_score(candidate: AdaptiveStockCandidate, regime: str, side: str = "LONG")
         return score.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     base = Decimal(candidate.total_score) * Decimal("0.60") + Decimal(candidate.health_score) * Decimal("0.40")
     market_bonus = Decimal("10") if regime in {"BREAKOUT", "RECOVERY"} else Decimal("4") if regime in {"RANGE", "UNCERTAIN"} else Decimal("0")
-    score = max(Decimal("0"), min(Decimal("100"), base + market_bonus))
+    momentum_bonus = _intraday_bull_breakout_bonus(candidate, regime, side)
+    score = max(Decimal("0"), min(Decimal("100"), base + market_bonus + momentum_bonus))
     return score.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
@@ -393,6 +408,7 @@ def trading_gate(
         "riskAmount": risk_amount,
         "projectedMarketValue": _money(projected_value),
         "reasons": decision_reasons(candidate, regime, side, rr)
+            + ([f"intraday_bull_breakout_bonus=+{INTRADAY_BULL_BREAKOUT_BONUS}"] if _intraday_bull_breakout_bonus(candidate, regime, side) else [])
             + (["tactical_stop_capped_to_intraday_limit"] if tactical_stop_applied else []),
         "risk": risk,
     }

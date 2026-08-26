@@ -327,6 +327,127 @@ def test_super_ai_breakout_uses_tactical_intraday_stop_when_structural_stop_is_t
         assert "tactical_stop_capped_to_intraday_limit" in gate["reasons"]
 
 
+def test_super_ai_intraday_bull_breakout_bonus_allows_realtime_breakout_candidate() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 8, 26, 12, 15, tzinfo=TAIPEI)
+    candidate = AdaptiveStockCandidate(
+        trade_date=date(2026, 8, 26),
+        stock_code="3504",
+        stock_name="揚明光",
+        market_type="TWSE",
+        main_industry="Optical",
+        sub_industry="光電",
+        strategy_type="BREAKOUT",
+        total_score=Decimal("69.66"),
+        technical_score=Decimal("54"),
+        chip_score=Decimal("0"),
+        fundamental_score=Decimal("0"),
+        industry_score=Decimal("3.66"),
+        market_score=Decimal("6.67"),
+        health_score=Decimal("60.49"),
+        previous_health_score=None,
+        current_price=Decimal("85.50"),
+        entry_price_low=Decimal("83.50"),
+        entry_price_high=Decimal("85.17"),
+        breakout_price=Decimal("83.50"),
+        stop_loss_price=Decimal("80.16"),
+        target_price_1=Decimal("92.69"),
+        target_price_2=Decimal("97.70"),
+        allocation_percent=Decimal("0"),
+        relative_strength=Decimal("27.65"),
+        volume_status="量縮整理",
+        industry_strength=Decimal("36.60"),
+        false_breakout_risk=Decimal("0"),
+        candidate_status="waiting_confirmation",
+        rank=1,
+        score_breakdown_json="{}",
+        selected_reasons="[]",
+        risk_reasons="[]",
+        missing_data_json="[]",
+        quote_source="TWSE MIS 五檔參考價",
+        quote_timestamp=now,
+        created_at=now,
+        updated_at=now,
+    )
+
+    with Session(engine) as db:
+        settings = ensure_super_ai_settings(db, now)
+        settings.max_capital = Decimal("3000000")
+        settings.available_capital = Decimal("3000000")
+        settings.min_ai_score_to_trade = Decimal("80")
+        gate = trading_gate(db, settings, candidate, "BREAKOUT", now)
+
+        assert gate["allowed"], gate["failures"]
+        assert gate["aiScore"] >= Decimal("80")
+        assert "intraday_bull_breakout_bonus=+8" in gate["reasons"]
+        assert "tactical_stop_capped_to_intraday_limit" in gate["reasons"]
+
+
+def test_super_ai_intraday_bull_breakout_bonus_requires_realtime_quote() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 8, 26, 12, 15, tzinfo=TAIPEI)
+    candidate = AdaptiveStockCandidate(
+        trade_date=date(2026, 8, 26),
+        stock_code="3504",
+        stock_name="揚明光",
+        market_type="TWSE",
+        main_industry="Optical",
+        sub_industry="光電",
+        strategy_type="BREAKOUT",
+        total_score=Decimal("69.66"),
+        technical_score=Decimal("54"),
+        chip_score=Decimal("0"),
+        fundamental_score=Decimal("0"),
+        industry_score=Decimal("3.66"),
+        market_score=Decimal("6.67"),
+        health_score=Decimal("60.49"),
+        previous_health_score=None,
+        current_price=Decimal("85.50"),
+        entry_price_low=Decimal("83.50"),
+        entry_price_high=Decimal("85.17"),
+        breakout_price=Decimal("83.50"),
+        stop_loss_price=Decimal("80.16"),
+        target_price_1=Decimal("92.69"),
+        target_price_2=Decimal("97.70"),
+        allocation_percent=Decimal("0"),
+        relative_strength=Decimal("27.65"),
+        volume_status="量縮整理",
+        industry_strength=Decimal("36.60"),
+        false_breakout_risk=Decimal("0"),
+        candidate_status="waiting_confirmation",
+        rank=1,
+        score_breakdown_json="{}",
+        selected_reasons="[]",
+        risk_reasons="[]",
+        missing_data_json="[]",
+        quote_source="Yahoo Finance fallback",
+        quote_timestamp=now,
+        created_at=now,
+        updated_at=now,
+    )
+
+    with Session(engine) as db:
+        settings = ensure_super_ai_settings(db, now)
+        settings.max_capital = Decimal("3000000")
+        settings.available_capital = Decimal("3000000")
+        settings.min_ai_score_to_trade = Decimal("80")
+        gate = trading_gate(db, settings, candidate, "BREAKOUT", now)
+
+        assert not gate["allowed"]
+        assert "delayed_quote" in gate["failures"]
+        assert "intraday_bull_breakout_bonus=+8" not in gate["reasons"]
+
+
 def test_breakout_strategy_is_traceable_and_meets_direct_entry_score() -> None:
     result = BreakoutStrategy().evaluate(stock(), PARAMETERS)
     assert result.total >= 85
