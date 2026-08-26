@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     adaptive_electronic_enabled: bool = True
     adaptive_electronic_scanner_url: str = ""
     adaptive_electronic_scanner_token: str = ""
-    adaptive_electronic_scanner_timeout_seconds: float = 900.0
+    adaptive_electronic_scanner_timeout_seconds: float = 25.0
     adaptive_electronic_admin_token: str = ""
     rocket_radar_enabled: bool = True
     rocket_radar_scanner_url: str = ""

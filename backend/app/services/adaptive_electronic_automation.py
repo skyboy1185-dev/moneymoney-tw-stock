@@ -112,7 +112,7 @@ async def fetch_adaptive_scan_payload() -> AdaptiveScanPayload:
         headers["X-Adaptive-Scanner-Token"] = settings.adaptive_electronic_scanner_token
     last_error: Exception | None = None
     async with httpx.AsyncClient(
-        timeout=settings.adaptive_electronic_scanner_timeout_seconds,
+        timeout=min(settings.adaptive_electronic_scanner_timeout_seconds, 25.0),
         follow_redirects=True,
     ) as client:
         for attempt in range(3):
