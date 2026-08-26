@@ -73,6 +73,19 @@ function formatAmount(value: number): string {
   return new Intl.NumberFormat("zh-TW", { maximumFractionDigits: 0 }).format(value);
 }
 
+function formatMonthDay(value: string | null | undefined): string {
+  const text = String(value ?? "").trim();
+  const match = text.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (match) return `${match[2].padStart(2, "0")}/${match[3].padStart(2, "0")}`;
+  const parsed = value ? new Date(value) : new Date();
+  const safe = Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+  return new Intl.DateTimeFormat("zh-TW", {
+    month: "2-digit",
+    day: "2-digit",
+    timeZone: "Asia/Taipei",
+  }).format(safe);
+}
+
 function orderFlow(alert: ElectronicChipFlowAlert) {
   // Saved pinned alerts created before these gross-flow fields existed can
   // remain in localStorage. Use their net value as a safe display fallback.
@@ -129,7 +142,7 @@ function TrendIcon({ alert }: { alert: ElectronicChipFlowAlert }) {
 }
 
 const TAIWAN_INDEX_DAILY_LEVELS = {
-  tradeDateLabel: "08/21",
+  tradeDateLabel: "",
   bullishPivot: 45_000,
   supportMin: 44_780,
   supportMax: 44_800,
@@ -163,7 +176,11 @@ function TaiwanIndexPulseBar({
   const direction = pulseLive ? pulse.direction : "neutral";
   const trendLabel = pulseLive ? pulse.trendLabel : data?.marketOpen ? "大／小單暖機中" : "現貨收盤・停止更新";
   const directionLabel = pulseLive ? pulse.directionLabel : data?.marketOpen ? "等待判斷" : "盤後";
-  const keyLevelState = taiwanIndexLevelState(futures?.futuresPrice);
+  const referencePrice = (futures?.futuresPrice && futures.futuresPrice > 0)
+    ? futures.futuresPrice
+    : futures?.indexPrice;
+  const keyLevelDate = formatMonthDay(futures?.futuresQuoteAt ?? futures?.indexQuoteAt ?? marketSnapshot?.updatedAt);
+  const keyLevelState = taiwanIndexLevelState(referencePrice);
   return <div
     className={`taiwan-index-pulse direction-${direction}`}
     title={`${pulse?.source ?? "監控池逐筆成交方向聚合推估"}；台指期價格採官方行情，大／小單不是期貨投資人身分資料。`}
@@ -173,7 +190,7 @@ function TaiwanIndexPulseBar({
     </div>
     <div className="taiwan-index-pulse-futures">
       <small>台指期 {futures?.futuresContract ?? ""}</small>
-      <strong>{futures?.futuresPrice ? formatLots(futures.futuresPrice) : "—"}</strong>
+      <strong>{referencePrice ? formatLots(referencePrice) : "—"}</strong>
       <span className={(futures?.futuresChangePercent ?? 0) > 0 ? "up" : (futures?.futuresChangePercent ?? 0) < 0 ? "down" : ""}>
         {futures ? `${formatSigned(futures.futuresChange)}（${formatSigned(futures.futuresChangePercent)}%）` : "行情待補"}
       </span>
@@ -182,7 +199,7 @@ function TaiwanIndexPulseBar({
       className={`taiwan-index-key-levels state-${keyLevelState.tone}`}
       title="45,000 站穩才轉多；44,780～44,800 為支撐帶；跌破後依序留意 44,500 與夜盤低點 44,261。"
     >
-      <small><Crosshair size={11} />{TAIWAN_INDEX_DAILY_LEVELS.tradeDateLabel} 關鍵</small>
+      <small><Crosshair size={11} />{keyLevelDate} 關鍵</small>
       <strong>{keyLevelState.label}</strong>
       <span className="pivot">多空 45,000</span>
       <span className="support">支撐 44,780～44,800</span>
@@ -1285,3 +1302,4 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
   </section>
   </>;
 }
+
