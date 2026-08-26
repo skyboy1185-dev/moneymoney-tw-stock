@@ -16,6 +16,8 @@ from app.services.popular_stock_universe import merge_momentum_stocks
 from app.services.day_trading_schedule import (
     MIN_DAY_TRADING_TURNOVER,
     MIN_DAY_TRADING_VOLUME_SHARES,
+    MIN_OFFICIAL_CONFIDENCE_SCORE,
+    MIN_OFFICIAL_CONFIRMATION_SCORE,
     StableRecommendationSelector,
     TradingScheduleConfig,
     intraday_liquidity_minimums,
@@ -442,6 +444,42 @@ def test_recommendation_hard_filters_and_short_qualification() -> None:
     assert "大戶尚未持續加空" in short_no_sell_failures
 
 
+def test_recommendation_requires_stronger_intraday_confirmation() -> None:
+    now = datetime(2026, 7, 21, 9, 20, tzinfo=TAIPEI)
+    config = TradingScheduleConfig()
+    session = trading_session_state(config, now, quote_samples=10, infrastructure_ok=True)
+
+    low_confidence_passed, low_confidence_failures = recommendation_qualification(
+        _candidate("low-confidence", confidence=MIN_OFFICIAL_CONFIDENCE_SCORE - 1),
+        config,
+        session,
+        now,
+    )
+    weak_confirmation_passed, weak_confirmation_failures = recommendation_qualification(
+        _candidate("weak-confirmation", confirmationScore=MIN_OFFICIAL_CONFIRMATION_SCORE - 1),
+        config,
+        session,
+        now,
+    )
+    unconfirmed_breakout_passed, unconfirmed_breakout_failures = recommendation_qualification(
+        _candidate(
+            "unconfirmed-breakout",
+            fiveMinuteSetup="突破",
+            fiveMinuteStructure="尚未確認",
+        ),
+        config,
+        session,
+        now,
+    )
+
+    assert not low_confidence_passed
+    assert f"信心分數未達 {MIN_OFFICIAL_CONFIDENCE_SCORE}" in low_confidence_failures
+    assert not weak_confirmation_passed
+    assert f"盤中確認分數未達 {MIN_OFFICIAL_CONFIRMATION_SCORE}" in weak_confirmation_failures
+    assert not unconfirmed_breakout_passed
+    assert "5 分 K 突破結構尚未確認" in unconfirmed_breakout_failures
+
+
 def test_afternoon_qualification_allows_long_and_blocks_new_short() -> None:
     now = datetime(2026, 7, 21, 12, 0, tzinfo=TAIPEI)
     config = TradingScheduleConfig()
@@ -579,7 +617,7 @@ def test_selector_high_confidence_can_enter_after_hourly_quota() -> None:
         "generatedAt": now.isoformat(),
         "expiresAt": (now + timedelta(hours=2)).isoformat(),
     }
-    first_candidates = [_candidate(signal_id, 80 - index, **timing) for index, signal_id in enumerate("abc")]
+    first_candidates = [_candidate(signal_id, 82 - index, **timing) for index, signal_id in enumerate("abc")]
     first, _ = selector.select("hourly-user", first_candidates, config, session, now=now)
     assert [item["id"] for item in first] == ["a", "b", "c"]
 

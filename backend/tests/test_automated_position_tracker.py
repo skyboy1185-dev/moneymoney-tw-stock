@@ -14,6 +14,8 @@ from app.models import (
 )
 from app.services.automated_position_tracker import (
     AUTOMATION_DAILY_CAPITAL,
+    AUTOMATION_FIXED_MAX_POSITION_CAPITAL,
+    AUTOMATION_FIXED_REPEAT_STOP_LIMIT,
     AUTOMATION_USER_ID,
     DYNAMIC_AUTOMATION_USER_ID,
     DYNAMIC_STRATEGY_KEY,
@@ -39,10 +41,10 @@ def _signal() -> dict[str, object]:
         "stockName": "台積電",
         "direction": "long",
         "action": "突破買進",
-        "price": 2255.0,
-        "stopLoss": 2236.96,
-        "target1": 2282.06,
-        "target2": 2300.10,
+        "price": 100.0,
+        "stopLoss": 99.0,
+        "target1": 102.0,
+        "target2": 103.0,
         "healthScore": 90,
         "generatedAt": "2026-07-30T09:41:52+08:00",
         "isOfficialRecommendation": True,
@@ -205,6 +207,68 @@ def test_fixed_two_lot_strategy_skips_excessive_stop_risk() -> None:
         allocation = signal["strategyAllocations"][FIXED_STRATEGY_KEY]
         assert allocation["quantityLots"] == 0
         assert "超過單筆上限 50,000 元" in allocation["status"]
+
+
+def test_fixed_two_lot_strategy_skips_oversized_high_price_position() -> None:
+    with _session() as db:
+        signal = {
+            **_signal(),
+            "id": "3034-long-20260826T105814",
+            "symbol": "3034",
+            "stockName": "聯詠",
+            "price": 561.0,
+            "stopLoss": 556.51,
+            "target1": 567.73,
+            "target2": 572.22,
+        }
+
+        created = ensure_positions_for_delivered_entries(db, [signal])
+
+        assert created == []
+        allocation = signal["strategyAllocations"][FIXED_STRATEGY_KEY]
+        assert allocation["quantityLots"] == 0
+        assert f"{AUTOMATION_FIXED_MAX_POSITION_CAPITAL:,.0f}" in allocation["status"]
+
+
+def test_fixed_two_lot_strategy_pauses_symbol_after_repeated_stop_losses() -> None:
+    with _session() as db:
+        now = datetime(2026, 8, 26, 3, 0, tzinfo=UTC)
+        for _index in range(AUTOMATION_FIXED_REPEAT_STOP_LIMIT):
+            db.add(DayTradingTrade(
+                user_id=AUTOMATION_USER_ID,
+                symbol="3034",
+                stock_name="聯詠",
+                direction="long",
+                entry_time=now,
+                entry_price=100,
+                exit_time=now,
+                exit_price=95,
+                quantity=2,
+                fee=0,
+                tax=0,
+                slippage=0,
+                profit=-10_000,
+                return_percentage=-5,
+                max_profit=0,
+                max_loss=-10_000,
+                entry_reason="test",
+                exit_reason="跌破停損價",
+                followed_signal=True,
+            ))
+        db.commit()
+        signal = {
+            **_signal(),
+            "id": "3034-long-repeat-stop",
+            "symbol": "3034",
+            "stockName": "聯詠",
+        }
+
+        created = ensure_positions_for_delivered_entries(db, [signal], now=now)
+
+        assert created == []
+        allocation = signal["strategyAllocations"][FIXED_STRATEGY_KEY]
+        assert allocation["quantityLots"] == 0
+        assert "同股已停損" in allocation["status"]
 
 
 def test_background_stop_event_closes_position_and_records_trade() -> None:

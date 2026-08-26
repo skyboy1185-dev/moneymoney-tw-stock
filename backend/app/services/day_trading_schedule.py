@@ -11,6 +11,8 @@ from .theme_stock_universe import is_target_theme_symbol
 
 TAIPEI = ZoneInfo("Asia/Taipei")
 MAX_LONG_CHASE_CHANGE_PERCENT = 5.0
+MIN_OFFICIAL_CONFIDENCE_SCORE = 80
+MIN_OFFICIAL_CONFIRMATION_SCORE = 45
 MIN_DAY_TRADING_VOLUME_SHARES = 1_000_000
 MIN_DAY_TRADING_TURNOVER = 100_000_000
 MIN_LIQUIDITY_PROGRESS = 0.10
@@ -249,8 +251,18 @@ def recommendation_qualification(
         failures.append("訊號已失效或尚未確認")
     if str(candidate.get("action", "")).startswith(("等待", "觀望", "禁止", "行情異常")):
         failures.append("尚未形成正式進場指令")
-    if float(candidate.get("confidenceScore", 0)) < 75:
-        failures.append("信心分數未達 75")
+    if float(candidate.get("confidenceScore", 0)) < MIN_OFFICIAL_CONFIDENCE_SCORE:
+        failures.append(f"信心分數未達 {MIN_OFFICIAL_CONFIDENCE_SCORE}")
+    if float(candidate.get("confirmationScore", 0)) < MIN_OFFICIAL_CONFIRMATION_SCORE:
+        failures.append(f"盤中確認分數未達 {MIN_OFFICIAL_CONFIRMATION_SCORE}")
+    five_minute_structure = str(candidate.get("fiveMinuteStructure", ""))
+    five_minute_setup = str(candidate.get("fiveMinuteSetup", ""))
+    if (
+        candidate.get("direction") == "long"
+        and "突破" in five_minute_setup
+        and ("未確認" in five_minute_structure or "尚未" in five_minute_structure)
+    ):
+        failures.append("5 分 K 突破結構尚未確認")
     if float(candidate.get("healthScore", 0)) < 70:
         failures.append("健康度未達 70")
     if float(candidate.get("riskRewardRatio", 0)) < config.minimum_risk_reward:

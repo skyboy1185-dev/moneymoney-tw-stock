@@ -30,6 +30,9 @@ DYNAMIC_STRATEGY_KEY = "dynamic_5m"
 # Legacy fallback used only by recommendation history created before dynamic sizing.
 AUTOMATION_QUANTITY_LOTS = 2.0
 AUTOMATION_FIXED_MAX_STOP_RISK = 50_000.0
+AUTOMATION_FIXED_MAX_POSITION_CAPITAL = 1_000_000.0
+AUTOMATION_FIXED_REPEAT_STOP_LOOKBACK_DAYS = 30
+AUTOMATION_FIXED_REPEAT_STOP_LIMIT = 2
 AUTOMATION_DAILY_CAPITAL = 5_000_000.0
 AUTOMATION_MAX_POSITION_PERCENT = 30.0
 AUTOMATION_RISK_PER_TRADE_PERCENT = 0.5
@@ -163,6 +166,29 @@ def calculate_automation_quantity_lots(
     return round(shares / 1000, 3)
 
 
+def _recent_symbol_stop_loss_count(
+    db: Session,
+    *,
+    user_id: str,
+    symbol: str,
+    now: datetime,
+) -> int:
+    since = now - timedelta(days=AUTOMATION_FIXED_REPEAT_STOP_LOOKBACK_DAYS)
+    rows = db.scalars(
+        select(DayTradingTrade).where(
+            DayTradingTrade.user_id == user_id,
+            DayTradingTrade.symbol == symbol,
+            DayTradingTrade.exit_time >= since,
+        )
+    ).all()
+    count = 0
+    for row in rows:
+        reason = str(row.exit_reason or "").lower()
+        if float(row.profit or 0) < 0 and ("停損" in reason or "stop" in reason):
+            count += 1
+    return count
+
+
 def record_official_recommendations(
     db: Session,
     recommendations: list[dict[str, Any]],
@@ -282,6 +308,23 @@ def ensure_positions_for_official_recommendations(
                     f"超過單筆上限 {AUTOMATION_FIXED_MAX_STOP_RISK:,.0f} 元，未建倉"
                     if estimated_stop_risk > AUTOMATION_FIXED_MAX_STOP_RISK else ""
                 )
+                estimated_position_capital = entry_price * quantity_lots * 1000
+                if not blocked_status and estimated_position_capital > AUTOMATION_FIXED_MAX_POSITION_CAPITAL:
+                    blocked_status = (
+                        f"固定 2 張使用資金 {estimated_position_capital:,.0f} 元，"
+                        f"超過單檔上限 {AUTOMATION_FIXED_MAX_POSITION_CAPITAL:,.0f} 元，未建倉"
+                    )
+                recent_stop_losses = _recent_symbol_stop_loss_count(
+                    db,
+                    user_id=user_id,
+                    symbol=symbol,
+                    now=current,
+                )
+                if not blocked_status and recent_stop_losses >= AUTOMATION_FIXED_REPEAT_STOP_LIMIT:
+                    blocked_status = (
+                        f"近 {AUTOMATION_FIXED_REPEAT_STOP_LOOKBACK_DAYS} 日同股已停損 "
+                        f"{recent_stop_losses} 次，暫停自動建倉"
+                    )
                 if blocked_status:
                     quantity_lots = 0.0
             else:
