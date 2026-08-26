@@ -257,6 +257,7 @@ def update_open_trade_from_market_price(
     )
     trade.last_price = price
     trade.unrealized_profit = result["netProfit"]
+    trade.return_percentage = result["returnPercentage"]
     trade.updated_at = at
     reason = _exit_reason(trade, price, regime, candidate, at)
     if reason is None:
@@ -272,7 +273,6 @@ def update_open_trade_from_market_price(
     trade.trading_cost = result["tradingCost"]
     trade.net_profit = result["netProfit"]
     _release_reserved_capital(settings, trade, result["netProfit"])
-    trade.return_percentage = result["returnPercentage"]
     trade.realized_r = (
         result["netProfit"] / trade.risk_amount
         if trade.risk_amount and trade.risk_amount > 0

@@ -303,6 +303,23 @@ def test_super_ai_realtime_price_update_closes_trade_and_records_exit() -> None:
         db.commit()
         trade_id = trade.id
 
+        no_exit_signal = update_open_trade_from_market_price(
+            db,
+            trade_id=trade_id,
+            price=Decimal("101"),
+            at=now + timedelta(seconds=1),
+            regime="RANGE",
+        )
+        db.commit()
+        open_trade = db.get(AdaptivePaperTrade, trade_id)
+        assert no_exit_signal is None
+        assert open_trade is not None
+        assert open_trade.status == "open"
+        assert open_trade.last_price == Decimal("101")
+        assert open_trade.unrealized_profit > 0
+        assert open_trade.return_percentage > 0
+        assert db.scalar(select(func.count(AdaptiveSignal.id))) == 0
+
         signal_key = update_open_trade_from_market_price(
             db,
             trade_id=trade_id,
