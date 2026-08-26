@@ -37,11 +37,18 @@ from ..services.adaptive_performance_service import performance_payload
 from ..services.gmail_messaging import gmail_notification_dispatcher
 from ..services.super_ai_daytrade_service import (
     SYSTEM_NAME,
+    ai_score,
+    cap_stop_distance,
     ensure_settings as ensure_super_ai_settings,
+    levels_for_side,
     market_state,
+    max_stop_distance_pct,
     notification_payload,
     risk_status,
+    risk_reward,
     settings_payload,
+    stop_distance_pct,
+    trade_side_for,
     update_settings as update_super_ai_settings,
 )
 
@@ -64,6 +71,26 @@ def _admin(x_admin_token: str = Header(min_length=16, max_length=200)) -> None:
 def _latest_trade_date(db: Session):
     item = db.scalar(select(MarketRegime).order_by(MarketRegime.trade_date.desc()).limit(1))
     return item.trade_date if item else None
+
+
+def _super_ai_candidate_payload(
+    item: AdaptiveStockCandidate,
+    *,
+    settings,
+    regime: str,
+) -> dict:
+    payload = candidate_payload(item)
+    side = trade_side_for(regime, item)
+    entry, stop, _tp1, tp2 = levels_for_side(item, side)
+    score = ai_score(item, regime, side)
+    max_stop_pct = max_stop_distance_pct(side, score, Decimal(settings.max_stop_distance_pct))
+    stop, capped = cap_stop_distance(entry, stop, side, max_stop_pct)
+    payload["stopLossPrice"] = float(stop)
+    payload["stopDistancePct"] = round(float(stop_distance_pct(entry, stop)), 2)
+    payload["riskReward"] = float(risk_reward(entry, stop, tp2, side))
+    payload["maxStopDistancePct"] = float(max_stop_pct)
+    payload["stopDistanceCapped"] = capped
+    return payload
 
 
 @router.get("/status")
@@ -129,8 +156,12 @@ def candidates(
     if industry: query = query.where(AdaptiveStockCandidate.sub_industry == industry)
     if status: query = query.where(AdaptiveStockCandidate.candidate_status == status)
     items = list(db.scalars(query.order_by(AdaptiveStockCandidate.rank)).all())
+    settings = ensure_super_ai_settings(db)
+    regime = db.scalar(select(MarketRegime).where(MarketRegime.is_current.is_(True)).order_by(MarketRegime.trade_date.desc()).limit(1))
+    regime_key = regime.regime if regime is not None else "UNCERTAIN"
     return {
-        "tradeDate": trade_date.isoformat(), "items": [candidate_payload(item) for item in items],
+        "tradeDate": trade_date.isoformat(),
+        "items": [_super_ai_candidate_payload(item, settings=settings, regime=regime_key) for item in items],
         "message": None if items else "目前沒有適合進場的電子股",
         "updatedAt": max((item.updated_at for item in items), default=None),
     }

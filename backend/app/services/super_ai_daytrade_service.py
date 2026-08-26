@@ -26,6 +26,9 @@ MONEY = Decimal("0.01")
 LONG_MAX_STOP_DISTANCE_PCT = Decimal("2.0")
 SHORT_MAX_STOP_DISTANCE_PCT = Decimal("1.8")
 A_PLUS_MAX_STOP_DISTANCE_PCT = Decimal("2.5")
+DEFAULT_MAX_STOP_DISTANCE_PCT = Decimal("1.0")
+MIN_CONFIGURABLE_STOP_DISTANCE_PCT = Decimal("0.3")
+MAX_CONFIGURABLE_STOP_DISTANCE_PCT = Decimal("3.0")
 INTRADAY_BULL_BREAKOUT_BONUS = Decimal("8")
 
 MARKET_WEIGHTS: dict[str, dict[str, float | str]] = {
@@ -87,6 +90,7 @@ def settings_payload(row: SuperAIDaytradeSetting) -> dict[str, Any]:
         "minRiskReward": float(row.min_risk_reward),
         "maxPositions": row.max_positions,
         "maxPositionPct": float(row.max_position_pct),
+        "maxStopDistancePct": float(row.max_stop_distance_pct),
         "commissionDiscount": float(row.commission_discount),
         "commissionDiscountLabel": discount_label(Decimal(row.commission_discount)),
         "emailEnabled": row.email_enabled,
@@ -121,6 +125,7 @@ def update_settings(db: Session, values: dict[str, Any], user_id: str, at: datet
         "minRiskReward": "min_risk_reward",
         "maxPositions": "max_positions",
         "maxPositionPct": "max_position_pct",
+        "maxStopDistancePct": "max_stop_distance_pct",
         "commissionDiscount": "commission_discount",
         "emailEnabled": "email_enabled",
         "emailBuyEnabled": "email_buy_enabled",
@@ -135,7 +140,7 @@ def update_settings(db: Session, values: dict[str, Any], user_id: str, at: datet
     decimal_fields = {
         "maxCapital", "availableCapital", "riskPerTradePct", "dailyMaxLossPct",
         "weeklyDrawdownPct", "minAiScoreToTrade", "minAiScoreToWatch",
-        "minRiskReward", "maxPositionPct", "commissionDiscount",
+        "minRiskReward", "maxPositionPct", "maxStopDistancePct", "commissionDiscount",
     }
     for source, target in mapping.items():
         if source not in values or values[source] is None:
@@ -145,6 +150,11 @@ def update_settings(db: Session, values: dict[str, Any], user_id: str, at: datet
             value = min(5_000_000, max(100_000, float(value)))
         if source == "commissionDiscount":
             value = min(1, max(0, float(value)))
+        if source == "maxStopDistancePct":
+            value = min(
+                float(MAX_CONFIGURABLE_STOP_DISTANCE_PCT),
+                max(float(MIN_CONFIGURABLE_STOP_DISTANCE_PCT), float(value)),
+            )
         if source in decimal_fields:
             setattr(row, target, Decimal(str(value)))
         else:
@@ -219,12 +229,29 @@ def stop_distance_pct(entry: Decimal, stop: Decimal) -> Decimal:
     return (abs(entry - stop) / entry * Decimal("100")).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
 
 
-def max_stop_distance_pct(side: str, score: Decimal) -> Decimal:
+def _configured_stop_distance_pct(value: Decimal | float | int | None) -> Decimal:
+    if value is None:
+        return DEFAULT_MAX_STOP_DISTANCE_PCT
+    parsed = Decimal(str(value))
+    return min(MAX_CONFIGURABLE_STOP_DISTANCE_PCT, max(MIN_CONFIGURABLE_STOP_DISTANCE_PCT, parsed))
+
+
+def max_stop_distance_pct(side: str, score: Decimal, configured: Decimal | float | int | None = None) -> Decimal:
     if score >= Decimal("90"):
-        return A_PLUS_MAX_STOP_DISTANCE_PCT
+        base = A_PLUS_MAX_STOP_DISTANCE_PCT
+    elif side == "SHORT":
+        base = SHORT_MAX_STOP_DISTANCE_PCT
+    else:
+        base = LONG_MAX_STOP_DISTANCE_PCT
+    return min(base, _configured_stop_distance_pct(configured)) if configured is not None else base
+
+
+def cap_stop_distance(entry: Decimal, stop: Decimal, side: str, max_stop_pct: Decimal) -> tuple[Decimal, bool]:
+    if stop_distance_pct(entry, stop) <= max_stop_pct:
+        return stop, False
     if side == "SHORT":
-        return SHORT_MAX_STOP_DISTANCE_PCT
-    return LONG_MAX_STOP_DISTANCE_PCT
+        return _money(entry * (Decimal("1") + max_stop_pct / Decimal("100"))), True
+    return _money(entry * (Decimal("1") - max_stop_pct / Decimal("100"))), True
 
 
 def _intraday_bull_breakout_bonus(candidate: AdaptiveStockCandidate, regime: str, side: str) -> Decimal:
@@ -350,17 +377,12 @@ def trading_gate(
     rr = risk_reward(entry, stop, tp2, side)
     score = ai_score(candidate, regime, side)
     stop_pct = stop_distance_pct(entry, stop)
-    max_stop_pct = max_stop_distance_pct(side, score)
-    tactical_stop_applied = False
-    if (
-        side == "LONG"
-        and candidate.strategy_type == "BREAKOUT"
-        and stop_pct > max_stop_pct
-    ):
-        stop = _money(entry * (Decimal("1") - max_stop_pct / Decimal("100")))
+    max_stop_pct = max_stop_distance_pct(side, score, Decimal(settings.max_stop_distance_pct))
+    stop_distance_capped = False
+    stop, stop_distance_capped = cap_stop_distance(entry, stop, side, max_stop_pct)
+    if stop_distance_capped:
         rr = risk_reward(entry, stop, tp2, side)
         stop_pct = stop_distance_pct(entry, stop)
-        tactical_stop_applied = True
     risk = risk_status(db, settings, at)
     open_trades = list(db.scalars(select(AdaptivePaperTrade).where(
         AdaptivePaperTrade.status == "open",
@@ -392,6 +414,11 @@ def trading_gate(
         failures.append("delayed_quote")
     if candidate.candidate_status in {"market_risk_high", "signal_invalid"} and side == "LONG":
         failures.append("market_risk_blocks_long")
+    reasons = decision_reasons(candidate, regime, side, rr)
+    if _intraday_bull_breakout_bonus(candidate, regime, side):
+        reasons.append(f"intraday_bull_breakout_bonus=+{INTRADAY_BULL_BREAKOUT_BONUS}")
+    if stop_distance_capped:
+        reasons.append(f"stop_distance_capped_to_{float(max_stop_pct):.2f}%")
     return {
         "allowed": not failures,
         "failures": failures,
@@ -407,9 +434,7 @@ def trading_gate(
         "quantity": quantity,
         "riskAmount": risk_amount,
         "projectedMarketValue": _money(projected_value),
-        "reasons": decision_reasons(candidate, regime, side, rr)
-            + ([f"intraday_bull_breakout_bonus=+{INTRADAY_BULL_BREAKOUT_BONUS}"] if _intraday_bull_breakout_bonus(candidate, regime, side) else [])
-            + (["tactical_stop_capped_to_intraday_limit"] if tactical_stop_applied else []),
+        "reasons": reasons,
         "risk": risk,
     }
 

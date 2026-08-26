@@ -414,8 +414,27 @@ def test_super_ai_breakout_uses_tactical_intraday_stop_when_structural_stop_is_t
         gate = trading_gate(db, settings, candidate, "BREAKOUT", now)
 
         assert gate["stopDistancePct"] <= gate["maxStopDistancePct"]
+        assert gate["maxStopDistancePct"] == Decimal("1.0")
+        assert gate["stop"] == Decimal("99.00")
         assert "stop_distance_too_wide" not in gate["failures"]
-        assert "tactical_stop_capped_to_intraday_limit" in gate["reasons"]
+        assert "stop_distance_capped_to_1.00%" in gate["reasons"]
+
+        candidate.stop_loss_price = Decimal("99.50")
+        gate = trading_gate(db, settings, candidate, "BREAKOUT", now)
+        assert gate["stop"] == Decimal("99.50")
+        assert gate["stopDistancePct"] == Decimal("0.5000")
+        assert "stop_distance_capped_to_1.00%" not in gate["reasons"]
+
+        candidate.strategy_type = "CRASH"
+        candidate.relative_strength = Decimal("-8")
+        candidate.industry_strength = Decimal("20")
+        candidate.candidate_status = "market_risk_high"
+        candidate.stop_loss_price = Decimal("92")
+        gate = trading_gate(db, settings, candidate, "CRASH", now)
+        assert gate["side"] == "SHORT"
+        assert gate["stop"] == Decimal("101.00")
+        assert gate["stopDistancePct"] == Decimal("1.0000")
+        assert "stop_distance_capped_to_1.00%" in gate["reasons"]
 
 
 def test_super_ai_intraday_bull_breakout_bonus_allows_realtime_breakout_candidate() -> None:
@@ -476,7 +495,7 @@ def test_super_ai_intraday_bull_breakout_bonus_allows_realtime_breakout_candidat
         assert gate["allowed"], gate["failures"]
         assert gate["aiScore"] >= Decimal("80")
         assert "intraday_bull_breakout_bonus=+8" in gate["reasons"]
-        assert "tactical_stop_capped_to_intraday_limit" in gate["reasons"]
+        assert "stop_distance_capped_to_1.00%" in gate["reasons"]
 
 
 def test_super_ai_intraday_bull_breakout_bonus_requires_realtime_quote() -> None:

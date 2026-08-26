@@ -31,6 +31,7 @@ type Settings = {
   minRiskReward: number;
   maxPositions: number;
   maxPositionPct: number;
+  maxStopDistancePct: number;
   commissionDiscount: number;
   commissionDiscountLabel: string;
   emailEnabled: boolean;
@@ -92,6 +93,8 @@ type Candidate = {
   breakoutPrice: number;
   stopLossPrice: number;
   stopDistancePct?: number;
+  maxStopDistancePct?: number;
+  stopDistanceCapped?: boolean;
   targetPrice1: number;
   targetPrice2: number;
   relativeStrength: number;
@@ -534,6 +537,9 @@ export function AdaptiveElectronicPage({
             <label>最低R/R
               <input type="number" min="1" max="5" step="0.1" value={settings.minRiskReward} onChange={(e) => setSettings({ ...settings, minRiskReward: Number(e.target.value) })} />
             </label>
+            <label>最大停損距離 %
+              <input type="number" min="0.3" max="3" step="0.1" value={settings.maxStopDistancePct ?? 1} onChange={(e) => setSettings({ ...settings, maxStopDistancePct: Number(e.target.value) })} />
+            </label>
             <label>最多持股
               <input type="number" min="1" max="10" value={settings.maxPositions} onChange={(e) => setSettings({ ...settings, maxPositions: Number(e.target.value) })} />
             </label>
@@ -556,6 +562,7 @@ export function AdaptiveElectronicPage({
         <div className="pattern-run-strip">
           <span>交易模式 <b className={settings?.tradingMode === "LIVE" ? "pattern-loss" : ""}>{settings?.tradingMode === "LIVE" ? "實盤" : "模擬盤"}</b></span>
           <span>單筆風險金額 <b>{money((settings?.maxCapital ?? 0) * (settings?.riskPerTradePct ?? 0) / 100)}</b></span>
+          <span>新單停損上限 <b>{(settings?.maxStopDistancePct ?? 1).toFixed(2)}%</b></span>
           <span>退水計算 <b>{settings?.commissionDiscountLabel ?? `${((settings?.commissionDiscount ?? 0.2) * 10).toFixed(1)}折`}</b></span>
           <span>連續停損 <b>{risk?.consecutiveStopLosses ?? 0}/3</b></span>
           <span>設定版本 <b>v{settings?.settingsVersion ?? 0}</b></span>
@@ -653,7 +660,11 @@ export function AdaptiveElectronicPage({
                     <td><b>{sideLabel(inferredSide)}</b><small>{strategyLabel(item.strategyType)}</small></td>
                     <td><strong>{aiScore.toFixed(0)}</strong><small>{item.statusLabel}</small></td>
                     <td>{price(item.currentPrice)}<small>{price(item.entryPriceLow)} - {price(item.entryPriceHigh)}</small></td>
-                    <td><span className="pattern-loss">{price(item.stopLossPrice)}（{(item.stopDistancePct ?? (risk / item.currentPrice * 100)).toFixed(2)}%）</span><small className="pattern-profit">TP1 {price(item.targetPrice1)} / TP2 {price(item.targetPrice2)}</small></td>
+                    <td>
+                      <span className="pattern-loss">{price(item.stopLossPrice)}（{(item.stopDistancePct ?? (risk / item.currentPrice * 100)).toFixed(2)}%）</span>
+                      <small className="pattern-profit">TP1 {price(item.targetPrice1)} / TP2 {price(item.targetPrice2)}</small>
+                      {item.stopDistanceCapped && <small className="pattern-loss">停損已套用上限 {(item.maxStopDistancePct ?? settings?.maxStopDistancePct ?? 1).toFixed(2)}%</small>}
+                    </td>
                     <td>{item.subIndustry}<small>族群 {item.industryStrength.toFixed(0)}｜RS {item.relativeStrength.toFixed(1)}｜R/R {rr.toFixed(2)}</small></td>
                     <td><DecisionReasonList reasons={[...item.selectedReasons, ...item.riskReasons]} /></td>
                     <td><button onClick={() => onSelectStock(item.stockCode)}>查看個股</button></td>
