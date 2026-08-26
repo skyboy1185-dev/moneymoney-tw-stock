@@ -25,6 +25,7 @@ from app.services.adaptive_performance_service import (
     _release_reserved_capital,
     estimated_trade_result,
     update_adaptive_paper_trades,
+    update_open_trade_from_market_price,
     win_rate_from_profits,
 )
 from app.services.adaptive_strategies import BreakoutStrategy, RangeTradingStrategy
@@ -226,28 +227,101 @@ def test_super_ai_daytrade_forces_exit_after_1325() -> None:
     ) == "DAY_TRADE_CLOSE"
 
 
-def test_super_ai_long_uses_stop_loss_buffer() -> None:
+def test_super_ai_long_uses_hard_stop_loss() -> None:
     class Trade:
         side = "LONG"
         stop_loss_price = Decimal("100")
         target_price_2 = Decimal("120")
 
     assert _exit_reason(
-        Trade(), Decimal("100.29"), "RANGE", None,
+        Trade(), Decimal("100.01"), "RANGE", None,
+        datetime(2026, 7, 31, 10, 30, tzinfo=TAIPEI),
+    ) is None
+    assert _exit_reason(
+        Trade(), Decimal("100"), "RANGE", None,
         datetime(2026, 7, 31, 10, 30, tzinfo=TAIPEI),
     ) == "STOP_LOSS"
 
 
-def test_super_ai_short_uses_stop_loss_buffer() -> None:
+def test_super_ai_short_uses_hard_stop_loss() -> None:
     class Trade:
         side = "SHORT"
         stop_loss_price = Decimal("100")
         target_price_2 = Decimal("80")
 
     assert _exit_reason(
-        Trade(), Decimal("99.71"), "RANGE", None,
+        Trade(), Decimal("99.99"), "RANGE", None,
+        datetime(2026, 7, 31, 10, 30, tzinfo=TAIPEI),
+    ) is None
+    assert _exit_reason(
+        Trade(), Decimal("100"), "RANGE", None,
         datetime(2026, 7, 31, 10, 30, tzinfo=TAIPEI),
     ) == "STOP_LOSS"
+
+
+def test_super_ai_realtime_price_update_closes_trade_and_records_exit() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 7, 31, 10, 0, tzinfo=TAIPEI)
+    trade = AdaptivePaperTrade(
+        stock_code="2330",
+        stock_name="TSMC",
+        strategy_type="BREAKOUT",
+        entry_signal_key="entry-2330",
+        side="LONG",
+        trade_mode="PAPER",
+        quantity_shares=1000,
+        entry_price=Decimal("100"),
+        entry_time=now,
+        entry_reason="test",
+        stop_loss_price=Decimal("98"),
+        target_price_1=Decimal("103"),
+        target_price_2=Decimal("106"),
+        last_price=Decimal("100"),
+        ai_score=Decimal("88"),
+        market_regime="BREAKOUT",
+        sector_status="AI",
+        initial_capital=Decimal("1000000"),
+        risk_amount=Decimal("2000"),
+        initial_r=Decimal("2"),
+        entry_reasons_json="[]",
+        exit_reasons_json="[]",
+        status="open",
+        created_at=now,
+        updated_at=now,
+    )
+
+    with Session(engine) as db:
+        settings = ensure_super_ai_settings(db, now)
+        settings.max_capital = Decimal("1000000")
+        settings.available_capital = Decimal("900000")
+        db.add(trade)
+        db.commit()
+        trade_id = trade.id
+
+        signal_key = update_open_trade_from_market_price(
+            db,
+            trade_id=trade_id,
+            price=Decimal("98"),
+            at=now + timedelta(seconds=5),
+            regime="RANGE",
+        )
+        db.commit()
+
+        closed_trade = db.get(AdaptivePaperTrade, trade_id)
+        assert signal_key is not None
+        assert closed_trade is not None
+        assert closed_trade.status == "closed"
+        assert closed_trade.exit_reason == "STOP_LOSS"
+        assert closed_trade.exit_price == Decimal("98")
+        assert closed_trade.unrealized_profit == Decimal("0")
+        assert closed_trade.net_profit < 0
+        assert db.scalar(select(func.count(AdaptiveSignal.id))) == 1
+        assert db.scalar(select(func.count(SuperAIDaytradeNotification.id))) == 1
 
 
 def test_super_ai_short_exits_when_market_recovers() -> None:

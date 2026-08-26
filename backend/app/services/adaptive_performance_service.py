@@ -36,7 +36,7 @@ MINIMUM_COMMISSION = Decimal("20")
 MONEY = Decimal("0.01")
 TAIPEI = ZoneInfo("Asia/Taipei")
 FORCED_DAY_TRADE_CLOSE_START = time(13, 25)
-STOP_LOSS_BUFFER_PCT = Decimal("0.003")
+STOP_LOSS_BUFFER_PCT = Decimal("0")
 
 
 def _money(value: Decimal) -> Decimal:
@@ -235,6 +235,81 @@ def _record_entry_notification(
     )
 
 
+def update_open_trade_from_market_price(
+    db: Session,
+    *,
+    trade_id: int,
+    price: Decimal,
+    at: datetime,
+    regime: str,
+    candidate: AdaptiveStockCandidate | None = None,
+) -> str | None:
+    trade = db.get(AdaptivePaperTrade, trade_id)
+    if trade is None or trade.status != "open":
+        return None
+    settings = ensure_super_ai_settings(db, at)
+    result = estimated_trade_result(
+        trade.entry_price,
+        price,
+        trade.quantity_shares,
+        trade.side,
+        Decimal(settings.commission_discount),
+    )
+    trade.last_price = price
+    trade.unrealized_profit = result["netProfit"]
+    trade.updated_at = at
+    reason = _exit_reason(trade, price, regime, candidate, at)
+    if reason is None:
+        return None
+
+    signal_key = f"adaptive-exit:{at.astimezone(TAIPEI).date()}:{trade.stock_code}:{trade.id}"
+    trade.status = "closed"
+    trade.exit_signal_key = signal_key
+    trade.exit_price = price
+    trade.exit_time = at
+    trade.exit_reason = reason
+    trade.gross_profit = result["grossProfit"]
+    trade.trading_cost = result["tradingCost"]
+    trade.net_profit = result["netProfit"]
+    _release_reserved_capital(settings, trade, result["netProfit"])
+    trade.return_percentage = result["returnPercentage"]
+    trade.realized_r = (
+        result["netProfit"] / trade.risk_amount
+        if trade.risk_amount and trade.risk_amount > 0
+        else Decimal("0")
+    )
+    trade.unrealized_profit = Decimal("0")
+    trade.exit_reasons_json = json.dumps([reason], ensure_ascii=False)
+
+    if db.scalar(select(AdaptiveSignal.id).where(AdaptiveSignal.signal_key == signal_key)) is None:
+        db.add(AdaptiveSignal(
+            signal_key=signal_key,
+            stock_code=trade.stock_code,
+            stock_name=trade.stock_name,
+            signal_type="exit_triggered",
+            action=reason,
+            strategy_type=trade.strategy_type,
+            price=price,
+            health_score=candidate.health_score if candidate is not None else None,
+            reasons_json=json.dumps([reason, f"{SYSTEM_NAME} PnL {result['netProfit']:+,.0f}"], ensure_ascii=False),
+            line_push_status="pending",
+            created_at=at,
+        ))
+
+    monitor = db.scalar(select(AdaptiveStockMonitoring).where(
+        AdaptiveStockMonitoring.user_id == AUTOMATION_USER_ID,
+        AdaptiveStockMonitoring.stock_code == trade.stock_code,
+    ).order_by(AdaptiveStockMonitoring.updated_at.desc()).limit(1))
+    if monitor is not None:
+        monitor.entry_price = trade.entry_price
+        monitor.monitor_status = "closed"
+        monitor.last_signal = "exit_triggered"
+        monitor.removed_reason = reason
+        monitor.updated_at = at
+    _record_exit_notification(db, trade, price, result, reason, at)
+    return signal_key
+
+
 def _manage_open_trades(
     db: Session,
     payload: AdaptiveScanPayload,
@@ -243,7 +318,6 @@ def _manage_open_trades(
 ) -> list[AdaptiveSignal]:
     stocks = {stock.stock_code: stock for stock in payload.stocks}
     emitted: list[AdaptiveSignal] = []
-    settings = ensure_super_ai_settings(db, payload.market.updated_at)
     open_trades = list(db.scalars(select(AdaptivePaperTrade).where(
         AdaptivePaperTrade.status == "open",
     )).all())
@@ -252,67 +326,19 @@ def _manage_open_trades(
         if stock is None or stock.price <= 0:
             continue
         price = Decimal(str(stock.price))
-        result = estimated_trade_result(
-            trade.entry_price,
-            price,
-            trade.quantity_shares,
-            trade.side,
-            Decimal(settings.commission_discount),
+        signal_key = update_open_trade_from_market_price(
+            db,
+            trade_id=trade.id,
+            price=price,
+            at=payload.market.updated_at,
+            regime=regime,
+            candidate=candidates.get(trade.stock_code),
         )
-        trade.last_price = price
-        trade.unrealized_profit = result["netProfit"]
-        trade.updated_at = payload.market.updated_at
-        reason = _exit_reason(trade, price, regime, candidates.get(trade.stock_code), payload.market.updated_at)
-        if reason is None:
+        if signal_key is None:
             continue
-
-        signal_key = f"adaptive-exit:{payload.market.trade_date}:{trade.stock_code}:{trade.id}"
-        trade.status = "closed"
-        trade.exit_signal_key = signal_key
-        trade.exit_price = price
-        trade.exit_time = payload.market.updated_at
-        trade.exit_reason = reason
-        trade.gross_profit = result["grossProfit"]
-        trade.trading_cost = result["tradingCost"]
-        trade.net_profit = result["netProfit"]
-        _release_reserved_capital(settings, trade, result["netProfit"])
-        trade.return_percentage = result["returnPercentage"]
-        trade.realized_r = (
-            result["netProfit"] / trade.risk_amount
-            if trade.risk_amount and trade.risk_amount > 0
-            else Decimal("0")
-        )
-        trade.unrealized_profit = Decimal("0")
-        trade.exit_reasons_json = json.dumps([reason], ensure_ascii=False)
-
-        if db.scalar(select(AdaptiveSignal.id).where(AdaptiveSignal.signal_key == signal_key)) is None:
-            signal = AdaptiveSignal(
-                signal_key=signal_key,
-                stock_code=trade.stock_code,
-                stock_name=trade.stock_name,
-                signal_type="exit_triggered",
-                action=reason,
-                strategy_type=trade.strategy_type,
-                price=price,
-                health_score=candidates[trade.stock_code].health_score if trade.stock_code in candidates else None,
-                reasons_json=json.dumps([reason, f"{SYSTEM_NAME} PnL {result['netProfit']:+,.0f}"], ensure_ascii=False),
-                line_push_status="pending",
-                created_at=payload.market.updated_at,
-            )
-            db.add(signal)
+        signal = db.scalar(select(AdaptiveSignal).where(AdaptiveSignal.signal_key == signal_key))
+        if signal is not None:
             emitted.append(signal)
-
-        monitor = db.scalar(select(AdaptiveStockMonitoring).where(
-            AdaptiveStockMonitoring.user_id == AUTOMATION_USER_ID,
-            AdaptiveStockMonitoring.stock_code == trade.stock_code,
-        ).order_by(AdaptiveStockMonitoring.updated_at.desc()).limit(1))
-        if monitor is not None:
-            monitor.entry_price = trade.entry_price
-            monitor.monitor_status = "closed"
-            monitor.last_signal = "exit_triggered"
-            monitor.removed_reason = reason
-            monitor.updated_at = payload.market.updated_at
-        _record_exit_notification(db, trade, price, result, reason, payload.market.updated_at)
     return emitted
 
 

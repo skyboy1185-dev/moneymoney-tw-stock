@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from datetime import UTC, date, datetime, time, timedelta
+from decimal import Decimal
 import json
 import logging
 import math
@@ -15,10 +16,18 @@ from sqlalchemy import select
 from ..adaptive_schemas import AdaptiveScanPayload
 from ..config import get_settings
 from ..database import BackgroundSessionLocal as SessionLocal
-from ..models import AdaptivePaperTrade, AdaptiveSignal, AdaptiveStockCandidate, MarketRegime, SuperAIDaytradeNotification
+from ..models import (
+    AdaptivePaperTrade,
+    AdaptiveSignal,
+    AdaptiveStockCandidate,
+    ElectronicIndustryMapping,
+    MarketRegime,
+    SuperAIDaytradeNotification,
+)
 from .adaptive_electronic_service import STRATEGY_NAMES, process_adaptive_scan
 from .adaptive_entry_window import adaptive_entry_window_open
 from .adaptive_parameters import load_parameters
+from .adaptive_performance_service import update_open_trade_from_market_price
 from .ai_stock_line import push_ai_stock_message
 from .day_trading_schedule import is_twse_trading_day
 from .line_messaging import (
@@ -26,11 +35,17 @@ from .line_messaging import (
     format_personal_strategy_simulation,
 )
 from .gmail_messaging import gmail_notification_dispatcher
-from .super_ai_daytrade_service import SYSTEM_NAME, TRADE_EMAIL_CATEGORIES
+from .official_market_data import StockQuoteRequest, official_market_data_provider
+from .super_ai_daytrade_service import (
+    SYSTEM_NAME,
+    TRADE_EMAIL_CATEGORIES,
+    record_notification,
+)
 
 
 logger = logging.getLogger(__name__)
 TAIPEI = ZoneInfo("Asia/Taipei")
+POSITION_MONITOR_ERROR_DEDUPE_SECONDS = 300
 
 
 def _normalize_scan_payload(raw: object) -> object:
@@ -132,9 +147,18 @@ async def fetch_adaptive_scan_payload() -> AdaptiveScanPayload:
 class AdaptiveElectronicAutomation:
     def __init__(self) -> None:
         self._task: asyncio.Task[None] | None = None
+        self._position_task: asyncio.Task[None] | None = None
+        self._last_quote_error_at: dict[int, datetime] = {}
         self._state = {
             "status": "stopped", "lastRunAt": None, "lastSuccessAt": None,
             "lastResult": None, "lastError": None, "nextScanSeconds": 180,
+            "positionMonitor": {
+                "checkedAt": None,
+                "openTrades": 0,
+                "updated": 0,
+                "closed": 0,
+                "quoteErrors": 0,
+            },
         }
         self._last_close_scan_date: date | None = None
 
@@ -156,17 +180,32 @@ class AdaptiveElectronicAutomation:
 
     async def start(self) -> None:
         if self._task and not self._task.done():
+            if self._position_task is None or self._position_task.done():
+                self._position_task = asyncio.create_task(
+                    self._run_position_monitor(),
+                    name="super-ai-daytrade-position-monitor",
+                )
             return
         self._state["status"] = "running"
         self._task = asyncio.create_task(self._run(), name="adaptive-electronic-market-scanner")
+        self._position_task = asyncio.create_task(
+            self._run_position_monitor(),
+            name="super-ai-daytrade-position-monitor",
+        )
 
     async def stop(self) -> None:
         if not self._task:
             return
         self._task.cancel()
+        if self._position_task:
+            self._position_task.cancel()
         with suppress(asyncio.CancelledError):
             await self._task
+        if self._position_task:
+            with suppress(asyncio.CancelledError):
+                await self._position_task
         self._task = None
+        self._position_task = None
         self._state["status"] = "stopped"
 
     async def _fetch_payload(self) -> AdaptiveScanPayload:
@@ -317,6 +356,128 @@ class AdaptiveElectronicAutomation:
                     stored.line_push_status = "sent" if sent else "deduplicated_or_disabled"
                     stored.sent_at = datetime.now(UTC) if sent else None
                     db.commit()
+
+    def _position_monitor_requests(self) -> list[tuple[int, StockQuoteRequest]]:
+        with SessionLocal() as db:
+            rows = list(db.scalars(select(AdaptivePaperTrade).where(
+                AdaptivePaperTrade.status == "open",
+            )).all())
+            requests: list[tuple[int, StockQuoteRequest]] = []
+            for trade in rows:
+                candidate = db.scalar(select(AdaptiveStockCandidate).where(
+                    AdaptiveStockCandidate.stock_code == trade.stock_code,
+                ).order_by(AdaptiveStockCandidate.trade_date.desc()).limit(1))
+                mapping = None if candidate is not None else db.scalar(select(ElectronicIndustryMapping).where(
+                    ElectronicIndustryMapping.stock_code == trade.stock_code,
+                ).limit(1))
+                market = (
+                    candidate.market_type if candidate is not None
+                    else mapping.market_type if mapping is not None
+                    else "上市"
+                )
+                requests.append((
+                    trade.id,
+                    StockQuoteRequest(trade.stock_code, trade.stock_name, market),
+                ))
+            return requests
+
+    def _record_quote_error(self, trade_id: int, request: StockQuoteRequest, at: datetime) -> None:
+        last = self._last_quote_error_at.get(trade_id)
+        if last is not None and at - last < timedelta(seconds=POSITION_MONITOR_ERROR_DEDUPE_SECONDS):
+            return
+        self._last_quote_error_at[trade_id] = at
+        with SessionLocal() as db:
+            record_notification(
+                db,
+                category="ERROR",
+                level="warning",
+                title=f"【{SYSTEM_NAME}｜行情異常】{request.symbol} {request.name}",
+                message=(
+                    f"股票：{request.symbol} {request.name}\n"
+                    "原因：即時持倉監控未取得有效 TWSE MIS 報價，未使用舊價假成交。\n"
+                    "處理：保留持倉並等待下一次即時報價。"
+                ),
+                dedupe_key=f"super-ai-quote-missing:{at.astimezone(TAIPEI).date()}:{trade_id}",
+                symbol=request.symbol,
+                symbol_name=request.name,
+                at=at,
+            )
+            db.commit()
+
+    async def _monitor_open_positions_once(self) -> dict[str, int]:
+        current = datetime.now(UTC)
+        session = _session(current)
+        if session not in {"open", "after_close"}:
+            return {"openTrades": 0, "updated": 0, "closed": 0, "quoteErrors": 0}
+        requests = self._position_monitor_requests()
+        if not requests:
+            return {"openTrades": 0, "updated": 0, "closed": 0, "quoteErrors": 0}
+        quote_requests = [request for _, request in requests]
+        quotes = await official_market_data_provider.get_quotes(
+            quote_requests,
+            force_refresh=True,
+        )
+        signal_keys: list[str] = []
+        updated = 0
+        closed = 0
+        quote_errors = 0
+        with SessionLocal() as db:
+            regime = db.scalar(select(MarketRegime).where(MarketRegime.is_current.is_(True)).limit(1))
+            regime_key = regime.regime if regime is not None else "UNCERTAIN"
+            for trade_id, request in requests:
+                quote = quotes.get(request.symbol)
+                if quote is None or not quote.is_realtime or quote.price <= 0:
+                    quote_errors += 1
+                    self._record_quote_error(trade_id, request, current)
+                    continue
+                candidate = db.scalar(select(AdaptiveStockCandidate).where(
+                    AdaptiveStockCandidate.stock_code == request.symbol,
+                ).order_by(AdaptiveStockCandidate.trade_date.desc()).limit(1))
+                signal_key = update_open_trade_from_market_price(
+                    db,
+                    trade_id=trade_id,
+                    price=Decimal(str(quote.price)),
+                    at=current,
+                    regime=regime_key,
+                    candidate=candidate,
+                )
+                updated += 1
+                if signal_key is not None:
+                    signal_keys.append(signal_key)
+                    closed += 1
+            db.commit()
+        if signal_keys:
+            await self._send_pending_signals(signal_keys)
+            await self._send_super_ai_emails()
+        return {
+            "openTrades": len(requests),
+            "updated": updated,
+            "closed": closed,
+            "quoteErrors": quote_errors,
+        }
+
+    async def _run_position_monitor(self) -> None:
+        while True:
+            interval = max(1.0, min(get_settings().quote_refresh_seconds, 5.0))
+            try:
+                result = await self._monitor_open_positions_once()
+                self._state["positionMonitor"] = {
+                    "checkedAt": datetime.now(UTC).isoformat(),
+                    **result,
+                }
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                logger.exception("Super AI position monitor cycle failed")
+                self._state["positionMonitor"] = {
+                    "checkedAt": datetime.now(UTC).isoformat(),
+                    "openTrades": 0,
+                    "updated": 0,
+                    "closed": 0,
+                    "quoteErrors": 0,
+                    "error": str(error)[:300],
+                }
+            await asyncio.sleep(interval)
 
     async def _run(self) -> None:
         while True:

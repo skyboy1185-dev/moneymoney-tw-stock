@@ -255,6 +255,13 @@ function pnlClass(value: number | null | undefined) {
   return safe > 0 ? "pattern-profit" : safe < 0 ? "pattern-loss" : "";
 }
 
+function quoteAgeSeconds(value: string | null | undefined) {
+  if (!value) return Number.POSITIVE_INFINITY;
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return Number.POSITIVE_INFINITY;
+  return Math.max(0, Math.round((Date.now() - timestamp) / 1000));
+}
+
 function sideLabel(side: string | null | undefined) {
   return side === "SHORT" ? "🔴 放空" : side === "LONG" ? "🟢 做多" : "—";
 }
@@ -368,9 +375,10 @@ export function AdaptiveElectronicPage({
 
   useEffect(() => {
     void load();
-    const timer = window.setInterval(() => void load(true), 15_000);
+    const refreshMs = (performance?.openPositions?.length ?? 0) > 0 ? 5_000 : 15_000;
+    const timer = window.setInterval(() => void load(true), refreshMs);
     return () => window.clearInterval(timer);
-  }, [load]);
+  }, [load, performance?.openPositions?.length]);
 
   useEffect(() => {
     if (!toast) return;
@@ -665,18 +673,44 @@ export function AdaptiveElectronicPage({
             <table>
               <thead><tr><th>股票</th><th>方向/策略</th><th>成本/現價</th><th>股數</th><th>損益</th><th>R倍數</th><th>停損/停利</th><th>AI建議</th></tr></thead>
               <tbody>
-                {openPositions.map((item) => (
+                {openPositions.map((item) => {
+                  const age = quoteAgeSeconds(item.updatedAt);
+                  const quoteDelayed = age > 20;
+                  const referencePrice = Math.max(0.01, item.lastPrice > 0 ? item.lastPrice : item.entryPrice);
+                  const stopDistancePct = item.side === "SHORT"
+                    ? (item.stopLossPrice - referencePrice) / referencePrice * 100
+                    : (referencePrice - item.stopLossPrice) / referencePrice * 100;
+                  const targetDistancePct = item.side === "SHORT"
+                    ? (referencePrice - item.targetPrice2) / referencePrice * 100
+                    : (item.targetPrice2 - referencePrice) / referencePrice * 100;
+                  const actionText = quoteDelayed
+                    ? "行情延遲，等待即時報價"
+                    : item.unrealizedProfit > item.riskAmount
+                      ? "獲利中，監控移動停利"
+                      : item.unrealizedProfit < 0
+                        ? "接近風控，停損即時監控"
+                        : "持倉監控中";
+                  return (
                   <tr key={item.id}>
                     <td><b>{item.stockCode}</b><small>{item.stockName}</small></td>
                     <td>{sideLabel(item.side)}<small>{strategyLabel(item.strategyType)}</small></td>
-                    <td>{price(item.entryPrice)}<small>{price(item.lastPrice)}</small></td>
-                    <td>{item.quantityShares.toLocaleString()}<small>{item.quantityLots.toFixed(2)} 張</small></td>
-                    <td className={pnlClass(item.unrealizedProfit)}>{money(item.unrealizedProfit)}</td>
+                    <td>
+                      {price(item.entryPrice)}
+                      <small className={quoteDelayed ? "pattern-loss" : "pattern-profit"}>
+                        Last {price(item.lastPrice)} · {quoteDelayed ? "DELAY" : "LIVE"} {Number.isFinite(age) ? `${age}s` : ""}
+                      </small>
+                    </td>
+                    <td>{item.quantityShares.toLocaleString()}<small>{item.quantityLots.toFixed(2)} lots</small></td>
+                    <td className={pnlClass(item.unrealizedProfit)}>{money(item.unrealizedProfit)}<small>{pct(item.returnPercentage)}</small></td>
                     <td className={pnlClass(item.realizedR)}>{item.realizedR.toFixed(2)}R</td>
-                    <td><span className="pattern-loss">{price(item.stopLossPrice)}（{(item.entryPrice > 0 ? Math.abs(item.entryPrice - item.stopLossPrice) / item.entryPrice * 100 : 0).toFixed(2)}%）</span><small className="pattern-profit">{price(item.targetPrice1)} / {price(item.targetPrice2)}</small></td>
-                    <td>{item.unrealizedProfit > item.riskAmount ? "續抱/移動停損" : item.unrealizedProfit < 0 ? "嚴守停損，不攤平" : "等待突破確認"}</td>
+                    <td>
+                      <span className="pattern-loss">{price(item.stopLossPrice)}（距停損 {stopDistancePct.toFixed(2)}%）</span>
+                      <small className="pattern-profit">{price(item.targetPrice1)} / {price(item.targetPrice2)}・目標距離 {targetDistancePct.toFixed(2)}%</small>
+                    </td>
+                    <td>{actionText}</td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
             {!openPositions.length && <div className="pattern-empty">目前沒有超強AI當沖系統持倉。</div>}
