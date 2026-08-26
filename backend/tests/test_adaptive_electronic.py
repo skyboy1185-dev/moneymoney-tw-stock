@@ -2,6 +2,10 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import create_engine, func, select
+from sqlalchemy.orm import Session
+from sqlalchemy.pool import StaticPool
+
 from app.adaptive_schemas import (
     AdaptiveBacktestPrice,
     AdaptiveBacktestRequest,
@@ -9,6 +13,8 @@ from app.adaptive_schemas import (
     AdaptiveMarketMetrics,
     AdaptiveStockInput,
 )
+from app.database import Base
+from app.models import AdaptiveSignal, AdaptiveStockCandidate, SuperAIDaytradeNotification
 from app.services.adaptive_backtest_service import run_backtest
 from app.services.adaptive_electronic_service import _display_candidate_status, _selection_strategy
 from app.services.adaptive_electronic_automation import _normalize_scan_payload
@@ -18,6 +24,7 @@ from app.services.adaptive_performance_service import (
     _exit_reason,
     _release_reserved_capital,
     estimated_trade_result,
+    update_adaptive_paper_trades,
     win_rate_from_profits,
 )
 from app.services.adaptive_strategies import BreakoutStrategy, RangeTradingStrategy
@@ -293,6 +300,81 @@ def test_super_ai_exit_restores_reserved_capital_after_net_loss() -> None:
     _release_reserved_capital(Settings, Trade(), Decimal("-8000"))
 
     assert Settings.available_capital == Decimal("1936940.00")
+
+
+def test_super_ai_blocked_entry_does_not_create_watch_notification() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 7, 31, 10, 0, tzinfo=TAIPEI)
+    payload = AdaptiveScanPayload(
+        market=market(updated_at=now, market_open=True),
+        industries=[],
+        stocks=[],
+    )
+    candidate = AdaptiveStockCandidate(
+        trade_date=payload.market.trade_date,
+        stock_code="2330",
+        stock_name="TSMC",
+        market_type="TWSE",
+        main_industry="Electronic",
+        sub_industry="AI",
+        strategy_type="BREAKOUT",
+        total_score=Decimal("92"),
+        technical_score=Decimal("30"),
+        chip_score=Decimal("15"),
+        fundamental_score=Decimal("15"),
+        industry_score=Decimal("15"),
+        market_score=Decimal("15"),
+        health_score=Decimal("88"),
+        previous_health_score=Decimal("86"),
+        current_price=Decimal("100"),
+        entry_price_low=Decimal("100"),
+        entry_price_high=Decimal("101"),
+        breakout_price=Decimal("100"),
+        stop_loss_price=Decimal("98"),
+        target_price_1=Decimal("103"),
+        target_price_2=Decimal("105"),
+        allocation_percent=Decimal("10"),
+        relative_strength=Decimal("4"),
+        volume_status="ok",
+        industry_strength=Decimal("80"),
+        false_breakout_risk=Decimal("10"),
+        candidate_status="can_enter",
+        rank=1,
+        score_breakdown_json="{}",
+        selected_reasons="[]",
+        risk_reasons="[]",
+        missing_data_json="[]",
+        quote_source="Yahoo Finance fallback",
+        quote_timestamp=now,
+        created_at=now,
+        updated_at=now,
+    )
+    signal = AdaptiveSignal(
+        signal_key="blocked-watch-test",
+        stock_code="2330",
+        stock_name="TSMC",
+        signal_type="new_top5",
+        action="WATCH",
+        strategy_type="BREAKOUT",
+        price=Decimal("100"),
+        health_score=Decimal("88"),
+        reasons_json="[]",
+        line_push_status="pending",
+        created_at=now,
+    )
+
+    with Session(engine) as db:
+        db.add_all([candidate, signal])
+        db.commit()
+        update_adaptive_paper_trades(db, payload, [candidate], [signal], "BREAKOUT")
+        db.commit()
+
+        assert db.scalar(select(func.count(SuperAIDaytradeNotification.id))) == 0
 
 
 def test_paper_trade_win_rate_uses_closed_net_profit_only() -> None:

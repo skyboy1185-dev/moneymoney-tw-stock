@@ -191,41 +191,6 @@ def _record_exit_notification(
     )
 
 
-def _record_watch_notification(
-    db: Session,
-    payload: AdaptiveScanPayload,
-    candidate: AdaptiveStockCandidate,
-    gate: dict[str, Any],
-) -> None:
-    record_notification(
-        db,
-        category="WATCH",
-        level="warning",
-        title=f"\u3010{SYSTEM_NAME}\uff5c\u89c0\u5bdf\u3011{candidate.stock_code} {candidate.stock_name}",
-        message=(
-            f"AI\u8a55\u5206\uff1a{float(gate['aiScore']):.0f}\n"
-            f"\u7b56\u7565\uff1a{candidate.strategy_type}\n"
-            f"\u65b9\u5411\uff1a{gate['side']}\n"
-            f"\u672a\u901a\u904e\u689d\u4ef6\uff1a{', '.join(gate['failures'])}\n"
-            f"\u505c\u640d\u8ddd\u96e2\uff1a{float(gate['stopDistancePct']):.2f}% / \u4e0a\u9650 {float(gate['maxStopDistancePct']):.2f}%\n"
-            f"R/R\uff1a1:{float(gate['riskReward']):.2f}"
-        ),
-        dedupe_key=f"super-ai-watch:{payload.market.trade_date}:{candidate.stock_code}:{candidate.strategy_type}",
-        symbol=candidate.stock_code,
-        symbol_name=candidate.stock_name,
-        strategy=candidate.strategy_type,
-        side=gate["side"],
-        price=gate["entry"],
-        quantity=gate["quantity"],
-        stop_loss=gate["stop"],
-        take_profit_1=gate["takeProfit1"],
-        take_profit_2=gate["takeProfit2"],
-        ai_score_value=gate["aiScore"],
-        risk_reward_value=gate["riskReward"],
-        at=payload.market.updated_at,
-    )
-
-
 def _record_entry_notification(
     db: Session,
     payload: AdaptiveScanPayload,
@@ -383,7 +348,6 @@ def update_adaptive_paper_trades(
         if created_at.astimezone(TAIPEI).date() == payload.market.trade_date and signal.stock_code:
             entry_signals[signal.signal_key] = signal
 
-    watched: set[str] = set()
     for signal in entry_signals.values():
         if signal.stock_code is None or signal.price is None:
             continue
@@ -399,9 +363,6 @@ def update_adaptive_paper_trades(
 
         gate = trading_gate(db, settings, candidate, regime, payload.market.updated_at)
         if not gate["allowed"]:
-            if signal.stock_code not in watched and float(gate["aiScore"]) >= float(settings.min_ai_score_to_watch):
-                _record_watch_notification(db, payload, candidate, gate)
-                watched.add(signal.stock_code)
             continue
 
         quantity = int(gate["quantity"])
