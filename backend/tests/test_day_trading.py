@@ -287,36 +287,38 @@ def test_zero_minute_warmup_still_requires_enough_ticks() -> None:
     assert not state["formalSignalsAllowed"]
 
 
-def test_long_entries_continue_after_short_entry_cutoff() -> None:
+def test_new_entries_stop_at_noon_for_long_and_short() -> None:
     config = TradingScheduleConfig()
     saturday = trading_session_state(
         config, datetime(2026, 7, 25, 10, 0, tzinfo=TAIPEI),
         quote_samples=10, infrastructure_ok=True,
     )
-    before_cutoff = trading_session_state(
-        config, datetime(2026, 7, 21, 10, 59, tzinfo=TAIPEI),
+    before_noon = trading_session_state(
+        config, datetime(2026, 7, 21, 11, 59, 59, tzinfo=TAIPEI),
         quote_samples=10, infrastructure_ok=True,
     )
-    cutoff = trading_session_state(
-        config, datetime(2026, 7, 21, 11, 0, tzinfo=TAIPEI),
+    noon = trading_session_state(
+        config, datetime(2026, 7, 21, 12, 0, tzinfo=TAIPEI),
         quote_samples=10, infrastructure_ok=True,
     )
-    long_cutoff = trading_session_state(
-        config, datetime(2026, 7, 21, 13, 20, tzinfo=TAIPEI),
+    after_noon = trading_session_state(
+        config, datetime(2026, 7, 21, 12, 30, tzinfo=TAIPEI),
         quote_samples=10, infrastructure_ok=True,
     )
     assert saturday["phase"] == "non_trading"
-    assert before_cutoff["phase"] == "scanning"
-    assert before_cutoff["formalSignalsAllowed"]
-    assert cutoff["phase"] == "long_only"
+    assert before_noon["phase"] == "scanning"
+    assert before_noon["formalSignalsAllowed"]
+    assert before_noon["formalLongSignalsAllowed"]
+    assert before_noon["formalShortSignalsAllowed"]
+    assert noon["phase"] == "entry_closed"
     assert not saturday["formalSignalsAllowed"]
-    assert cutoff["formalSignalsAllowed"]
-    assert cutoff["formalLongSignalsAllowed"]
-    assert not cutoff["formalShortSignalsAllowed"]
-    assert cutoff["schedule"]["shortEntryCutoffTime"] == "11:00"
-    assert cutoff["schedule"]["longEntryCutoffTime"] == "13:20"
-    assert long_cutoff["phase"] == "entry_closed"
-    assert not long_cutoff["formalSignalsAllowed"]
+    assert not noon["formalSignalsAllowed"]
+    assert not noon["formalLongSignalsAllowed"]
+    assert not noon["formalShortSignalsAllowed"]
+    assert noon["schedule"]["shortEntryCutoffTime"] == "12:00"
+    assert noon["schedule"]["longEntryCutoffTime"] == "12:00"
+    assert after_noon["phase"] == "entry_closed"
+    assert not after_noon["formalSignalsAllowed"]
 
 
 def _five_minute_quotes(prices: list[float], *, opening: float) -> list[OfficialStockQuote]:
@@ -480,7 +482,7 @@ def test_recommendation_requires_stronger_intraday_confirmation() -> None:
     assert "5 分 K 突破結構尚未確認" in unconfirmed_breakout_failures
 
 
-def test_afternoon_qualification_allows_long_and_blocks_new_short() -> None:
+def test_noon_qualification_blocks_new_long_and_short() -> None:
     now = datetime(2026, 7, 21, 12, 0, tzinfo=TAIPEI)
     config = TradingScheduleConfig()
     session = trading_session_state(config, now, quote_samples=10, infrastructure_ok=True)
@@ -496,10 +498,11 @@ def test_afternoon_qualification_allows_long_and_blocks_new_short() -> None:
         _candidate("afternoon-short", direction="short", **timing), config, session, now,
     )
 
-    assert session["phase"] == "long_only"
-    assert long_passed, long_failures
+    assert session["phase"] == "entry_closed"
+    assert not long_passed
+    assert "已停止產生新的進場訊號，現有持倉仍持續監控。" in long_failures
     assert not short_passed
-    assert "空方已超過 11:00 進場截止時間" in short_failures
+    assert "已停止產生新的進場訊號，現有持倉仍持續監控。" in short_failures
 
 
 def test_disposal_stock_is_never_qualified_for_day_trading() -> None:

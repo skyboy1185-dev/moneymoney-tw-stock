@@ -17,10 +17,10 @@ MIN_DAY_TRADING_VOLUME_SHARES = 1_000_000
 MIN_DAY_TRADING_TURNOVER = 100_000_000
 MIN_LIQUIDITY_PROGRESS = 0.10
 DAY_TRADING_SIGNAL_START = "09:05"
-# Short entries retain the original 11:00 risk cutoff. Long entries may continue
-# while the regular market is open, but stop shortly before the closing workflow.
-DAY_TRADING_ENTRY_CUTOFF = "11:00"
-DAY_TRADING_LONG_ENTRY_CUTOFF = "13:20"
+# All new intraday entries stop at noon. Existing positions keep running
+# stop-loss, take-profit, reduction, cover and forced-exit workflows afterward.
+DAY_TRADING_ENTRY_CUTOFF = "12:00"
+DAY_TRADING_LONG_ENTRY_CUTOFF = "12:00"
 DAY_TRADING_CLOSE_REMINDER = "13:25"
 DAY_TRADING_FORCED_EXIT = "13:30"
 
@@ -124,12 +124,12 @@ def trading_session_state(
                 next_transition = None
         elif local_now < latest_entry:
             phase, robot_status, message, next_transition = (
-                "scanning", "5 分 K 強勢股掃描中", "多方可掃描至 13:20；空方維持 11:00 停止新進場。", latest_entry,
+                "scanning", "5 分 K 強勢股掃描中", "多空正式新進場只開放至 12:00；之後只管理既有持倉。", latest_entry,
             )
         elif local_now < long_entry_cutoff:
             phase, robot_status, message, next_transition = (
-                "long_only", "午後僅掃描多方",
-                "空方已於 11:00 停止新進場；午後只允許通過風控的多方正式訊號。",
+                "long_only", "停止新進場",
+                "12:00 後停止所有新進場；既有持倉仍持續監控。",
                 long_entry_cutoff,
             )
         elif local_now < close_reminder:
@@ -233,7 +233,7 @@ def recommendation_qualification(
     )
     if not direction_allowed:
         failures.append(
-            "空方已超過 11:00 進場截止時間"
+            "已超過 12:00 新進場截止時間"
             if direction == "short" and session.get("phase") == "long_only"
             else str(session["statusMessage"])
         )

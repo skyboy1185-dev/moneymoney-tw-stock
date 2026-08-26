@@ -44,6 +44,7 @@ TRADE_NOTIFICATION_EVENT_TYPES = frozenset({
     "short_cover",
     "stop_loss",
 })
+LINE_RECOMMENDATION_BATCH_LIMIT = 10
 LINE_GROUP_DISCLAIMER = (
     "⚠️ 免責聲明：\n"
     "本訊息為演算法內部測試之【自動化數據產出】，僅供技術研究與程式調校之用。"
@@ -699,6 +700,8 @@ class LineNotificationDispatcher:
                 symbol=symbol,
                 cooldown_entry=True,
             ))
+            if len(events) >= LINE_RECOMMENDATION_BATCH_LIMIT:
+                break
         return await self.dispatch_many(events)
 
     async def send_confidence_candidates(

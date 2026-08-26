@@ -376,7 +376,7 @@ def process_adaptive_scan(db: Session, payload: AdaptiveScanPayload) -> dict[str
             status = "can_enter" if result.total >= 80 and entry_window_open else "breakout_watch"
         selected_reasons = list(result.reasons[:12])
         if status == "next_day_watch":
-            selected_reasons.append("已超過 13:20 新進場截止時間，隔日開盤後必須重新確認")
+            selected_reasons.append("已超過 12:00 新進場截止時間，隔日開盤後必須重新確認")
         candidate = AdaptiveStockCandidate(
             trade_date=payload.market.trade_date, stock_code=stock.stock_code,
             stock_name=stock.stock_name, market_type=stock.market_type,

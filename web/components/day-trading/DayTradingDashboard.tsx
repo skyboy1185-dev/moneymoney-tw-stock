@@ -306,7 +306,7 @@ export function DayTradingDashboard() {
 
     {regime.marketOpen && regime.dataStatus !== "normal" && <div className="data-anomaly-banner"><ShieldAlert /><div><strong>行情已延遲 {regime.dataDelaySeconds} 秒</strong><span>目前停止產生新進場訊號，請勿依賴舊報價進行交易；既有持倉仍持續檢查出場風險。</span></div></div>}
     {(regime.automation.phase === "warmup" || (regime.automation.phase === "scanning" && (regime.supervisor?.warmedSymbolCount ?? 0) === 0)) && <div className="automation-banner phase-warmup"><Activity /><div><strong>多空動能掃描中</strong><span>09:00 開盤即開始多空、量能與大單掃描；09:05 起取得首根完整 5 分 K，通過風控才通知正式買進或放空。</span></div></div>}
-    {regime.automation.phase === "long_only" && <div className="automation-banner phase-long-only"><Activity /><div><strong>午後僅開放多方新進場</strong><span>空方已於 11:00 截止；多方仍依三關價、5 分 K、量能、大單與信心度持續篩選至 13:20。</span></div></div>}
+    {regime.automation.phase === "long_only" && <div className="automation-banner phase-long-only"><Activity /><div><strong>12:00 後停止新進場</strong><span>多空都不再新增部位；既有持倉仍依三關價、5 分 K、量能、大單與停損停利持續管理。</span></div></div>}
     <section className={`regime-hero day-trading-regime ${regimeTone}`}>
       <div className="regime-light" />
       <div><small>盤中市場與機器人狀態</small><strong>{regime.directionLabel} · {regime.automation.robotStatus}</strong><p>{regime.recommendationSummary || regime.automation.statusMessage}</p><small>資料來源：{regime.dataSource} · 更新：{new Date(regime.updatedAt).toLocaleTimeString("zh-TW", { hour12: false })}</small></div>
@@ -318,8 +318,8 @@ export function DayTradingDashboard() {
     </section>
 
     <section className="dt-direction-policy">
-      <article className="long"><div><span>多方進場時段</span><strong>09:05～{regime.automation.schedule.longEntryCutoffTime}</strong></div><b>不受 11:00 限制</b><p>盤中持續接受符合風控的做多訊號。個股信心度與策略信心度皆達 85，收盤仍未觸發出場時，可轉為隔日多單。</p></article>
-      <article className="short"><div><span>空方進場時段</span><strong>09:05～{regime.automation.schedule.shortEntryCutoffTime}</strong></div><b>維持原本限制</b><p>11:00 後禁止新增空單；既有空單仍持續停損與停利監控，並於收盤前完成回補。</p></article>
+      <article className="long"><div><span>多方進場時段</span><strong>09:05～{regime.automation.schedule.longEntryCutoffTime}</strong></div><b>12:00 後不新增</b><p>12:00 前才接受符合風控的做多訊號。既有多單仍可即時停損、停利、減碼；符合隔夜條件時依原規則管理。</p></article>
+      <article className="short"><div><span>空方進場時段</span><strong>09:05～{regime.automation.schedule.shortEntryCutoffTime}</strong></div><b>12:00 後不新增</b><p>12:00 後禁止新增空單；既有空單仍持續停損與停利監控，並於收盤前完成回補。</p></article>
       <article className="overnight"><div><span>隔日多單規則</span><strong>最多持有至下一交易日</strong></div><b>只開放多方</b><p>隔夜期間停損照常有效；下一交易日若未先觸發停損或目標價，收盤前自動賣出，不允許空單轉隔夜。</p></article>
     </section>
 
@@ -352,7 +352,7 @@ export function DayTradingDashboard() {
     </section>
 
     <section className="adaptive-table-card live-signal-section">
-      <div className="table-title"><div><h2>本小時 AI 當沖精選</h2><p>多方可至 13:20；空方 11:00 截止。每小時最多 {regime.maximumRecommendations} 檔，不會降低風控門檻。</p></div><span>{signals.length}／{regime.maximumRecommendations} 檔</span></div>
+      <div className="table-title"><div><h2>本小時 AI 當沖精選</h2><p>多空新進場皆只到 12:00。每小時最多 {regime.maximumRecommendations} 檔，不會降低風控門檻。</p></div><span>{signals.length}／{regime.maximumRecommendations} 檔</span></div>
       {signals.length ? <div className="adaptive-table-wrap"><table><thead><tr><th>排名</th><th>股票</th><th>方向／三關價</th><th>評分</th><th>目前價</th><th>進場區間</th><th>停損／目標</th><th>風報比／大單</th><th>狀態</th><th>操作</th></tr></thead><tbody>{signals.map((signal) => <tr key={signal.id}><td>#{signal.rank}</td><td><b>{signal.symbol}</b><span>{signal.stockName} · {signal.market}</span></td><td><b className={signal.direction === "long" ? "text-up" : "text-down"}>{signal.direction === "long" ? "做多" : "放空"}</b><span>{signal.threeGateEntryStatus ?? signal.threeGateStatus ?? signal.action}</span></td><td><b>{signal.confidenceScore}</b><span>健康 {signal.healthScore}</span></td><td>{displayNumber(signal.price)}<span>{signal.changePercent >= 0 ? "+" : ""}{displayNumber(signal.changePercent)}%</span></td><td>{displayNumber(signal.entryMin)}～{displayNumber(signal.entryMax)}<span>{signal.vwapStatus}</span></td><td>{displayNumber(signal.stopLoss)}<span>{displayNumber(signal.target1)}／{displayNumber(signal.target2)}</span></td><td>{displayNumber(signal.riskRewardRatio)}<span>{signal.largeOrderStatus ?? `${displayNumber(signal.largeOrderForce, 0)} 分`}</span></td><td><span className={`candidate-status ${signal.status}`}>{signal.recommendationLabel || signal.status}</span></td><td><div className="row-actions"><button onClick={() => setSelectedSignalId(signal.id)}><Eye size={14} />詳情</button><button onClick={() => monitor(signal)}>監控</button><button onClick={() => void simulate(signal)}>模擬</button></div></td></tr>)}</tbody></table></div> : <div className="adaptive-empty">{regime.automation.phase === "scanning" ? "目前沒有符合風控標準的交易機會，建議觀望。" : regime.automation.statusMessage}</div>}
     </section>
 

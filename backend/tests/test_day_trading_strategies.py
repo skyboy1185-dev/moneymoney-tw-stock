@@ -72,13 +72,13 @@ def test_range_robot_keeps_general_long_and_short_signals() -> None:
 
 def test_afternoon_robot_status_explains_long_only_policy() -> None:
     long_robot = strategy_context(
-        _regime(40), _session("long_only", True),
+        _regime(40), _session("long_only", False),
     )["activeRobot"]
     short_robot = strategy_context(
-        _regime(-40), _session("long_only", True),
+        _regime(-40), _session("long_only", False),
     )["activeRobot"]
 
-    assert long_robot["status"] == "active"
-    assert long_robot["statusLabel"] == "午後僅允許多方進場"
+    assert long_robot["status"] == "standby"
+    assert long_robot["statusLabel"] == "盤後待機"
     assert short_robot["status"] == "paused"
-    assert "空方 11:00 已截止" in short_robot["statusLabel"]
+    assert "12:00 後停止新進場" in short_robot["statusLabel"]

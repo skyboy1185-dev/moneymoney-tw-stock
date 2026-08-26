@@ -325,7 +325,7 @@ class AdaptiveElectronicAutomation:
                             f"股票：{candidate.stock_code} {candidate.stock_name}\n"
                             f"狀態：{signal.action}\n"
                             f"健康度：{float(candidate.health_score):.1f} 分\n\n"
-                            "13:20 後禁止建立新部位，本訊息不是買進訊號。"
+                            "12:00 後禁止建立新部位，本訊息不是買進訊號。"
                             "下一交易日開盤後會依最新價格、量價與風控條件重新確認。"
                         )
                     else:
