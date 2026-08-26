@@ -8,6 +8,8 @@ import type { DailyPrice } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const fetchCache = "force-no-store";
 
 interface TwsePayload {
   stat?: string;
@@ -82,7 +84,7 @@ async function officialJson(url: string): Promise<TwsePayload> {
       "User-Agent": "Mozilla/5.0 Moneymoney-TWSE-Dashboard",
     },
     signal: AbortSignal.timeout(10_000),
-    next: { revalidate: 300 },
+    cache: "no-store",
   });
   if (!response.ok) throw new Error(`TWSE HTTP ${response.status}`);
   const payload = await response.json() as TwsePayload;
@@ -101,7 +103,7 @@ async function officialTpexJson(url: string): Promise<TpexPayload> {
           "User-Agent": "Mozilla/5.0 Moneymoney-TWSE-Dashboard",
         },
         signal: AbortSignal.timeout(10_000),
-        next: { revalidate: 300 },
+        cache: "no-store",
       });
       if (!response.ok) throw new Error(`TPEx HTTP ${response.status}`);
       const payload = await response.json() as TpexPayload;
@@ -122,7 +124,7 @@ async function proxiedTpexJson(url: string): Promise<TpexPayload> {
       "User-Agent": "Mozilla/5.0 Moneymoney-TWSE-Dashboard",
     },
     signal: AbortSignal.timeout(12_000),
-    next: { revalidate: 300 },
+    cache: "no-store",
   });
   if (!response.ok) throw new Error(`TPEx reader HTTP ${response.status}`);
   const text = await response.text();
@@ -244,7 +246,7 @@ async function loadOtcPrices(): Promise<DailyPrice[]> {
         "User-Agent": "Mozilla/5.0 Moneymoney-TWSE-Dashboard",
       },
       signal: AbortSignal.timeout(8_000),
-      next: { revalidate: 300 },
+      cache: "no-store",
     });
     if (!response.ok) throw new Error(`FinMind HTTP ${response.status}`);
     const payload = await response.json() as FinMindPayload;
