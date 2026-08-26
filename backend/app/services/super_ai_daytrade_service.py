@@ -466,6 +466,12 @@ def notification_payload(row: SuperAIDaytradeNotification) -> dict[str, Any]:
         "popupShown": row.popup_shown,
         "read": row.is_read,
         "timestamp": row.created_at.isoformat(),
+        "stockCode": row.symbol,
+        "stockName": row.symbol_name,
+        "action": row.category,
+        "reasons": [row.message] if row.message else [],
+        "healthScore": float(row.ai_score) if row.ai_score is not None else None,
+        "createdAt": row.created_at.isoformat(),
     }
 
 

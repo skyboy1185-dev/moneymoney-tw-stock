@@ -14,10 +14,10 @@ from app.adaptive_schemas import (
     AdaptiveStockInput,
 )
 from app.database import Base
-from app.models import AdaptiveSignal, AdaptiveStockCandidate, SuperAIDaytradeNotification
+from app.models import AdaptivePaperTrade, AdaptiveSignal, AdaptiveStockCandidate, SuperAIDaytradeNotification
 from app.services.adaptive_backtest_service import run_backtest
 from app.services.adaptive_electronic_service import _display_candidate_status, _selection_strategy
-from app.services.adaptive_electronic_automation import _normalize_scan_payload
+from app.services.adaptive_electronic_automation import _normalize_scan_payload, _signal_has_super_ai_trade_record
 from app.services.adaptive_entry_window import adaptive_entry_window_open
 from app.services.adaptive_parameters import DEFAULT_PARAMETERS
 from app.services.adaptive_performance_service import (
@@ -375,6 +375,76 @@ def test_super_ai_blocked_entry_does_not_create_watch_notification() -> None:
         db.commit()
 
         assert db.scalar(select(func.count(SuperAIDaytradeNotification.id))) == 0
+
+
+def test_super_ai_pending_mail_requires_matching_trade_record() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 7, 31, 10, 0, tzinfo=TAIPEI)
+    entry_signal = AdaptiveSignal(
+        signal_key="entry-with-trade",
+        stock_code="2330",
+        stock_name="TSMC",
+        signal_type="entry_confirmed",
+        action="BUY",
+        strategy_type="BREAKOUT",
+        price=Decimal("100"),
+        health_score=Decimal("88"),
+        reasons_json="[]",
+        line_push_status="pending",
+        created_at=now,
+    )
+    watch_signal = AdaptiveSignal(
+        signal_key="watch-without-trade",
+        stock_code="2330",
+        stock_name="TSMC",
+        signal_type="new_top5",
+        action="WATCH",
+        strategy_type="BREAKOUT",
+        price=Decimal("100"),
+        health_score=Decimal("88"),
+        reasons_json="[]",
+        line_push_status="pending",
+        created_at=now,
+    )
+    trade = AdaptivePaperTrade(
+        stock_code="2330",
+        stock_name="TSMC",
+        strategy_type="BREAKOUT",
+        entry_signal_key="entry-with-trade",
+        side="LONG",
+        trade_mode="PAPER",
+        quantity_shares=1000,
+        entry_price=Decimal("100"),
+        entry_time=now,
+        entry_reason="test",
+        stop_loss_price=Decimal("98"),
+        target_price_1=Decimal("103"),
+        target_price_2=Decimal("105"),
+        last_price=Decimal("100"),
+        ai_score=Decimal("88"),
+        market_regime="BREAKOUT",
+        sector_status="AI",
+        initial_capital=Decimal("5000000"),
+        risk_amount=Decimal("2000"),
+        initial_r=Decimal("2"),
+        entry_reasons_json="[]",
+        exit_reasons_json="[]",
+        status="open",
+        created_at=now,
+        updated_at=now,
+    )
+
+    with Session(engine) as db:
+        db.add_all([entry_signal, watch_signal, trade])
+        db.commit()
+
+        assert _signal_has_super_ai_trade_record(db, entry_signal) is True
+        assert _signal_has_super_ai_trade_record(db, watch_signal) is False
 
 
 def test_paper_trade_win_rate_uses_closed_net_profit_only() -> None:

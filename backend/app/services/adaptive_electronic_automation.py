@@ -64,6 +64,18 @@ def _session(now: datetime) -> str:
     return "pre_open"
 
 
+def _signal_has_super_ai_trade_record(db, signal: AdaptiveSignal) -> bool:
+    if signal.signal_type == "entry_confirmed":
+        return db.scalar(select(AdaptivePaperTrade.id).where(
+            AdaptivePaperTrade.entry_signal_key == signal.signal_key,
+        ).limit(1)) is not None
+    if signal.signal_type == "exit_triggered":
+        return db.scalar(select(AdaptivePaperTrade.id).where(
+            AdaptivePaperTrade.exit_signal_key == signal.signal_key,
+        ).limit(1)) is not None
+    return False
+
+
 def _seconds_until_open(now: datetime) -> int | None:
     local = now.astimezone(TAIPEI)
     holidays: set[date] = set()
@@ -228,6 +240,10 @@ class AdaptiveElectronicAutomation:
             with SessionLocal() as db:
                 signal = db.scalar(select(AdaptiveSignal).where(AdaptiveSignal.signal_key == signal_key))
                 if signal is None or signal.line_push_status != "pending":
+                    continue
+                if not _signal_has_super_ai_trade_record(db, signal):
+                    signal.line_push_status = "skipped_no_trade_record"
+                    db.commit()
                     continue
                 candidate = None
                 if signal.stock_code:
