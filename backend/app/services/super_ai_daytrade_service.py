@@ -336,6 +336,16 @@ def trading_gate(
     score = ai_score(candidate, regime, side)
     stop_pct = stop_distance_pct(entry, stop)
     max_stop_pct = max_stop_distance_pct(side, score)
+    tactical_stop_applied = False
+    if (
+        side == "LONG"
+        and candidate.strategy_type == "BREAKOUT"
+        and stop_pct > max_stop_pct
+    ):
+        stop = _money(entry * (Decimal("1") - max_stop_pct / Decimal("100")))
+        rr = risk_reward(entry, stop, tp2, side)
+        stop_pct = stop_distance_pct(entry, stop)
+        tactical_stop_applied = True
     risk = risk_status(db, settings, at)
     open_trades = list(db.scalars(select(AdaptivePaperTrade).where(
         AdaptivePaperTrade.status == "open",
@@ -382,7 +392,8 @@ def trading_gate(
         "quantity": quantity,
         "riskAmount": risk_amount,
         "projectedMarketValue": _money(projected_value),
-        "reasons": decision_reasons(candidate, regime, side, rr),
+        "reasons": decision_reasons(candidate, regime, side, rr)
+            + (["tactical_stop_capped_to_intraday_limit"] if tactical_stop_applied else []),
         "risk": risk,
     }
 

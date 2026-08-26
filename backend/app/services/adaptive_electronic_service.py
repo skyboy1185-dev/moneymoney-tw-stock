@@ -207,6 +207,13 @@ def _selection_strategy(evaluation: RegimeEvaluation, payload: AdaptiveScanPaylo
     return "RECOVERY"
 
 
+def _active_trading_strategy(evaluation: RegimeEvaluation, payload: AdaptiveScanPayload, trading_regime: str) -> str:
+    """Use the intraday override for live day-trading when it is decisive."""
+    if payload.market.market_open and trading_regime in {"BREAKOUT", "RECOVERY", "RANGE", "CRASH"}:
+        return trading_regime
+    return _selection_strategy(evaluation, payload)
+
+
 def _persist_regime(
     db: Session,
     payload: AdaptiveScanPayload,
@@ -287,7 +294,7 @@ def process_adaptive_scan(db: Session, payload: AdaptiveScanPayload) -> dict[str
             for key, value in values.items(): setattr(stored, key, value)
 
     scored: list[tuple[AdaptiveStockInput, str, StrategyScore, float, dict[str, float], list[str]]] = []
-    selection_strategy = _selection_strategy(evaluation, payload)
+    selection_strategy = _active_trading_strategy(evaluation, payload, trading_regime)
     for stock in payload.stocks:
         mapping = db.scalar(select(ElectronicIndustryMapping).where(ElectronicIndustryMapping.stock_code == stock.stock_code))
         mapping_values = {
@@ -317,7 +324,7 @@ def process_adaptive_scan(db: Session, payload: AdaptiveScanPayload) -> dict[str
             strategy = STRATEGIES[strategy_key]
             result = strategy.evaluate(stock, parameters)
             minimum = parameters[f"{strategy_key.lower()}.observation_score"]
-        if evaluation.regime == "UNCERTAIN":
+        if trading_regime == "UNCERTAIN":
             result = StrategyScore(
                 result.total,
                 result.components,

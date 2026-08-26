@@ -16,7 +16,7 @@ from app.adaptive_schemas import (
 from app.database import Base
 from app.models import AdaptivePaperTrade, AdaptiveSignal, AdaptiveStockCandidate, SuperAIDaytradeNotification
 from app.services.adaptive_backtest_service import run_backtest
-from app.services.adaptive_electronic_service import _display_candidate_status, _selection_strategy
+from app.services.adaptive_electronic_service import _active_trading_strategy, _display_candidate_status, _selection_strategy
 from app.services.adaptive_electronic_automation import _normalize_scan_payload, _signal_has_super_ai_trade_record
 from app.services.adaptive_entry_window import adaptive_entry_window_open
 from app.services.adaptive_parameters import DEFAULT_PARAMETERS
@@ -31,7 +31,7 @@ from app.services.adaptive_strategies import BreakoutStrategy, RangeTradingStrat
 from app.services.electronic_stock_universe_service import common_filter_failures
 from app.services.market_regime_service import evaluate_market_regime, intraday_regime_override
 from app.services.risk_management_service import position_size_shares
-from app.services.super_ai_daytrade_service import market_state
+from app.services.super_ai_daytrade_service import ensure_settings as ensure_super_ai_settings, market_state, trading_gate
 
 
 TAIPEI = ZoneInfo("Asia/Taipei")
@@ -129,6 +129,24 @@ def test_strong_rebound_from_uncertain_is_provisional_recovery() -> None:
 
 
 def test_intraday_bull_squeeze_overrides_slow_regime_for_day_trading() -> None:
+    metrics = market(
+        taiex_return_1d=1.1,
+        electronic_return_1d=1.4,
+        advance_ratio=68,
+        taiex_above_ma5=True,
+        market_open=True,
+    )
+    override = intraday_regime_override(
+        metrics,
+        "RANGE",
+    )
+    assert override == "BREAKOUT"
+    evaluation = evaluate_market_regime(metrics, PARAMETERS, previous_regime="UNCERTAIN")
+    payload = AdaptiveScanPayload(market=metrics, industries=[], stocks=[])
+    assert _active_trading_strategy(evaluation, payload, override) == "BREAKOUT"
+
+
+def test_intraday_bull_squeeze_override_value() -> None:
     assert intraday_regime_override(
         market(
             taiex_return_1d=1.1,
@@ -248,6 +266,65 @@ def test_recovery_market_shows_no_short_weight() -> None:
     state = market_state("RECOVERY")
     assert state["longWeight"] == 100
     assert state["shortWeight"] == 0
+
+
+def test_super_ai_breakout_uses_tactical_intraday_stop_when_structural_stop_is_too_wide() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 7, 31, 10, 0, tzinfo=TAIPEI)
+    candidate = AdaptiveStockCandidate(
+        trade_date=date(2026, 7, 31),
+        stock_code="2330",
+        stock_name="TSMC",
+        market_type="TWSE",
+        main_industry="Electronic",
+        sub_industry="AI",
+        strategy_type="BREAKOUT",
+        total_score=Decimal("95"),
+        technical_score=Decimal("35"),
+        chip_score=Decimal("10"),
+        fundamental_score=Decimal("5"),
+        industry_score=Decimal("10"),
+        market_score=Decimal("10"),
+        health_score=Decimal("90"),
+        previous_health_score=Decimal("88"),
+        current_price=Decimal("100"),
+        entry_price_low=Decimal("100"),
+        entry_price_high=Decimal("101"),
+        breakout_price=Decimal("100"),
+        stop_loss_price=Decimal("92"),
+        target_price_1=Decimal("105"),
+        target_price_2=Decimal("110"),
+        allocation_percent=Decimal("20"),
+        relative_strength=Decimal("8"),
+        volume_status="ok",
+        industry_strength=Decimal("90"),
+        false_breakout_risk=Decimal("0"),
+        candidate_status="can_enter",
+        rank=1,
+        score_breakdown_json="{}",
+        selected_reasons="[]",
+        risk_reasons="[]",
+        missing_data_json="[]",
+        quote_source="TWSE MIS",
+        quote_timestamp=now,
+        created_at=now,
+        updated_at=now,
+    )
+
+    with Session(engine) as db:
+        settings = ensure_super_ai_settings(db, now)
+        settings.max_capital = Decimal("3000000")
+        settings.available_capital = Decimal("3000000")
+        gate = trading_gate(db, settings, candidate, "BREAKOUT", now)
+
+        assert gate["stopDistancePct"] <= gate["maxStopDistancePct"]
+        assert "stop_distance_too_wide" not in gate["failures"]
+        assert "tactical_stop_capped_to_intraday_limit" in gate["reasons"]
 
 
 def test_breakout_strategy_is_traceable_and_meets_direct_entry_score() -> None:
