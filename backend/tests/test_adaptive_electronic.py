@@ -22,7 +22,7 @@ from app.services.adaptive_performance_service import (
 )
 from app.services.adaptive_strategies import BreakoutStrategy, RangeTradingStrategy
 from app.services.electronic_stock_universe_service import common_filter_failures
-from app.services.market_regime_service import evaluate_market_regime
+from app.services.market_regime_service import evaluate_market_regime, intraday_regime_override
 from app.services.risk_management_service import position_size_shares
 from app.services.super_ai_daytrade_service import market_state
 
@@ -119,6 +119,30 @@ def test_strong_rebound_from_uncertain_is_provisional_recovery() -> None:
     result = evaluate_market_regime(metrics, PARAMETERS, previous_regime="UNCERTAIN")
     assert result.provisional_regime == "RECOVERY"
     assert result.regime == "UNCERTAIN"
+
+
+def test_intraday_bull_squeeze_overrides_slow_regime_for_day_trading() -> None:
+    assert intraday_regime_override(
+        market(
+            taiex_return_1d=1.1,
+            electronic_return_1d=1.4,
+            advance_ratio=68,
+            taiex_above_ma5=True,
+        ),
+        "RANGE",
+    ) == "BREAKOUT"
+
+
+def test_intraday_selloff_overrides_recovery_for_day_trading() -> None:
+    assert intraday_regime_override(
+        market(
+            taiex_return_1d=-1.0,
+            electronic_return_1d=-1.3,
+            advance_ratio=28,
+            taiex_new_low=True,
+        ),
+        "RECOVERY",
+    ) == "CRASH"
 
 
 def test_non_electronic_industry_is_rejected_even_if_name_looks_technical() -> None:

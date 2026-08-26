@@ -31,6 +31,50 @@ def _yes(value: bool | None) -> bool:
     return value is True
 
 
+def intraday_regime_override(market: AdaptiveMarketMetrics, base_regime: str) -> str:
+    """Use live market pressure to override slower daily regime confirmation.
+
+    The daily regime model intentionally waits for confirmation. Day trading
+    cannot wait that long: a broad intraday squeeze should immediately block
+    shorts, and a broad intraday selloff should immediately block longs.
+    """
+    taiex_1d = market.taiex_return_1d
+    electronic_1d = market.electronic_return_1d
+    advance = market.advance_ratio
+
+    bullish_votes = 0
+    if taiex_1d is not None and taiex_1d >= 0.6:
+        bullish_votes += 1
+    if electronic_1d is not None and electronic_1d >= 0.8:
+        bullish_votes += 1
+    if advance is not None and advance >= 58:
+        bullish_votes += 1
+    if _yes(market.taiex_above_ma5):
+        bullish_votes += 1
+    if _yes(market.up_volume_expanding):
+        bullish_votes += 1
+
+    bearish_votes = 0
+    if taiex_1d is not None and taiex_1d <= -0.6:
+        bearish_votes += 1
+    if electronic_1d is not None and electronic_1d <= -0.8:
+        bearish_votes += 1
+    if advance is not None and advance <= 35:
+        bearish_votes += 1
+    if market.limit_down_count is not None and market.limit_down_count >= 10:
+        bearish_votes += 1
+    if _yes(market.taiex_new_low):
+        bearish_votes += 1
+
+    if bullish_votes >= 3:
+        return "BREAKOUT"
+    if bullish_votes >= 2 and base_regime not in {"BREAKOUT", "RECOVERY"}:
+        return "RECOVERY"
+    if bearish_votes >= 2:
+        return "CRASH"
+    return base_regime
+
+
 def evaluate_market_regime(
     market: AdaptiveMarketMetrics,
     parameters: dict[str, float],

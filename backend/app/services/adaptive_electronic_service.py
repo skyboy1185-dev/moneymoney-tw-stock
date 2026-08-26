@@ -23,7 +23,7 @@ from .adaptive_entry_window import adaptive_entry_window_open
 from .adaptive_strategies import STRATEGIES, CrashRecoveryStrategy, StrategyScore
 from .electronic_industry_strength_service import rank_industries
 from .electronic_stock_universe_service import common_filter_failures
-from .market_regime_service import RegimeEvaluation, evaluate_market_regime
+from .market_regime_service import RegimeEvaluation, evaluate_market_regime, intraday_regime_override
 from .risk_management_service import allocation_percent
 
 
@@ -256,6 +256,7 @@ def process_adaptive_scan(db: Session, payload: AdaptiveScanPayload) -> dict[str
         previous_confirmation_days=previous_for_confirmation.confirmation_days if previous_for_confirmation else 0,
     )
     regime_row = _persist_regime(db, payload, evaluation, previous)
+    trading_regime = intraday_regime_override(payload.market, evaluation.regime)
     entry_window_open = adaptive_entry_window_open(
         payload.market.updated_at,
         payload.market.market_open,
@@ -328,10 +329,11 @@ def process_adaptive_scan(db: Session, payload: AdaptiveScanPayload) -> dict[str
         health, health_breakdown, missing = _health(stock, evaluation.regime)
         if result.total >= minimum:
             scored.append((stock, strategy_key, result, health, health_breakdown, missing))
-        short_result = _short_score(stock, evaluation.regime)
-        short_minimum = 55 if evaluation.regime == "CRASH" else 62 if evaluation.regime in {"RANGE", "UNCERTAIN"} else 70
-        if short_result.total >= short_minimum:
-            scored.append((stock, "CRASH", short_result, health, health_breakdown, missing))
+        if trading_regime not in {"BREAKOUT", "RECOVERY"}:
+            short_result = _short_score(stock, trading_regime)
+            short_minimum = 55 if trading_regime == "CRASH" else 62 if trading_regime in {"RANGE", "UNCERTAIN"} else 70
+            if short_result.total >= short_minimum:
+                scored.append((stock, "CRASH", short_result, health, health_breakdown, missing))
 
     scored.sort(key=lambda row: (row[2].total, row[3], row[0].industry_strength_score), reverse=True)
     maximum = int(parameters["monitor.maximum_candidates"])
@@ -381,7 +383,7 @@ def process_adaptive_scan(db: Session, payload: AdaptiveScanPayload) -> dict[str
             current_price=_decimal(stock.price), entry_price_low=_decimal(levels["entry_low"]),
             entry_price_high=_decimal(levels["entry_high"]), breakout_price=_decimal(levels["breakout"]),
             stop_loss_price=_decimal(levels["stop"]), target_price_1=_decimal(levels["target1"]),
-            target_price_2=_decimal(levels["target2"]), allocation_percent=_decimal(allocation_percent(evaluation.regime, result.total)),
+            target_price_2=_decimal(levels["target2"]), allocation_percent=_decimal(allocation_percent(trading_regime, result.total)),
             relative_strength=_decimal(stock.relative_strength_market),
             volume_status="量縮整理" if stock.volume_contracting else "量能放大" if (stock.volume_ratio_20d or 0) >= 1.5 else "量能正常",
             foreign_net_buy=stock.foreign_net_5d, investment_trust_net_buy=stock.trust_net_5d,
@@ -469,7 +471,7 @@ def process_adaptive_scan(db: Session, payload: AdaptiveScanPayload) -> dict[str
         payload,
         candidates,
         signals,
-        evaluation.regime,
+        trading_regime,
     ))
     db.commit()
     return {
