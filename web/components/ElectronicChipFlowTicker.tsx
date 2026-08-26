@@ -52,9 +52,12 @@ const PINNED_MOMENTUM_SYMBOLS_KEY = "twse:pinned-momentum-symbols";
 const PINNED_MOMENTUM_ALERTS_KEY = "twse:pinned-momentum-alerts";
 const MOMENTUM_CLIENT_ID_KEY = "twse:momentum-client-id";
 const THREE_GATE_NOTIFICATION_SIGNATURES_KEY = "twse:pinned-three-gate-notifications";
+const MOMENTUM_BAR_LAYOUT_KEY = "twse:momentum-bar-layout";
 const EXPANDED_TECHNICAL_REFRESH_MS = 5_000;
 const PINNED_TECHNICAL_REFRESH_MS = 5_000;
 const ACTIVE_MONITOR_QUOTE_REFRESH_MS = 2_000;
+
+type MomentumBarLayout = "compact" | "classic";
 
 function formatLots(value: number): string {
   return new Intl.NumberFormat("zh-TW", { maximumFractionDigits: 2 }).format(value);
@@ -260,6 +263,123 @@ function AlertItems({
       </button>
     })}
   </>;
+}
+
+function CompactSignalPills({
+  alerts,
+  direction,
+  windowMinutes,
+  onSelectStock,
+}: {
+  alerts: ElectronicChipFlowAlert[];
+  direction: "long" | "short";
+  windowMinutes: number;
+  onSelectStock: (symbol: string) => void;
+}) {
+  return <>
+    {alerts.map((alert) => {
+      const flow = orderFlow(alert);
+      const momentumLots = direction === "short"
+        ? alert.recentNetSellLots ?? Math.max(0, -alert.recentNetBuyLots)
+        : Math.max(0, alert.recentNetBuyLots);
+      const momentumLabel = direction === "short" ? "賣壓" : "買盤";
+      return <button
+        className={`chip-signal-pill ${direction} level-${alert.alertLevel}`}
+        key={`${direction}-${alert.symbol}`}
+        type="button"
+        onClick={() => onSelectStock(alert.symbol)}
+        title={`${alert.name} ${alert.symbol}｜${alert.message}｜點擊查看個股`}
+      >
+        <span>{direction === "short" ? <TrendingDown size={11} /> : <TrendingUp size={11} />}{direction === "short" ? "空" : "多"}</span>
+        <strong>{alert.symbol} {alert.name}</strong>
+        <b>{momentumLabel} {formatLots(momentumLots)} 張</b>
+        <small>{alert.simultaneousIncrease ? "大小單同步" : alert.trendLabel}・{windowMinutes}分・{alert.time}</small>
+        <em>大 {formatLots(flow.largeLong)}／空 {formatLots(flow.largeShort)}</em>
+      </button>;
+    })}
+  </>;
+}
+
+function MomentumBarLayoutToggle({
+  layout,
+  onChange,
+}: {
+  layout: MomentumBarLayout;
+  onChange: (layout: MomentumBarLayout) => void;
+}) {
+  return <div className="chip-layout-toggle" aria-label="動能 BAR 版型切換">
+    <button
+      type="button"
+      className={layout === "compact" ? "active" : ""}
+      onClick={() => onChange("compact")}
+    >精簡</button>
+    <button
+      type="button"
+      className={layout === "classic" ? "active" : ""}
+      onClick={() => onChange("classic")}
+    >原版</button>
+  </div>;
+}
+
+function CompactMomentumSummary({
+  data,
+  alerts,
+  shortAlerts,
+  expanded,
+  onToggleExpanded,
+  onSelectStock,
+}: {
+  data: ElectronicChipFlowAlertsResponse | null;
+  alerts: ElectronicChipFlowAlert[];
+  shortAlerts: ElectronicChipFlowAlert[];
+  expanded: "long" | "short" | null;
+  onToggleExpanded: (direction: "long" | "short") => void;
+  onSelectStock: (symbol: string) => void;
+}) {
+  const longTop = alerts.slice(0, 3);
+  const shortTop = shortAlerts.slice(0, 3);
+  const hasSignals = longTop.length > 0 || shortTop.length > 0;
+  return <div className="chip-compact-summary-row">
+    <div className="chip-compact-actions">
+      <button
+        className={`chip-compact-side long ${expanded === "long" ? "active" : ""}`}
+        type="button"
+        onClick={() => onToggleExpanded("long")}
+        aria-expanded={expanded === "long"}
+      >
+        <Zap size={13} /><strong>多方</strong><b>{alerts.length}</b>
+        <small>{data ? `掃描 ${data.scannedCount}/${data.candidateCount}` : "載入中"}</small>
+      </button>
+      <button
+        className={`chip-compact-side short ${expanded === "short" ? "active" : ""}`}
+        type="button"
+        onClick={() => onToggleExpanded("short")}
+        aria-expanded={expanded === "short"}
+      >
+        <TrendingDown size={13} /><strong>空方</strong><b>{data?.shortCount ?? shortAlerts.length}</b>
+        <small>加空 {data?.shortStrengtheningCount ?? 0}</small>
+      </button>
+    </div>
+    <div className="chip-compact-signals" aria-live="polite">
+      {hasSignals ? <>
+        <CompactSignalPills
+          alerts={longTop}
+          direction="long"
+          windowMinutes={data?.windowMinutes ?? 5}
+          onSelectStock={onSelectStock}
+        />
+        <CompactSignalPills
+          alerts={shortTop}
+          direction="short"
+          windowMinutes={data?.windowMinutes ?? 5}
+          onSelectStock={onSelectStock}
+        />
+      </> : <span className="chip-alert-message">{statusMessage(data)}</span>}
+    </div>
+    {data && <small className="chip-compact-status">
+      多 {alerts.length}・空 {data.shortCount ?? 0}・高頻 {data.highFrequencyTrackingCount}・{data.marketOpen ? "盤中監控" : "盤後暫停"}
+    </small>}
+  </div>;
 }
 
 function MomentumHistory({ alert, direction = "long" }: { alert: ElectronicChipFlowAlert; direction?: "long" | "short" }) {
@@ -678,6 +798,7 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
   const [deductionSignals, setDeductionSignals] = useState<Record<string, StockDeductionSignals>>({});
   const [deductionLoading, setDeductionLoading] = useState(false);
   const [marketDefense, setMarketDefense] = useState<MarketIndexDefenseResponse | null>(null);
+  const [barLayout, setBarLayout] = useState<MomentumBarLayout>("compact");
 
   useEffect(() => {
     try {
@@ -705,12 +826,19 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
           storedGateSignatures.filter((signature): signature is string => typeof signature === "string"),
         );
       }
+      const storedLayout = window.localStorage.getItem(MOMENTUM_BAR_LAYOUT_KEY);
+      if (storedLayout === "classic" || storedLayout === "compact") setBarLayout(storedLayout);
     } catch {
       clientIdRef.current = window.crypto.randomUUID();
       window.localStorage.removeItem(PINNED_MOMENTUM_SYMBOLS_KEY);
       window.localStorage.removeItem(PINNED_MOMENTUM_ALERTS_KEY);
     }
   }, []);
+
+  const changeBarLayout = (nextLayout: MomentumBarLayout) => {
+    setBarLayout(nextLayout);
+    window.localStorage.setItem(MOMENTUM_BAR_LAYOUT_KEY, nextLayout);
+  };
 
   useEffect(() => {
     let timer: number | null = null;
@@ -1266,39 +1394,49 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
       </article>})}
     </div>}
     <section
-    className={`chip-alert-ticker ${hasAlerts ? "has-alerts" : ""} ${hasShortAlerts ? "has-short-alerts" : ""} ${expanded ? "is-expanded" : ""}`}
+    className={`chip-alert-ticker layout-${barLayout} ${hasAlerts ? "has-alerts" : ""} ${hasShortAlerts ? "has-short-alerts" : ""} ${expanded ? "is-expanded" : ""}`}
     aria-label="熱門股與電子股大單動能提醒"
     title={data?.notice}
   >
     <TaiwanIndexPulseBar data={data} marketSnapshot={marketSnapshot} marketDefense={marketDefense} />
-    <div className="chip-alert-row long-row">
-      <button className="chip-alert-label" type="button" onClick={() => setExpanded((current) => current === "long" ? null : "long")} aria-expanded={expanded === "long"}>
-        {data?.warningCount ? <AlertTriangle size={14} /> : hasAlerts ? <Zap size={14} /> : <Radio size={13} />}
-        <strong>{label}</strong><em>{data?.warningCount ? `${data.warningCount} 警示` : "多方"}</em>
-        {expanded === "long" ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-      </button>
-      <div className="chip-alert-viewport" aria-live="polite">
-        {alerts.length === 1 ? <div className="chip-alert-group chip-alert-single"><AlertItems alerts={alerts} windowMinutes={data?.windowMinutes ?? 5} onSelectStock={selectStock} /></div> : hasAlerts ? <div className="chip-alert-track">
-          <div className="chip-alert-group"><AlertItems alerts={scrollingAlerts} windowMinutes={data?.windowMinutes ?? 5} onSelectStock={selectStock} /></div>
-          <div className="chip-alert-group" aria-hidden="true"><AlertItems alerts={scrollingAlerts} windowMinutes={data?.windowMinutes ?? 5} onSelectStock={selectStock} /></div>
-        </div> : <span className="chip-alert-message">{statusMessage(data)}</span>}
+    <MomentumBarLayoutToggle layout={barLayout} onChange={changeBarLayout} />
+    {barLayout === "compact" ? <CompactMomentumSummary
+      data={data}
+      alerts={alerts}
+      shortAlerts={shortAlerts}
+      expanded={expanded}
+      onToggleExpanded={(direction) => setExpanded((current) => current === direction ? null : direction)}
+      onSelectStock={selectStock}
+    /> : <>
+      <div className="chip-alert-row long-row">
+        <button className="chip-alert-label" type="button" onClick={() => setExpanded((current) => current === "long" ? null : "long")} aria-expanded={expanded === "long"}>
+          {data?.warningCount ? <AlertTriangle size={14} /> : hasAlerts ? <Zap size={14} /> : <Radio size={13} />}
+          <strong>{label}</strong><em>{data?.warningCount ? `${data.warningCount} 警示` : "多方"}</em>
+          {expanded === "long" ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+        </button>
+        <div className="chip-alert-viewport" aria-live="polite">
+          {alerts.length === 1 ? <div className="chip-alert-group chip-alert-single"><AlertItems alerts={alerts} windowMinutes={data?.windowMinutes ?? 5} onSelectStock={selectStock} /></div> : hasAlerts ? <div className="chip-alert-track">
+            <div className="chip-alert-group"><AlertItems alerts={scrollingAlerts} windowMinutes={data?.windowMinutes ?? 5} onSelectStock={selectStock} /></div>
+            <div className="chip-alert-group" aria-hidden="true"><AlertItems alerts={scrollingAlerts} windowMinutes={data?.windowMinutes ?? 5} onSelectStock={selectStock} /></div>
+          </div> : <span className="chip-alert-message">{statusMessage(data)}</span>}
+        </div>
+        {data && <small className="chip-alert-coverage">多方 {alerts.length}・掃描 {data.scannedCount}/{data.candidateCount}</small>}
       </div>
-      {data && <small className="chip-alert-coverage">多方 {alerts.length}・掃描 {data.scannedCount}/{data.candidateCount}</small>}
-    </div>
-    <div className="chip-alert-row short-row">
-      <button className="chip-alert-label" type="button" onClick={() => setExpanded((current) => current === "short" ? null : "short")} aria-expanded={expanded === "short"}>
-        {hasShortAlerts ? <TrendingDown size={14} /> : <Radio size={13} />}
-        <strong>{data?.marketOpen ? "盤中空方大單動能" : "空方動能暫停"}</strong><em>{hasShortAlerts ? `${shortAlerts.length} 檔` : "空方"}</em>
-        {expanded === "short" ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-      </button>
-      <div className="chip-alert-viewport" aria-live="polite">
-        {shortAlerts.length === 1 ? <div className="chip-alert-group chip-alert-single short-group"><AlertItems alerts={shortAlerts} direction="short" windowMinutes={data?.windowMinutes ?? 5} onSelectStock={selectStock} /></div> : hasShortAlerts ? <div className="chip-alert-track">
-          <div className="chip-alert-group short-group"><AlertItems alerts={shortAlerts} direction="short" windowMinutes={data?.windowMinutes ?? 5} onSelectStock={selectStock} /></div>
-          <div className="chip-alert-group short-group" aria-hidden="true"><AlertItems alerts={shortAlerts} direction="short" windowMinutes={data?.windowMinutes ?? 5} onSelectStock={selectStock} /></div>
-        </div> : <span className="chip-alert-message">{data?.marketOpen ? "目前尚未偵測到大戶持續加空" : "目前非盤中時段，空方動能監控暫停"}</span>}
+      <div className="chip-alert-row short-row">
+        <button className="chip-alert-label" type="button" onClick={() => setExpanded((current) => current === "short" ? null : "short")} aria-expanded={expanded === "short"}>
+          {hasShortAlerts ? <TrendingDown size={14} /> : <Radio size={13} />}
+          <strong>{data?.marketOpen ? "盤中空方大單動能" : "空方動能暫停"}</strong><em>{hasShortAlerts ? `${shortAlerts.length} 檔` : "空方"}</em>
+          {expanded === "short" ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+        </button>
+        <div className="chip-alert-viewport" aria-live="polite">
+          {shortAlerts.length === 1 ? <div className="chip-alert-group chip-alert-single short-group"><AlertItems alerts={shortAlerts} direction="short" windowMinutes={data?.windowMinutes ?? 5} onSelectStock={selectStock} /></div> : hasShortAlerts ? <div className="chip-alert-track">
+            <div className="chip-alert-group short-group"><AlertItems alerts={shortAlerts} direction="short" windowMinutes={data?.windowMinutes ?? 5} onSelectStock={selectStock} /></div>
+            <div className="chip-alert-group short-group" aria-hidden="true"><AlertItems alerts={shortAlerts} direction="short" windowMinutes={data?.windowMinutes ?? 5} onSelectStock={selectStock} /></div>
+          </div> : <span className="chip-alert-message">{data?.marketOpen ? "目前尚未偵測到大戶持續加空" : "目前非盤中時段，空方動能監控暫停"}</span>}
+        </div>
+        {data && <small className="chip-alert-coverage">空方 {data.shortCount ?? 0}・持續加空 {data.shortStrengtheningCount ?? 0}</small>}
       </div>
-      {data && <small className="chip-alert-coverage">空方 {data.shortCount ?? 0}・持續加空 {data.shortStrengtheningCount ?? 0}</small>}
-    </div>
+    </>}
     {expanded && data && <MomentumPanel
       data={data}
       alerts={expandedAlerts}
