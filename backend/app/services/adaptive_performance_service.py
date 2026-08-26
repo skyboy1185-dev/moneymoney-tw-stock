@@ -36,6 +36,7 @@ MINIMUM_COMMISSION = Decimal("20")
 MONEY = Decimal("0.01")
 TAIPEI = ZoneInfo("Asia/Taipei")
 FORCED_DAY_TRADE_CLOSE_START = time(13, 25)
+STOP_LOSS_BUFFER_PCT = Decimal("0.003")
 
 
 def _money(value: Decimal) -> Decimal:
@@ -127,14 +128,14 @@ def _exit_reason(
     if local.astimezone(TAIPEI).time().replace(tzinfo=None) >= FORCED_DAY_TRADE_CLOSE_START:
         return "DAY_TRADE_CLOSE"
     if trade.side == "SHORT":
-        if price >= trade.stop_loss_price:
+        if price >= trade.stop_loss_price * (Decimal("1") - STOP_LOSS_BUFFER_PCT):
             return "STOP_LOSS"
         if price <= trade.target_price_2:
             return "TAKE_PROFIT"
         if regime in {"BREAKOUT", "RECOVERY"}:
             return "MARKET_RISK"
     else:
-        if price <= trade.stop_loss_price:
+        if price <= trade.stop_loss_price * (Decimal("1") + STOP_LOSS_BUFFER_PCT):
             return "STOP_LOSS"
         if price >= trade.target_price_2:
             return "TAKE_PROFIT"

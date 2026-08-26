@@ -61,7 +61,7 @@ DEFAULT_PARAMETERS: dict[tuple[str, str], tuple[float, str]] = {
     ("monitor", "expiry_trading_days"): (5, "未觸發監控有效交易日"),
     ("monitor", "removal_score"): (65, "監控移除分數"),
     ("notification", "cooldown_minutes"): (30, "相同股票訊號冷卻分鐘"),
-    ("automation", "scan_interval_seconds"): (180, "盤中掃描秒數"),
+    ("automation", "scan_interval_seconds"): (30, "盤中掃描秒數"),
 }
 
 

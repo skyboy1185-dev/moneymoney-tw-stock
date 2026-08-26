@@ -15,7 +15,7 @@ from sqlalchemy import select
 from ..adaptive_schemas import AdaptiveScanPayload
 from ..config import get_settings
 from ..database import BackgroundSessionLocal as SessionLocal
-from ..models import AdaptiveSignal, AdaptiveStockCandidate, MarketRegime, SuperAIDaytradeNotification
+from ..models import AdaptivePaperTrade, AdaptiveSignal, AdaptiveStockCandidate, MarketRegime, SuperAIDaytradeNotification
 from .adaptive_electronic_service import STRATEGY_NAMES, process_adaptive_scan
 from .adaptive_entry_window import adaptive_entry_window_open
 from .adaptive_parameters import load_parameters
@@ -307,7 +307,11 @@ class AdaptiveElectronicAutomation:
             interval = 180
             try:
                 with SessionLocal() as db:
-                    interval = max(60, int(load_parameters(db)["automation.scan_interval_seconds"]))
+                    configured_interval = int(load_parameters(db)["automation.scan_interval_seconds"])
+                    open_trade_count = db.scalar(select(AdaptivePaperTrade.id).where(
+                        AdaptivePaperTrade.status == "open",
+                    ).limit(1))
+                    interval = 15 if open_trade_count is not None else min(30, max(10, configured_interval))
                 current = datetime.now(UTC)
                 seconds_until_open = _seconds_until_open(current)
                 if seconds_until_open is not None:

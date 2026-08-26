@@ -201,6 +201,30 @@ def test_super_ai_daytrade_forces_exit_after_1325() -> None:
     ) == "DAY_TRADE_CLOSE"
 
 
+def test_super_ai_long_uses_stop_loss_buffer() -> None:
+    class Trade:
+        side = "LONG"
+        stop_loss_price = Decimal("100")
+        target_price_2 = Decimal("120")
+
+    assert _exit_reason(
+        Trade(), Decimal("100.29"), "RANGE", None,
+        datetime(2026, 7, 31, 10, 30, tzinfo=TAIPEI),
+    ) == "STOP_LOSS"
+
+
+def test_super_ai_short_uses_stop_loss_buffer() -> None:
+    class Trade:
+        side = "SHORT"
+        stop_loss_price = Decimal("100")
+        target_price_2 = Decimal("80")
+
+    assert _exit_reason(
+        Trade(), Decimal("99.71"), "RANGE", None,
+        datetime(2026, 7, 31, 10, 30, tzinfo=TAIPEI),
+    ) == "STOP_LOSS"
+
+
 def test_super_ai_short_exits_when_market_recovers() -> None:
     class Trade:
         side = "SHORT"
