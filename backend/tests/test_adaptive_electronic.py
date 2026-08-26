@@ -16,7 +16,12 @@ from app.adaptive_schemas import (
 from app.database import Base
 from app.models import AdaptivePaperTrade, AdaptiveSignal, AdaptiveStockCandidate, SuperAIDaytradeNotification
 from app.services.adaptive_backtest_service import run_backtest
-from app.services.adaptive_electronic_service import _active_trading_strategy, _display_candidate_status, _selection_strategy
+from app.services.adaptive_electronic_service import (
+    _active_trading_strategy,
+    _display_candidate_status,
+    _selection_strategy,
+    candidate_payload,
+)
 from app.services.adaptive_electronic_automation import _normalize_scan_payload, _signal_has_super_ai_trade_record
 from app.services.adaptive_entry_window import adaptive_entry_window_open
 from app.services.adaptive_parameters import DEFAULT_PARAMETERS
@@ -213,6 +218,54 @@ def test_new_entry_window_closes_exactly_at_noon() -> None:
         "can_enter", date(2026, 7, 31),
         datetime(2026, 7, 31, 12, 0, tzinfo=TAIPEI),
     ) == "next_day_watch"
+
+
+def test_candidate_payload_normalizes_legacy_entry_cutoff_reason() -> None:
+    now = datetime(2026, 8, 26, 13, 30, tzinfo=TAIPEI)
+    candidate = AdaptiveStockCandidate(
+        trade_date=date(2026, 8, 26),
+        stock_code="6533",
+        stock_name="晶心科",
+        market_type="TPEx",
+        main_industry="Electronic",
+        sub_industry="AI",
+        strategy_type="BREAKOUT",
+        total_score=Decimal("90"),
+        technical_score=Decimal("35"),
+        chip_score=Decimal("10"),
+        fundamental_score=Decimal("5"),
+        industry_score=Decimal("10"),
+        market_score=Decimal("10"),
+        health_score=Decimal("90"),
+        previous_health_score=None,
+        current_price=Decimal("100"),
+        entry_price_low=Decimal("99"),
+        entry_price_high=Decimal("100"),
+        breakout_price=Decimal("99"),
+        stop_loss_price=Decimal("99"),
+        target_price_1=Decimal("102"),
+        target_price_2=Decimal("104"),
+        allocation_percent=Decimal("10"),
+        relative_strength=Decimal("8"),
+        volume_status="ok",
+        industry_strength=Decimal("90"),
+        false_breakout_risk=Decimal("0"),
+        candidate_status="next_day_watch",
+        rank=1,
+        score_breakdown_json="{}",
+        selected_reasons='["已超過 13:20 新進場截止時間，隔日開盤後必須重新確認"]',
+        risk_reasons='["已超過 13:20 新進場截止時間"]',
+        missing_data_json="[]",
+        quote_source="TWSE MIS",
+        quote_timestamp=now,
+        created_at=now,
+        updated_at=now,
+    )
+
+    payload = candidate_payload(candidate)
+
+    assert payload["selectedReasons"] == ["已超過 12:00 新進場截止時間，隔日開盤後必須重新確認"]
+    assert payload["riskReasons"] == ["已超過 12:00 新進場截止時間"]
 
 
 def test_super_ai_daytrade_forces_exit_after_1325() -> None:

@@ -504,6 +504,16 @@ def regime_payload(item: MarketRegime) -> dict[str, Any]:
     }
 
 
+def _normalize_entry_cutoff_reasons(values: list[Any]) -> list[Any]:
+    normalized: list[Any] = []
+    for value in values:
+        if isinstance(value, str):
+            normalized.append(value.replace("13:20 新進場截止時間", "12:00 新進場截止時間"))
+        else:
+            normalized.append(value)
+    return normalized
+
+
 def candidate_payload(item: AdaptiveStockCandidate) -> dict[str, Any]:
     status = _display_candidate_status(item.candidate_status, item.trade_date, datetime.now(UTC))
     current_price = float(item.current_price)
@@ -535,7 +545,8 @@ def candidate_payload(item: AdaptiveStockCandidate) -> dict[str, Any]:
         "industryStrength": float(item.industry_strength), "falseBreakoutRisk": float(item.false_breakout_risk),
         "status": status, "statusLabel": STATUS_LABELS.get(status, status),
         "scoreBreakdown": _loads(item.score_breakdown_json, {}),
-        "selectedReasons": _loads(item.selected_reasons, []), "riskReasons": _loads(item.risk_reasons, []),
+        "selectedReasons": _normalize_entry_cutoff_reasons(_loads(item.selected_reasons, [])),
+        "riskReasons": _normalize_entry_cutoff_reasons(_loads(item.risk_reasons, [])),
         "missingData": _loads(item.missing_data_json, []), "quoteSource": item.quote_source,
         "quoteTimestamp": item.quote_timestamp.isoformat(), "updatedAt": item.updated_at.isoformat(),
     }
