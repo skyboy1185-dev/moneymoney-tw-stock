@@ -323,8 +323,17 @@ def _ranking_key(item: dict[str, Any]) -> tuple[float, ...]:
     )
 
 
+def _high_confidence_override(item: dict[str, Any]) -> bool:
+    return (
+        float(item.get("confidenceScore", 0)) >= 85
+        and float(item.get("healthScore", 0)) >= 80
+        and float(item.get("riskRewardRatio", 0)) >= 2
+        and float(item.get("marketAlignment", 0)) >= 45
+    )
+
+
 class StableRecommendationSelector:
-    """Selects at most three recommendations while preventing small-score churn."""
+    """Selects up to the configured recommendation limit while preventing small-score churn."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -390,7 +399,12 @@ class StableRecommendationSelector:
                 if len(selected) >= config.maximum_recommendations:
                     break
                 if row not in selected:
-                    if row["id"] not in admitted and len(admitted) >= config.maximum_recommendations:
+                    high_confidence = _high_confidence_override(row)
+                    if (
+                        row["id"] not in admitted
+                        and len(admitted) >= config.maximum_recommendations
+                        and not high_confidence
+                    ):
                         continue
                     selected.append(row)
                     active[row["id"]] = current_time
@@ -404,6 +418,7 @@ class StableRecommendationSelector:
                     if (
                         challenger["id"] not in admitted
                         and len(admitted) >= config.maximum_recommendations
+                        and not _high_confidence_override(challenger)
                     ):
                         continue
                     weakest = min(selected, key=lambda row: float(row["confidenceScore"]))

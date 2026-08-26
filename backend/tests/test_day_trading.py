@@ -100,10 +100,11 @@ def test_signal_expiry() -> None:
 
 def test_short_mis_staleness_is_delay_before_source_interruption() -> None:
     now = datetime(2026, 8, 3, 10, 20, tzinfo=TAIPEI)
+    clock = {"now": now}
 
     class FixedClockEngine(MockDayTradingEngine):
         def _now(self) -> datetime:
-            return now
+            return clock["now"]
 
     def index_quote(seconds_old: int) -> OfficialStockQuote:
         quote_time = now - timedelta(seconds=seconds_old)
@@ -119,7 +120,7 @@ def test_short_mis_staleness_is_delay_before_source_interruption() -> None:
     engine.update_official_quotes({"t00": index_quote(150)})
     assert engine.market_regime()["dataStatus"] == "severe_delay"
 
-    engine.update_official_quotes({"t00": index_quote(301)})
+    clock["now"] = now + timedelta(seconds=151)
     assert engine.market_regime()["dataStatus"] == "source_error"
 
 
@@ -181,7 +182,11 @@ def test_exit_events_always_precede_entry_events() -> None:
 
 
 def test_mock_streaming_data_changes_and_supports_scenarios() -> None:
-    engine = MockDayTradingEngine()
+    class FixedClockEngine(MockDayTradingEngine):
+        def _now(self) -> datetime:
+            return datetime(2026, 7, 21, 9, 20, tzinfo=TAIPEI)
+
+    engine = FixedClockEngine()
     first_batch = engine.signals()
     second_batch = engine.signals()
     first = first_batch[0]["price"]
@@ -539,7 +544,7 @@ def test_theme_universe_is_ai_or_low_earth_orbit_satellite_only() -> None:
     assert themes_for_symbol("2603") == ()
 
 
-def test_selector_recommends_at_most_five_without_lowering_thresholds() -> None:
+def test_selector_recommends_at_most_ten_without_lowering_thresholds() -> None:
     now = datetime(2026, 7, 21, 9, 20, tzinfo=TAIPEI)
     config = TradingScheduleConfig()
     session = trading_session_state(config, now, quote_samples=10, infrastructure_ok=True)
@@ -547,59 +552,76 @@ def test_selector_recommends_at_most_five_without_lowering_thresholds() -> None:
     official, candidates = selector.select(
         "test-user",
         [
-            _candidate("a", 92), _candidate("b", 88), _candidate("c", 84),
-            _candidate("d", 82), _candidate("e", 80), _candidate("f", 78),
-            _candidate("g", 74),
+            _candidate("a", 95), _candidate("b", 94), _candidate("c", 93),
+            _candidate("d", 92), _candidate("e", 91), _candidate("f", 90),
+            _candidate("g", 89), _candidate("h", 88), _candidate("i", 87),
+            _candidate("j", 86), _candidate("k", 84),
         ],
         config,
         session,
         now=now,
     )
-    assert [item["id"] for item in official] == ["a", "b", "c", "d", "e"]
-    assert len(official) == 5
-    assert next(item for item in candidates if item["id"] == "f")["isOfficialRecommendation"] is False
-    assert next(item for item in candidates if item["id"] == "g")["isOfficialRecommendation"] is False
+    assert [item["id"] for item in official] == ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]
+    assert len(official) == 10
+    assert next(item for item in candidates if item["id"] == "k")["isOfficialRecommendation"] is False
 
 
-def test_selector_allows_at_most_five_distinct_admissions_per_taipei_hour() -> None:
+def test_selector_high_confidence_can_enter_after_hourly_quota() -> None:
     now = datetime(2026, 7, 21, 9, 20, tzinfo=TAIPEI)
-    config = TradingScheduleConfig(recommendation_refresh_seconds=5, minimum_retention_minutes=0)
+    config = TradingScheduleConfig(
+        recommendation_refresh_seconds=5,
+        minimum_retention_minutes=0,
+        maximum_recommendations=3,
+    )
     session = trading_session_state(config, now, quote_samples=10, infrastructure_ok=True)
     selector = StableRecommendationSelector()
     timing = {
         "generatedAt": now.isoformat(),
         "expiresAt": (now + timedelta(hours=2)).isoformat(),
     }
-    first_candidates = [_candidate(signal_id, 90 - index, **timing) for index, signal_id in enumerate("abcde")]
+    first_candidates = [_candidate(signal_id, 80 - index, **timing) for index, signal_id in enumerate("abc")]
     first, _ = selector.select("hourly-user", first_candidates, config, session, now=now)
-    assert len(first) == 5
+    assert [item["id"] for item in first] == ["a", "b", "c"]
 
     same_hour = now + timedelta(minutes=10)
     same_session = trading_session_state(config, same_hour, quote_samples=10, infrastructure_ok=True)
-    sixth = _candidate("f", 99, **timing)
-    within_hour, _ = selector.select(
+    low_confidence = _candidate("d", 84, **timing)
+    still_capped, _ = selector.select(
         "hourly-user",
-        [*first_candidates[:4], sixth],
+        [*first_candidates, low_confidence],
         config,
         same_session,
         now=same_hour,
     )
-    assert "f" not in {item["id"] for item in within_hour}
+    assert "d" not in {item["id"] for item in still_capped}
+
+    high_confidence = _candidate("e", 95, healthScore=90, riskRewardRatio=3, marketAlignment=80, **timing)
+    high_time = same_hour + timedelta(seconds=10)
+    high_session = trading_session_state(config, high_time, quote_samples=10, infrastructure_ok=True)
+    within_hour, _ = selector.select(
+        "hourly-user",
+        [*first_candidates, high_confidence],
+        config,
+        high_session,
+        now=high_time,
+    )
+    assert "e" in {item["id"] for item in within_hour}
+    assert len(within_hour) == 3
 
     next_hour = now + timedelta(hours=1)
     next_session = trading_session_state(config, next_hour, quote_samples=10, infrastructure_ok=True)
     after_reset, _ = selector.select(
         "hourly-user",
-        [*first_candidates[:4], sixth],
+        [*first_candidates, low_confidence],
         config,
         next_session,
         now=next_hour,
     )
-    assert "f" in {item["id"] for item in after_reset}
-    assert len(after_reset) == 5
+    assert "d" in {item["id"] for item in after_reset}
+    assert len(after_reset) == 3
 
 
-def test_full_hourly_quota_prevents_churn_until_next_hour() -> None:
+def test_hourly_quota_keeps_retention_but_allows_high_confidence_after_retention() -> None:
     now = datetime(2026, 7, 21, 9, 20, tzinfo=TAIPEI)
     config = TradingScheduleConfig(recommendation_refresh_seconds=5, maximum_recommendations=3)
     session = trading_session_state(config, now, quote_samples=10, infrastructure_ok=True)
@@ -635,5 +657,5 @@ def test_full_hourly_quota_prevents_churn_until_next_hour() -> None:
     )
     assert [item["id"] for item in first] == ["a", "b", "c"]
     assert {item["id"] for item in too_soon} == {"a", "b", "c"}
-    assert {item["id"] for item in still_capped} == {"a", "b", "c"}
+    assert {item["id"] for item in still_capped} == {"a", "b", "d"}
     assert {item["id"] for item in reset} == {"a", "b", "d"}
