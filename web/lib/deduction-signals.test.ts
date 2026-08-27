@@ -48,6 +48,30 @@ describe("多空動能均線扣抵提醒", () => {
     expect(findDeductionSignalMatches(buildPrices("flat"))).toEqual([]);
   });
 
+  it("as-of 模式不會使用指定日期之後的未來 K 棒", () => {
+    const base = buildPrices("rising").slice(0, 180);
+    const asOfDate = base.at(-1)!.date;
+    const futureBars = Array.from({ length: 30 }, (_, index): DailyPrice => {
+      const date = new Date(`${asOfDate}T00:00:00Z`);
+      date.setUTCDate(date.getUTCDate() + index + 1);
+      const close = index % 2 === 0 ? 9_999 : 1;
+      return {
+        symbol: "2330",
+        name: "台積電",
+        date: date.toISOString().slice(0, 10),
+        open: close,
+        high: close,
+        low: close,
+        close,
+        volume: 99_999_999,
+      };
+    });
+
+    expect(findDeductionSignalMatches([...base, ...futureBars], 20, asOfDate)).toEqual(
+      findDeductionSignalMatches(base, 20, asOfDate),
+    );
+  });
+
   it("標出未來三期將依序扣除的三根日 K", () => {
     const prices = buildPrices("rising").slice(0, 30);
     expect(findThreePeriodDeductionPositions(prices)).toEqual([

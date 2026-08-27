@@ -33,11 +33,16 @@ function toMeta(item: DeductionRequestItem): StockMeta {
   };
 }
 
+function validAsOfDate(value: unknown): string | null {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
+}
+
 export async function POST(request: Request) {
   try {
-    const body = await request.json() as { items?: unknown[] };
+    const body = await request.json() as { items?: unknown[]; asOfDate?: unknown };
     const items = (body.items ?? []).filter(validItem).slice(0, 24);
     if (!items.length) return NextResponse.json({ items: [] });
+    const asOfDate = validAsOfDate(body.asOfDate);
     const metas = items.map(toMeta);
     const quotes = await getOfficialQuotes(metas);
     const calculatedAt = new Date().toISOString();
@@ -49,13 +54,20 @@ export async function POST(request: Request) {
           meta,
           quote,
         );
+        const effectivePrices = asOfDate
+          ? prices.filter((price) => price.date <= asOfDate)
+          : prices;
+        const latestPriceDate = effectivePrices.at(-1)?.date ?? null;
+        const quoteIsEffective = Boolean(quote?.isRealtime && quote.date === latestPriceDate);
         return {
           symbol: meta.symbol,
-          currentPrice: prices.at(-1)?.close ?? null,
-          previousClose: quote?.previousClose ?? prices.at(-2)?.close ?? null,
-          threeGate: calculateThreeGatePrice(prices, quote?.isRealtime ?? false),
-          matches: findDeductionSignalMatches(prices),
+          currentPrice: effectivePrices.at(-1)?.close ?? null,
+          previousClose: quoteIsEffective ? quote?.previousClose ?? effectivePrices.at(-2)?.close ?? null : effectivePrices.at(-2)?.close ?? null,
+          threeGate: calculateThreeGatePrice(effectivePrices, quoteIsEffective),
+          matches: findDeductionSignalMatches(effectivePrices, 20, asOfDate),
           calculatedAt,
+          asOfDate,
+          latestPriceDate,
         };
       } catch {
         return null;

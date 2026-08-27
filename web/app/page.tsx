@@ -11,6 +11,7 @@ import { InstitutionalInvestorsPage } from "@/components/InstitutionalInvestorsP
 import { ChipFlowPage } from "@/components/ChipFlowPage";
 import { DayTradingDashboard } from "@/components/day-trading/DayTradingDashboard";
 import { ElectronicChipFlowTicker } from "@/components/ElectronicChipFlowTicker";
+import { RobotHealthPanel } from "@/components/RobotHealthPanel";
 import { AdaptiveElectronicPage } from "@/components/AdaptiveElectronicPage";
 import { LongTermSelectionPage } from "@/components/LongTermSelectionPage";
 import { RocketRadarPage } from "@/components/RocketRadarPage";
@@ -198,6 +199,8 @@ export default function Home() {
         <button className={tab === "industries" ? "active" : ""} onClick={() => switchTab("industries")}><Flame size={17} />產業熱點</button>
         <button className={tab === "news" ? "active" : ""} onClick={() => switchTab("news")}><Newspaper size={17} />新聞</button>
       </nav>
+
+      <RobotHealthPanel userId={userId} onOpen={switchTab} />
 
       <main className="main-content">
         {error && <div className="error-banner" role="alert">{error}</div>}

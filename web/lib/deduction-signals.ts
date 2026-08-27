@@ -41,12 +41,19 @@ export interface StockDeductionSignals {
   threeGate: ThreeGatePrice | null;
   matches: DeductionSignalMatch[];
   calculatedAt: string;
+  asOfDate?: string | null;
+  latestPriceDate?: string | null;
 }
 
 const round = (value: number, digits = 4) => {
   const factor = 10 ** digits;
   return Math.round(value * factor) / factor;
 };
+
+function pricesAsOf(prices: DailyPrice[], asOfDate?: string | null): DailyPrice[] {
+  if (!asOfDate) return prices;
+  return prices.filter((price) => price.date <= asOfDate);
+}
 
 /**
  * Inspect the next three values that will leave an N-period moving average.
@@ -87,13 +94,15 @@ export function calculateThreePeriodDeductionSignal(
 export function findThreePeriodDeductionPositions(
   prices: DailyPrice[],
   maPeriod = 20,
+  asOfDate?: string | null,
 ): DeductionPosition[] {
-  const signal = calculateThreePeriodDeductionSignal(prices.map((price) => price.close), maPeriod);
+  const effectivePrices = pricesAsOf(prices, asOfDate);
+  const signal = calculateThreePeriodDeductionSignal(effectivePrices.map((price) => price.close), maPeriod);
   if (!signal) return [];
-  const start = prices.length - maPeriod;
+  const start = effectivePrices.length - maPeriod;
   return ([0, 1, 2] as const).map((offset) => ({
     order: (offset + 1) as 1 | 2 | 3,
-    date: prices[start + offset].date,
+    date: effectivePrices[start + offset].date,
     value: signal.deductionValues[offset],
   }));
 }
@@ -101,10 +110,12 @@ export function findThreePeriodDeductionPositions(
 export function findDeductionSignalMatches(
   prices: DailyPrice[],
   maPeriod = 20,
+  asOfDate?: string | null,
 ): DeductionSignalMatch[] {
   const timeframes: Timeframe[] = ["day", "week", "month"];
+  const effectivePrices = pricesAsOf(prices, asOfDate);
   return timeframes.flatMap((timeframe) => {
-    const candles = resampleCandles(prices, timeframe);
+    const candles = resampleCandles(effectivePrices, timeframe);
     const signal = calculateThreePeriodDeductionSignal(candles.map((candle) => candle.close), maPeriod);
     const latest = candles.at(-1);
     if (!signal || !latest) return [];

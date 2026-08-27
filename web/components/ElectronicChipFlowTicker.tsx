@@ -18,6 +18,7 @@ import { evaluateThreeGateLevels } from "@/lib/three-gate-price";
 import { detectGroupResonances } from "@/lib/group-resonance";
 import { evaluateLargeOrderOutcomes } from "@/lib/large-order-outcome";
 import { selectLargeOrderRankings } from "@/lib/electronic-chip-flow-rankings";
+import { buildDingSelectionRows, type DingSelectionRow } from "@/lib/ding-selection";
 import { buildTaiwanIndexKeyLevels, formatIndexLevel } from "@/lib/taiwan-index-key-levels";
 
 interface ElectronicChipFlowTickerProps {
@@ -51,6 +52,7 @@ const PINNED_TECHNICAL_REFRESH_MS = 5_000;
 const ACTIVE_MONITOR_QUOTE_REFRESH_MS = 2_000;
 
 type MomentumBarLayout = "compact" | "classic";
+type ExpandedMomentumPanel = "long" | "short" | "ding";
 
 function formatLots(value: number): string {
   return new Intl.NumberFormat("zh-TW", { maximumFractionDigits: 2 }).format(value);
@@ -277,6 +279,8 @@ function CompactMomentumSummary({
   data,
   alerts,
   shortAlerts,
+  dingRows,
+  dingLoading,
   expanded,
   onToggleExpanded,
   onSelectStock,
@@ -284,8 +288,10 @@ function CompactMomentumSummary({
   data: ElectronicChipFlowAlertsResponse | null;
   alerts: ElectronicChipFlowAlert[];
   shortAlerts: ElectronicChipFlowAlert[];
-  expanded: "long" | "short" | null;
-  onToggleExpanded: (direction: "long" | "short") => void;
+  dingRows: DingSelectionRow[];
+  dingLoading: boolean;
+  expanded: ExpandedMomentumPanel | null;
+  onToggleExpanded: (direction: ExpandedMomentumPanel) => void;
   onSelectStock: (symbol: string) => void;
 }) {
   const longTop = alerts.slice(0, 3);
@@ -311,6 +317,15 @@ function CompactMomentumSummary({
       >
         <TrendingDown size={13} /><strong>空方開盤累計Top{rankingLimit}</strong><b>{data?.shortRankingCount ?? shortAlerts.length}</b>
         <small>顯示 {shortAlerts.length}/{rankingLimit}・正式 {data?.shortCount ?? 0}・加空 {data?.shortStrengtheningCount ?? 0}</small>
+      </button>
+      <button
+        className={`chip-compact-side ding ${expanded === "ding" ? "active" : ""}`}
+        type="button"
+        onClick={() => onToggleExpanded("ding")}
+        aria-expanded={expanded === "ding"}
+      >
+        <Crosshair size={13} /><strong>丁選股</strong><b>{dingRows.length}</b>
+        <small>{dingLoading ? "扣抵比對中" : `Top${rankingLimit} 扣抵訊號`}</small>
       </button>
     </div>
     <div className="chip-compact-signals" aria-live="polite">
@@ -339,6 +354,8 @@ function Top10QuickRows({
   data,
   alerts,
   shortAlerts,
+  dingRows,
+  dingLoading,
   expanded,
   onToggleExpanded,
   onSelectStock,
@@ -346,8 +363,10 @@ function Top10QuickRows({
   data: ElectronicChipFlowAlertsResponse | null;
   alerts: ElectronicChipFlowAlert[];
   shortAlerts: ElectronicChipFlowAlert[];
-  expanded: "long" | "short" | null;
-  onToggleExpanded: (direction: "long" | "short") => void;
+  dingRows: DingSelectionRow[];
+  dingLoading: boolean;
+  expanded: ExpandedMomentumPanel | null;
+  onToggleExpanded: (direction: ExpandedMomentumPanel) => void;
   onSelectStock: (symbol: string) => void;
 }) {
   const rankingLimit = data?.rankingLimit ?? 10;
@@ -386,6 +405,32 @@ function Top10QuickRows({
         </button>) : <span className="chip-top10-empty">{row.direction === "long" ? "多方Top10尚無資料" : "空方Top10尚無資料"}・{statusLabel}・API {row.total}</span>}
       </div>
     </div>)}
+    <div className="chip-top10-row ding">
+      <button
+        type="button"
+        className={`chip-top10-title ${expanded === "ding" ? "active" : ""}`}
+        onClick={() => onToggleExpanded("ding")}
+        aria-expanded={expanded === "ding"}
+      >
+        <Crosshair size={12} />
+        <strong>丁選股｜扣抵訊號</strong>
+        <small>{dingLoading ? "比對中" : `${dingRows.length}/${rankingLimit}`}</small>
+      </button>
+      <div className="chip-top10-list">
+        {dingRows.length ? dingRows.map((row) => <button
+          type="button"
+          className="chip-top10-chip ding"
+          key={`ding-${row.symbol}`}
+          title={`丁選股｜#${row.sourceRank} ${row.symbol} ${row.name}｜${row.matches.length} 個扣抵訊號`}
+          onClick={() => onSelectStock(row.symbol)}
+        >
+          <i>#{row.sourceRank}</i>
+          <b>{row.symbol}</b>
+          <span>{row.name}</span>
+          <em>{row.matches.length}訊號</em>
+        </button>) : <span className="chip-top10-empty">{dingLoading ? "丁選股扣抵比對中" : "目前Top10沒有丁選股扣抵訊號"}・{statusLabel}</span>}
+      </div>
+    </div>
   </div>;
 }
 
@@ -598,6 +643,7 @@ function MomentumPanel({
   extraPinnedSymbols,
   trackedSymbols,
   alertSymbols,
+  deductionSignals,
   quotes,
   onTogglePin,
   onClose,
@@ -610,6 +656,7 @@ function MomentumPanel({
   extraPinnedSymbols: Set<string>;
   trackedSymbols: Set<string>;
   alertSymbols: Set<string>;
+  deductionSignals: Record<string, StockDeductionSignals>;
   quotes: Record<string, ElectronicChipFlowQuote>;
   onTogglePin: (alert: ElectronicChipFlowAlert) => void;
   onClose: () => void;
@@ -657,8 +704,12 @@ function MomentumPanel({
     const ratio = isShort ? alert.sessionSellBuyRatio ?? alert.sellBuyRatio ?? 0 : alert.sessionBuySellRatio ?? alert.buySellRatio;
     const steps = isShort ? alert.negativeSteps ?? 0 : alert.positiveSteps;
     const groupResonance = groupResonances.find((resonance) => resonance.symbols.includes(alert.symbol));
+    const deductionMatchCount = deductionSignals[alert.symbol]?.matches.filter((match) =>
+      match.signalDate <= data.tradeDate
+    ).length ?? 0;
     const tags = [
       alert.currentQualifies ? "仍符合" : "追蹤中",
+      deductionMatchCount ? `丁選股 ${deductionMatchCount}` : "",
       alert.reinforced ? (isShort ? "持續加空" : "持續轉強") : "",
       alert.simultaneousIncrease ? (isShort ? "大小單同步偏空" : "大小單同步") : "",
       alert.trendStreak >= 2 ? `${alert.trendStreak}段連續` : "",
@@ -789,6 +840,89 @@ function MomentumPanel({
   </aside>;
 }
 
+function DingSelectionPanel({
+  rows,
+  loading,
+  error,
+  tradeDate,
+  onClose,
+  onSelectStock,
+}: {
+  rows: DingSelectionRow[];
+  loading: boolean;
+  error: string;
+  tradeDate?: string;
+  onClose: () => void;
+  onSelectStock: (symbol: string) => void;
+}) {
+  const timeframeLabel = { day: "日", week: "週", month: "月" } as const;
+  const directionLabel = { low: "扣三低", high: "扣三高" } as const;
+  return <aside className="chip-momentum-panel ding-side" aria-label="丁選股扣抵訊號">
+    <header>
+      <div>
+        <strong><Crosshair size={14} />丁選股｜Top10 扣抵訊號</strong>
+        <span>只從目前多空開盤累計 Top10 內比對；API 會先裁切至 {tradeDate ?? "當日"}，前端再排除較晚 signalDate。</span>
+      </div>
+      <div className="chip-momentum-summary">
+        <span className="positive"><TrendingUp size={12} />丁選股 {rows.length}</span>
+        {loading && <span className="pinned">比對中</span>}
+        {error && <span className="warning"><AlertTriangle size={12} />{error}</span>}
+      </div>
+      <button type="button" onClick={onClose} aria-label="關閉丁選股面板"><X size={15} /></button>
+    </header>
+    <div className="chip-momentum-list ding-list">
+      {rows.length ? rows.map((row) => {
+        const headline = row.matches.map((match) =>
+          `${timeframeLabel[match.timeframe]}${directionLabel[match.direction]}`
+        ).join(" / ");
+        const strongest = row.matches
+          .slice()
+          .sort((left, right) => Math.abs(right.deductionGapPercent) - Math.abs(left.deductionGapPercent))[0];
+        return <article
+          className="chip-strength-row tone-watch level-info ding-row"
+          key={row.symbol}
+          onClick={() => onSelectStock(row.symbol)}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              onSelectStock(row.symbol);
+            }
+          }}
+        >
+          <div className="chip-strength-rank"><span>#{row.sourceRank}</span><strong>丁</strong></div>
+          <div className="chip-strength-main">
+            <div className="chip-strength-title">
+              <strong>{row.symbol} {row.name}</strong>
+              <span>{headline}</span>
+              <em>扣抵結構</em>
+            </div>
+            <div className="chip-strength-tags">
+              {row.matches.map((match) => <span key={`${row.symbol}-${match.timeframe}-${match.direction}`}>
+                {timeframeLabel[match.timeframe]}{directionLabel[match.direction]} {formatSigned(match.deductionGapPercent)}%
+              </span>)}
+            </div>
+          </div>
+          <div className="chip-strength-score">
+            <small>訊號數</small>
+            <strong>{row.matches.length}</strong>
+          </div>
+          <div className="chip-strength-metrics">
+            <span><small>現價</small><strong>{row.currentPrice == null ? "無" : formatPrice(row.currentPrice)}</strong></span>
+            <span><small>扣抵均值</small><strong>{strongest ? formatPrice(strongest.deductionAverage) : "無"}</strong></span>
+            <span><small>訊號日期</small><strong>{strongest?.signalDate ?? "無"}</strong></span>
+            <span><small>最新資料日</small><strong>{row.latestPriceDate ?? "無"}</strong></span>
+            <span><small>計算時間</small><strong>{localTimeWithSeconds(row.calculatedAt)}</strong></span>
+          </div>
+          <p>丁選股只展示均線扣抵將移出的歷史 K 值；這不是未來價格預測，也不會直接升級為正式進場訊號。</p>
+        </article>;
+      }) : <div className="chip-momentum-empty">{loading ? "正在比對 Top10 的丁選股扣抵訊號…" : "目前多空 Top10 沒有符合丁選股扣抵條件的股票。"}</div>}
+    </div>
+    <footer>丁選股採 as-of 檢查：訊號日期晚於當前交易日會被排除；正式進場仍由各機器人自己的風控與資料新鮮度決定。</footer>
+  </aside>;
+}
+
 export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: ElectronicChipFlowTickerProps) {
   const [data, setData] = useState<ElectronicChipFlowAlertsResponse | null>(null);
   const [, setTickerAlerts] = useState<ElectronicChipFlowAlert[]>([]);
@@ -800,13 +934,16 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
   const threeGateNotificationSignatures = useRef(new Set<string>());
   const threeGateLastPrices = useRef(new Map<string, number>());
   const threeGateToastTimers = useRef<number[]>([]);
-  const [expanded, setExpanded] = useState<"long" | "short" | null>(null);
+  const [expanded, setExpanded] = useState<ExpandedMomentumPanel | null>(null);
   const [pinnedSymbols, setPinnedSymbols] = useState<string[]>([]);
   const pinnedSymbolsRef = useRef<string[]>([]);
   const clientIdRef = useRef("");
   const expandedTrackingSymbolsRef = useRef<string[]>([]);
   const [pinnedAlertSnapshots, setPinnedAlertSnapshots] = useState<ElectronicChipFlowAlert[]>([]);
   const [momentumQuotes, setMomentumQuotes] = useState<Record<string, ElectronicChipFlowQuote>>({});
+  const [deductionSignals, setDeductionSignals] = useState<Record<string, StockDeductionSignals>>({});
+  const [deductionLoading, setDeductionLoading] = useState(false);
+  const [deductionError, setDeductionError] = useState("");
   const [marketDefense, setMarketDefense] = useState<MarketIndexDefenseResponse | null>(null);
   const [barLayout, setBarLayout] = useState<MomentumBarLayout>("compact");
 
@@ -1084,6 +1221,23 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
   const disposedSymbols = new Set(data?.disposedExcludedSymbols ?? []);
   const pinnedSet = new Set(pinnedSymbols);
   const rankingLimit = data?.rankingLimit ?? 10;
+  const dingSourceAlerts = Array.from(new Map([
+    ...longRankingAlerts.slice(0, rankingLimit),
+    ...shortRankingAlerts.slice(0, rankingLimit),
+  ].map((alert) => [alert.symbol, alert])).values());
+  const dingRequestPayload = dingSourceAlerts.length
+    ? JSON.stringify(dingSourceAlerts.map((alert) => ({
+        symbol: alert.symbol,
+        name: alert.name,
+        market: alert.market,
+      })).sort((left, right) => left.symbol.localeCompare(right.symbol)))
+    : "";
+  const dingRows = buildDingSelectionRows(
+    Object.values(deductionSignals),
+    dingSourceAlerts,
+    data?.tradeDate ?? "0000-00-00",
+    rankingLimit,
+  );
   const autoTopSymbols = new Set([
     ...longRankingAlerts.map((alert) => alert.symbol),
     ...shortRankingAlerts.map((alert) => alert.symbol),
@@ -1138,12 +1292,13 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
       .filter((alert) => alert.direction === "short" && !disposedSymbols.has(alert.symbol) && !liveShortPanelSymbols.has(alert.symbol))
       .map((alert) => [alert.symbol, alert] as const),
   ].map(([, alert]) => alert).sort(sortRankedThenPinned);
-  const expandedAlerts = expanded === "short" ? shortPanelAlerts : panelAlerts;
+  const expandedTradeSide = expanded === "long" || expanded === "short" ? expanded : null;
+  const expandedAlerts = expandedTradeSide === "short" ? shortPanelAlerts : panelAlerts;
   const monitoredQuoteAlerts = Array.from(new Map([
     ...pinnedAlertSnapshots
       .filter((alert) => pinnedSet.has(alert.symbol) && !disposedSymbols.has(alert.symbol))
       .map((alert) => [alert.symbol, alert] as const),
-    ...(expanded ? expandedAlerts.map((alert) => [alert.symbol, alert] as const) : []),
+    ...(expandedTradeSide ? expandedAlerts.map((alert) => [alert.symbol, alert] as const) : []),
   ]).values());
   const quoteRequestPayload = monitoredQuoteAlerts.length
     ? JSON.stringify(monitoredQuoteAlerts.map((alert) => ({
@@ -1165,8 +1320,8 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
       })).sort((left, right) => left.symbol.localeCompare(right.symbol)))
     : "";
   const pinnedSymbolsSignature = [...pinnedSymbols].sort().join(",");
-  const expandedTrackingSymbolsSignature = expanded
-    ? (expanded === "short" ? shortAlerts : alerts)
+  const expandedTrackingSymbolsSignature = expandedTradeSide
+    ? (expandedTradeSide === "short" ? shortAlerts : alerts)
       .map((alert) => alert.symbol)
       .slice(0, rankingLimit)
       .join(",")
@@ -1177,6 +1332,41 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
       ? expandedTrackingSymbolsSignature.split(",")
       : [];
   }, [expandedTrackingSymbolsSignature]);
+
+  useEffect(() => {
+    if (!dingRequestPayload) {
+      setDeductionSignals({});
+      setDeductionError("");
+      setDeductionLoading(false);
+      return;
+    }
+    let stopped = false;
+    const controller = new AbortController();
+    setDeductionLoading(true);
+    void fetch("/api/market-data/deduction-signals", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: `{"asOfDate":${JSON.stringify(data?.tradeDate ?? null)},"items":${dingRequestPayload}}`,
+      cache: "no-store",
+      signal: controller.signal,
+    }).then(async (response) => {
+      const payload = await response.json() as { items?: StockDeductionSignals[]; error?: string };
+      if (!response.ok) throw new Error(payload.error ?? `deduction signals ${response.status}`);
+      if (stopped) return;
+      setDeductionSignals(Object.fromEntries((payload.items ?? []).map((item) => [item.symbol, item])));
+      setDeductionError("");
+    }).catch((error) => {
+      if (!stopped && (error as Error).name !== "AbortError") {
+        setDeductionError("扣抵訊號暫時無法取得");
+      }
+    }).finally(() => {
+      if (!stopped) setDeductionLoading(false);
+    });
+    return () => {
+      stopped = true;
+      controller.abort();
+    };
+  }, [dingRequestPayload, data?.tradeDate]);
 
   useEffect(() => {
     if (!technicalSignalRequestPayload || !data?.marketOpen) {
@@ -1332,7 +1522,7 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
   // single alert (for example 新普) appear back-to-back many times.
   const scrollingAlerts = alerts;
   const longLabel = data?.marketOpen ? `多方開盤累計大單買入 Top${rankingLimit}` : `多方今日累計Top${rankingLimit}`;
-  const toggleExpanded = (direction: "long" | "short") => setExpanded((current) => current === direction ? null : direction);
+  const toggleExpanded = (direction: ExpandedMomentumPanel) => setExpanded((current) => current === direction ? null : direction);
   const selectStock = (symbol: string) => {
     setExpanded(null);
     if (onSelectStock) {
@@ -1390,6 +1580,8 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
       data={data}
       alerts={alerts}
       shortAlerts={shortAlerts}
+      dingRows={dingRows}
+      dingLoading={deductionLoading}
       expanded={expanded}
       onToggleExpanded={toggleExpanded}
       onSelectStock={selectStock}
@@ -1427,20 +1619,31 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
       data={data}
       alerts={alerts}
       shortAlerts={shortAlerts}
+      dingRows={dingRows}
+      dingLoading={deductionLoading}
       expanded={expanded}
       onToggleExpanded={toggleExpanded}
       onSelectStock={selectStock}
     />
-    {expanded && data && <MomentumPanel
+    {expandedTradeSide && data && <MomentumPanel
       data={data}
       alerts={expandedAlerts}
-      direction={expanded}
+      direction={expandedTradeSide}
       pinnedSymbols={pinnedSet}
       extraPinnedSymbols={extraPinnedTrackingSymbols}
-      trackedSymbols={expanded === "short" ? trackedShortPanelSymbols : trackedPanelSymbols}
-      alertSymbols={expanded === "short" ? shortAlertPanelSymbols : alertPanelSymbols}
+      trackedSymbols={expandedTradeSide === "short" ? trackedShortPanelSymbols : trackedPanelSymbols}
+      alertSymbols={expandedTradeSide === "short" ? shortAlertPanelSymbols : alertPanelSymbols}
+      deductionSignals={deductionSignals}
       quotes={momentumQuotes}
       onTogglePin={togglePin}
+      onClose={() => setExpanded(null)}
+      onSelectStock={selectStock}
+    />}
+    {expanded === "ding" && <DingSelectionPanel
+      rows={dingRows}
+      loading={deductionLoading}
+      error={deductionError}
+      tradeDate={data?.tradeDate}
       onClose={() => setExpanded(null)}
       onSelectStock={selectStock}
     />}
