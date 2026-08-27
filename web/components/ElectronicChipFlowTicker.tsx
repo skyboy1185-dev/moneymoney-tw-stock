@@ -98,7 +98,7 @@ function statusMessage(data: ElectronicChipFlowAlertsResponse | null): string {
   if (!data) return "熱門股大單監測載入中…";
   if (data.status === "disconnected") return "盤中大單監測服務暫時無法連線";
   if (data.status === "unavailable") return "大單監測等待逐筆成交行情";
-  if (!data.marketOpen || data.status === "closed") return "今日累計榜保留中；若空白代表今日尚無大單累計資料";
+  if (!data.marketOpen || data.status === "closed") return "非交易時段不更新 Top10；若目前為 0，通常是盤後尚無累計或後端重新部署後等待下個交易日重新累積";
   if (data.providerRateLimited) {
     return `Fugle 額度暫時限流，約 ${data.providerRetrySeconds ?? 0} 秒後自動續掃`;
   }
@@ -345,11 +345,27 @@ function CompactMomentumSummary({
       </> : <span className="chip-alert-message">{statusMessage(data)}</span>}
     </div>
     {data && <small className="chip-compact-status">
-      Top收合持續偵測 {data.autoTopTrackingCount ?? 0}・釘選加碼 {data.extraPinnedTrackingCount ?? 0}/{data.extraPinnedTrackingLimit ?? 10}・高頻 {data.highFrequencyTrackingCount}・{data.marketOpen ? "盤中監控" : "盤後保留今日累計"}
+      Top收合持續偵測 {data.autoTopTrackingCount ?? 0}・釘選加碼 {data.extraPinnedTrackingCount ?? 0}/{data.extraPinnedTrackingLimit ?? 10}・高頻 {data.highFrequencyTrackingCount}・{data.marketOpen ? "盤中監控" : "盤後停止更新"}
     </small>}
   </div>;
 }
 
+function Top10DataStatus({ data }: { data: ElectronicChipFlowAlertsResponse | null }) {
+  if (!data) return <small className="chip-compact-status">Top10 資料載入中。</small>;
+  const rankingLimit = data.rankingLimit ?? 10;
+  const marketState = data.marketOpen ? "盤中累積" : "非交易時段";
+  const resetHint = !data.marketOpen && (data.longRankingCount ?? 0) === 0 && (data.shortRankingCount ?? 0) === 0
+    ? "；目前沒有可保留的 Top10，若剛重新部署後端，盤中記憶體累計會從 0 重新開始"
+    : "";
+  return <small className="chip-compact-status">
+    Top10 狀態：{marketState}・多方 {data.longRankingCount ?? 0}/{rankingLimit}・空方 {data.shortRankingCount ?? 0}/{rankingLimit}・掃描 {data.scannedCount ?? 0}/{data.candidateCount ?? 0}{resetHint}
+  </small>;
+}
+
+// Kept for rollback/reference, but the live ticker uses only the summary entry
+// row now. Showing both made Top10 look duplicated when the same rankings were
+// rendered twice.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function Top10QuickRows({
   data,
   alerts,
@@ -1615,16 +1631,7 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
         {data && <small className="chip-alert-coverage">空方Top{rankingLimit} 顯示 {shortAlerts.length}/{rankingLimit}・正式 {data.shortCount ?? 0}・持續加空 {data.shortStrengtheningCount ?? 0}</small>}
       </div>
     </>}
-    <Top10QuickRows
-      data={data}
-      alerts={alerts}
-      shortAlerts={shortAlerts}
-      dingRows={dingRows}
-      dingLoading={deductionLoading}
-      expanded={expanded}
-      onToggleExpanded={toggleExpanded}
-      onSelectStock={selectStock}
-    />
+    <Top10DataStatus data={data} />
     {expandedTradeSide && data && <MomentumPanel
       data={data}
       alerts={expandedAlerts}
