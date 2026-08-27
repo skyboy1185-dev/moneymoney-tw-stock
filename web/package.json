@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
+    "smoke:production": "node scripts/production-smoke-10-users.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },
