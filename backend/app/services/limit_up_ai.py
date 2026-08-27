@@ -628,6 +628,29 @@ def run_limit_up_cycle(db: Session, user_id: str, now: datetime | None = None) -
     return dashboard_payload(db, user_id, candidates=candidates, now=current)
 
 
+def latest_snapshot_candidates(db: Session, now: datetime | None = None, limit: int = SNAPSHOT_LIMIT) -> list[dict[str, Any]]:
+    current = now or datetime.now(UTC)
+    trade_date = _trading_date(current)
+    latest_snapshot_at = db.scalar(select(func.max(LimitUpAiSnapshot.snapshot_at)).where(
+        LimitUpAiSnapshot.trading_date == trade_date,
+    ))
+    if latest_snapshot_at is None:
+        return []
+    rows = db.scalars(select(LimitUpAiSnapshot).where(
+        LimitUpAiSnapshot.trading_date == trade_date,
+        LimitUpAiSnapshot.snapshot_at == latest_snapshot_at,
+    ).order_by(LimitUpAiSnapshot.rank.asc()).limit(limit)).all()
+    candidates: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            payload = json.loads(row.payload_json)
+        except (TypeError, json.JSONDecodeError):
+            payload = {}
+        if isinstance(payload, dict):
+            candidates.append(payload)
+    return candidates
+
+
 def position_payload(item: LimitUpAiPosition) -> dict[str, Any]:
     return {
         "id": item.id,
@@ -798,8 +821,7 @@ def dashboard_payload(
     current = now or datetime.now(UTC)
     settings = ensure_limit_up_settings(db, user_id, current)
     if candidates is None:
-        candidates = scan_limit_up_candidates(db, settings, now=current)
-        db.commit()
+        candidates = latest_snapshot_candidates(db, current)
     positions = db.scalars(select(LimitUpAiPosition).where(
         LimitUpAiPosition.user_id == user_id,
     ).order_by(LimitUpAiPosition.updated_at.desc()).limit(100)).all()

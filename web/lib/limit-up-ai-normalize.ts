@@ -4,6 +4,7 @@ import type {
   LimitUpAiPerformance,
   LimitUpAiPerformanceBucket,
   LimitUpAiSettings,
+  LimitUpAiStatus,
   LimitUpCandidate,
   LimitUpDashboard,
   LimitUpPosition,
@@ -279,6 +280,24 @@ export function normalizeLimitUpDashboard(value: unknown): LimitUpDashboard {
     notifications,
     unreadCount: finiteNumber(source.unreadCount, notifications.filter((item) => !item.isRead).length),
     dataNotice: text(source.dataNotice, "資料暫時不完整，畫面已切換為安全顯示模式。"),
+  };
+}
+
+export function normalizeLimitUpAiStatus(value: unknown): LimitUpAiStatus {
+  const source = record(value);
+  return {
+    status: text(source.status, "unknown"),
+    startedAt: text(source.startedAt) || null,
+    lastRunAt: text(source.lastRunAt) || null,
+    lastSuccessAt: text(source.lastSuccessAt) || null,
+    lastError: text(source.lastError) || null,
+    lastResult: source.lastResult,
+    lastUserCount: finiteNumber(source.lastUserCount),
+    cycleCount: finiteNumber(source.cycleCount),
+    intervalSeconds: finiteNumber(source.intervalSeconds, 15),
+    marketSessionActive: bool(source.marketSessionActive),
+    marketTime: text(source.marketTime, currentIso()),
+    userId: text(source.userId) || undefined,
   };
 }
 

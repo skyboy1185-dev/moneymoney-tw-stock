@@ -31,6 +31,7 @@ from .services.chip_flow_alerts import electronic_chip_flow_alert_monitor
 from .services.day_trading_automation import day_trading_automation
 from .services.line_messaging import line_notification_dispatcher
 from .services.large_holder_automation import large_holder_automation
+from .services.limit_up_ai_automation import limit_up_ai_automation
 from .services.long_term_automation import long_term_selection_automation
 from .services.pattern_robot_automation import pattern_robot_automation
 from .services.rocket_automation import rocket_radar_automation
@@ -52,9 +53,11 @@ async def lifespan(_: FastAPI):
     await electronic_chip_flow_alert_monitor.start()
     await long_term_selection_automation.start()
     await rocket_radar_automation.start()
+    await limit_up_ai_automation.start()
     try:
         yield
     finally:
+        await limit_up_ai_automation.stop()
         await rocket_radar_automation.stop()
         await long_term_selection_automation.stop()
         await electronic_chip_flow_alert_monitor.stop()

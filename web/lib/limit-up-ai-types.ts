@@ -17,6 +17,21 @@ export interface LimitUpAiSettings {
   updatedAt: string;
 }
 
+export interface LimitUpAiStatus {
+  status: string;
+  startedAt?: string | null;
+  lastRunAt?: string | null;
+  lastSuccessAt?: string | null;
+  lastError?: string | null;
+  lastResult?: unknown;
+  lastUserCount: number;
+  cycleCount: number;
+  intervalSeconds: number;
+  marketSessionActive: boolean;
+  marketTime: string;
+  userId?: string;
+}
+
 export interface LimitUpCandidate {
   id: string;
   symbol: string;

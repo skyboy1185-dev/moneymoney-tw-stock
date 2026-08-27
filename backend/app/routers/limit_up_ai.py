@@ -20,6 +20,7 @@ from ..services.limit_up_ai import (
     settings_payload,
     unread_limit_up_notification_count,
 )
+from ..services.limit_up_ai_automation import limit_up_ai_automation
 
 
 router = APIRouter(prefix="/limit-up-ai", tags=["limit-up-ai"])
@@ -52,7 +53,25 @@ def dashboard(
     user_id: str = Depends(_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    payload = dashboard_payload(db, user_id)
+    db.commit()
+    return payload
+
+
+@router.post("/scan")
+def scan(
+    user_id: str = Depends(_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
     return run_limit_up_cycle(db, user_id)
+
+
+@router.get("/status")
+def status(user_id: str = Depends(_user_id)) -> dict[str, Any]:
+    return {
+        **limit_up_ai_automation.status(),
+        "userId": user_id,
+    }
 
 
 @router.get("/candidates")
@@ -60,7 +79,8 @@ def candidates(
     user_id: str = Depends(_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    payload = run_limit_up_cycle(db, user_id)
+    payload = dashboard_payload(db, user_id)
+    db.commit()
     return {
         "items": payload["candidates"],
         "nearEntries": payload["nearEntries"],

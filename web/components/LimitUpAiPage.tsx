@@ -4,8 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, AlertTriangle, Bell, BellRing, CheckCheck, CircleDollarSign, Flame, Gauge, RefreshCw, Settings, ShieldCheck, Target, Volume2, VolumeX, X, Zap } from "lucide-react";
 import type { ElectronicChipFlowAlert, ElectronicChipFlowAlertsResponse } from "@/lib/electronic-chip-flow-alerts";
 import { selectLargeOrderRankings } from "@/lib/electronic-chip-flow-rankings";
-import { finiteNumber, normalizeLargeOrderResponse, normalizeLimitUpDashboard, normalizeLimitUpReplay, normalizeNotificationPayload } from "@/lib/limit-up-ai-normalize";
-import type { LimitUpAiNotification, LimitUpAiPerformanceBucket, LimitUpAiSettings, LimitUpCandidate, LimitUpDashboard, LimitUpPosition, LimitUpReplay, LimitUpTrade } from "@/lib/limit-up-ai-types";
+import { finiteNumber, normalizeLargeOrderResponse, normalizeLimitUpAiStatus, normalizeLimitUpDashboard, normalizeLimitUpReplay, normalizeNotificationPayload } from "@/lib/limit-up-ai-normalize";
+import type { LimitUpAiNotification, LimitUpAiPerformanceBucket, LimitUpAiSettings, LimitUpAiStatus, LimitUpCandidate, LimitUpDashboard, LimitUpPosition, LimitUpReplay, LimitUpTrade } from "@/lib/limit-up-ai-types";
 import { limitUpAiClient } from "@/services/limit-up-ai-client";
 
 function money(value: number | null | undefined): string {
@@ -66,6 +66,16 @@ function chipFlowStatusLabel(status?: string): string {
     disconnected: "連線中斷",
   };
   return labels[status ?? ""] ?? "等待資料";
+}
+
+function robotStatusLabel(status?: string): string {
+  const labels: Record<string, string> = {
+    running: "背景偵測中",
+    error: "偵測異常",
+    stopped: "已停止",
+    unknown: "狀態確認中",
+  };
+  return labels[status ?? ""] ?? status ?? "狀態確認中";
 }
 
 function CandidateTable({ title, subtitle, items, compact = false }: { title: string; subtitle: string; items: LimitUpCandidate[]; compact?: boolean }) {
@@ -238,29 +248,20 @@ function SettingsPanel({ settings, onChange, onSave }: { settings: LimitUpAiSett
   </section>;
 }
 
-function LoadErrorState({ error, loading, onRetry }: { error: string; loading: boolean; onRetry: () => void }) {
-  return <div className="rocket-page limit-up-ai-page">
-    <header className="rocket-heading limit-up-heading">
-      <div><p>LIMIT-UP MOMENTUM DAYTRADE AI</p><h1><Zap size={27} />專抓漲停飆股AI</h1><span>頁面已載入，但後端資料暫時無法取得；不會再讓整個畫面白屏。</span></div>
-      <div className="rocket-heading-actions">
-        <button onClick={onRetry} disabled={loading}><RefreshCw className={loading ? "spin-icon" : ""} size={15} />重試載入</button>
-      </div>
-    </header>
-    <div className="error-banner"><AlertTriangle size={16} />{error || "專抓漲停飆股 AI 資料讀取失敗"}</div>
-    <div className="data-anomaly-banner"><ShieldCheck /><div><strong>目前狀態</strong><span>可能是 Railway 後端尚未部署完成、服務暖機中，或資料庫表尚未建立。前端已進入安全降級模式。</span></div></div>
-  </div>;
-}
-
 export function LimitUpAiPage({ symbol }: { symbol?: string }) {
   const [userId, setUserId] = useState("");
-  const [data, setData] = useState<LimitUpDashboard | null>(null);
+  const [data, setData] = useState<LimitUpDashboard>(() => normalizeLimitUpDashboard({
+    dataNotice: "漲停機器人頁面已啟動；等待背景掃描或手動掃描寫入最新候選。",
+  }));
   const [largeOrderData, setLargeOrderData] = useState<ElectronicChipFlowAlertsResponse | null>(null);
   const [replay, setReplay] = useState<LimitUpReplay | null>(null);
+  const [robotStatus, setRobotStatus] = useState<LimitUpAiStatus | null>(null);
   const [settingsDraft, setSettingsDraft] = useState<LimitUpAiSettings | null>(null);
   const [messageFilter, setMessageFilter] = useState("");
   const [messages, setMessages] = useState<LimitUpAiNotification[]>([]);
   const [toasts, setToasts] = useState<LimitUpAiNotification[]>([]);
   const [loading, setLoading] = useState(true);
+  const [scanning, setScanning] = useState(false);
   const [error, setError] = useState("");
   const initializedMessages = useRef(false);
   const lastNotificationId = useRef(0);
@@ -292,46 +293,79 @@ export function LimitUpAiPage({ symbol }: { symbol?: string }) {
   const load = useCallback(async (quiet = false) => {
     if (!userId) return;
     if (!quiet) setLoading(true);
+    const failures: string[] = [];
     try {
-      const [dashboard, replayToday, notificationPayload, largeOrderPayload] = await Promise.all([
+      const largeOrderRequest = fetch("/api/chip-flow/electronic-alerts?clientId=limit-up-ai-page", { cache: "no-store" })
+        .then(async (response) => {
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) return normalizeLargeOrderResponse({ ...payload, status: "disconnected" });
+          return normalizeLargeOrderResponse(payload);
+        })
+        .catch(() => normalizeLargeOrderResponse({ status: "disconnected", error: "大單資料暫時無法取得。" }));
+      const [statusResult, dashboardResult, replayResult, notificationResult, largeOrderResult] = await Promise.allSettled([
+        limitUpAiClient.status(userId),
         limitUpAiClient.dashboard(userId),
         limitUpAiClient.replayToday(userId),
         limitUpAiClient.notifications(userId, messageFilter),
-        fetch("/api/chip-flow/electronic-alerts?clientId=limit-up-ai-page", { cache: "no-store" })
-          .then(async (response) => {
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok) return normalizeLargeOrderResponse({ ...payload, status: "disconnected" });
-            return normalizeLargeOrderResponse(payload);
-          })
-          .catch(() => normalizeLargeOrderResponse({ status: "disconnected", error: "大單資料暫時無法取得。" })),
+        largeOrderRequest,
       ]);
-      const safeDashboard = normalizeLimitUpDashboard(dashboard);
-      const safeReplay = normalizeLimitUpReplay(replayToday);
-      const safeNotifications = normalizeNotificationPayload(notificationPayload);
-      setData(safeDashboard);
-      setLargeOrderData(largeOrderPayload);
-      setReplay(safeReplay);
-      setSettingsDraft((current) => current ?? safeDashboard.settings);
-      setMessages(safeNotifications.items);
-      const newestId = Math.max(0, ...safeNotifications.items.map((item) => item.id));
-      if (!initializedMessages.current) {
-        initializedMessages.current = true;
-        lastNotificationId.current = newestId;
+
+      let soundEnabled = true;
+      if (statusResult.status === "fulfilled") {
+        setRobotStatus(normalizeLimitUpAiStatus(statusResult.value));
       } else {
-        const fresh = safeNotifications.items
-          .filter((item) => item.id > lastNotificationId.current && !item.isRead && ["BUY", "SELL", "TAKE_PROFIT", "STOP_LOSS", "ACTIONABLE", "NEAR_LIMIT"].includes(item.type))
-          .sort((a, b) => a.id - b.id);
-        if (fresh.length) {
-          setToasts((current) => [...fresh, ...current].slice(0, 4));
-          if (safeDashboard.settings.soundEnabled) {
-            try { playTone(); } catch { /* browser may block sound until first interaction */ }
-          }
-        }
-        lastNotificationId.current = Math.max(lastNotificationId.current, newestId);
+        failures.push("機器人狀態暫時無法取得");
       }
-      setError("");
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "專抓漲停飆股 AI 資料讀取失敗");
+
+      if (dashboardResult.status === "fulfilled") {
+        const safeDashboard = normalizeLimitUpDashboard(dashboardResult.value);
+        soundEnabled = safeDashboard.settings.soundEnabled;
+        setData(safeDashboard);
+        setSettingsDraft((current) => current ?? safeDashboard.settings);
+      } else {
+        failures.push(dashboardResult.reason instanceof Error ? dashboardResult.reason.message : "漲停機器人主資料讀取失敗");
+      }
+
+      if (replayResult.status === "fulfilled") {
+        setReplay(normalizeLimitUpReplay(replayResult.value));
+      } else {
+        failures.push("今日候選回推暫時無法取得");
+      }
+
+      if (notificationResult.status === "fulfilled") {
+        const safeNotifications = normalizeNotificationPayload(notificationResult.value);
+        setMessages(safeNotifications.items);
+        setData((current) => ({
+          ...current,
+          notifications: safeNotifications.items,
+          unreadCount: safeNotifications.unreadCount,
+        }));
+        const newestId = Math.max(0, ...safeNotifications.items.map((item) => item.id));
+        if (!initializedMessages.current) {
+          initializedMessages.current = true;
+          lastNotificationId.current = newestId;
+        } else {
+          const fresh = safeNotifications.items
+            .filter((item) => item.id > lastNotificationId.current && !item.isRead && ["BUY", "SELL", "TAKE_PROFIT", "STOP_LOSS", "ACTIONABLE", "NEAR_LIMIT"].includes(item.type))
+            .sort((a, b) => a.id - b.id);
+          if (fresh.length) {
+            setToasts((current) => [...fresh, ...current].slice(0, 4));
+            if (soundEnabled) {
+              try { playTone(); } catch { /* browser may block sound until first interaction */ }
+            }
+          }
+          lastNotificationId.current = Math.max(lastNotificationId.current, newestId);
+        }
+      } else {
+        failures.push("買賣通知暫時無法取得");
+      }
+
+      if (largeOrderResult.status === "fulfilled") {
+        setLargeOrderData(largeOrderResult.value);
+      } else {
+        setLargeOrderData(normalizeLargeOrderResponse({ status: "disconnected", error: "大單資料暫時無法取得。" }));
+      }
+      setError(failures[0] ?? "");
     } finally {
       setLoading(false);
     }
@@ -355,6 +389,22 @@ export function LimitUpAiPage({ symbol }: { symbol?: string }) {
     }
   };
 
+  const runManualScan = async () => {
+    if (!userId) return;
+    setScanning(true);
+    try {
+      const payload = await limitUpAiClient.scan(userId);
+      const safeDashboard = normalizeLimitUpDashboard(payload);
+      setData(safeDashboard);
+      setSettingsDraft((current) => current ?? safeDashboard.settings);
+      await load(true);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "漲停機器人手動掃描失敗");
+    } finally {
+      setScanning(false);
+    }
+  };
+
   const markRead = async (id: number) => {
     if (!userId) return;
     await limitUpAiClient.markNotificationRead(userId, id).catch(() => undefined);
@@ -371,16 +421,13 @@ export function LimitUpAiPage({ symbol }: { symbol?: string }) {
 
   const visibleMessages = useMemo(() => messages, [messages]);
   const candidateSymbols = useMemo(() => new Set([
-    ...(data?.candidates ?? []).map((item) => item.symbol),
-    ...(data?.nearEntries ?? []).map((item) => item.symbol),
-    ...(data?.limitMonitors ?? []).map((item) => item.symbol),
+    ...data.candidates.map((item) => item.symbol),
+    ...data.nearEntries.map((item) => item.symbol),
+    ...data.limitMonitors.map((item) => item.symbol),
   ]), [data]);
   const selectStock = (symbol: string) => {
     window.location.assign(`/?symbol=${encodeURIComponent(symbol)}&view=analysis`);
   };
-
-  if (loading && !data) return <div className="table-loading"><span className="spinner" /><span>載入專抓漲停飆股 AI...</span></div>;
-  if (!data) return <LoadErrorState error={error || "專抓漲停飆股 AI 目前沒有資料"} loading={loading} onRetry={() => void load()} />;
 
   return <div className="rocket-page limit-up-ai-page">
     <div className="limit-up-toast-stack">{toasts.map((item) => <article key={item.id} className={`limit-up-toast ${item.type.toLowerCase()}`}>
@@ -395,7 +442,8 @@ export function LimitUpAiPage({ symbol }: { symbol?: string }) {
       <div className="rocket-heading-actions">
         <label>{data.settings.soundEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}<input type="checkbox" checked={settingsDraft?.soundEnabled ?? data.settings.soundEnabled} onChange={(event) => settingsDraft && setSettingsDraft({ ...settingsDraft, soundEnabled: event.target.checked })} />通知音效</label>
         <button onClick={() => void saveSettings()} disabled={!settingsDraft}>儲存音效</button>
-        <button onClick={() => void load()} disabled={loading}><RefreshCw className={loading ? "spin-icon" : ""} size={15} />立即更新</button>
+        <button onClick={() => void load()} disabled={loading}><RefreshCw className={loading ? "spin-icon" : ""} size={15} />重新讀取</button>
+        <button onClick={() => void runManualScan()} disabled={scanning}><RefreshCw className={scanning ? "spin-icon" : ""} size={15} />立即掃描</button>
       </div>
     </header>
     {error && <div className="error-banner"><AlertTriangle size={16} />{error}</div>}
@@ -404,12 +452,14 @@ export function LimitUpAiPage({ symbol }: { symbol?: string }) {
     <LargeOrderTop10Panel data={largeOrderData} currentSymbol={symbol} candidateSymbols={candidateSymbols} onSelectStock={selectStock} />
 
     <section className="rocket-dashboard">
+      <article><span>機器人狀態</span><strong>{robotStatusLabel(robotStatus?.status)}</strong><small>{robotStatus?.marketSessionActive ? "盤中每 15 秒自動偵測" : "非盤中，保留最後結果"}</small></article>
       <article><span>候選股</span><strong>{data.summary.candidateCount}</strong><small>攻擊 {data.summary.attackCount} / 可進場 {data.summary.actionableCount}</small></article>
       <article><span>模擬持倉</span><strong>{data.summary.openPositionCount}</strong><small>最多 {data.settings.maxPositions} 檔</small></article>
       <article><span>今日績效</span><strong className={pnlClass(data.performance.today.totalPnl)}>{signedMoney(data.performance.today.totalPnl)}</strong><small>勝率 {data.performance.today.winRate.toFixed(1)}%</small></article>
       <article><span>本月績效</span><strong className={pnlClass(data.performance.month.totalPnl)}>{signedMoney(data.performance.month.totalPnl)}</strong><small>{data.performance.period}</small></article>
       <article><span>買賣通知</span><strong>{data.unreadCount}</strong><small>未讀訊息</small></article>
       <article><span>今日回推</span><strong>{replay?.attackTotal ?? 0}</strong><small>可進場 {replay?.actionableTotal ?? 0} / {replay?.total ?? 0}</small></article>
+      <article><span>最後掃描</span><strong>{robotStatus?.lastSuccessAt ? time(robotStatus.lastSuccessAt) : "尚未成功"}</strong><small>{robotStatus?.lastError ? `錯誤：${robotStatus.lastError}` : `累計 ${robotStatus?.cycleCount ?? 0} 輪`}</small></article>
     </section>
 
     <section className="limit-up-performance-grid">

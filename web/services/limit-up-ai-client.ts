@@ -1,4 +1,4 @@
-import type { LimitUpAiNotification, LimitUpAiPerformance, LimitUpAiSettings, LimitUpDashboard, LimitUpReplay } from "@/lib/limit-up-ai-types";
+import type { LimitUpAiNotification, LimitUpAiPerformance, LimitUpAiSettings, LimitUpAiStatus, LimitUpDashboard, LimitUpReplay } from "@/lib/limit-up-ai-types";
 
 const base = "/api/limit-up-ai";
 
@@ -19,6 +19,8 @@ async function request<T>(path: string, userId: string, init?: RequestInit): Pro
 
 export const limitUpAiClient = {
   dashboard: (userId: string) => request<LimitUpDashboard>("dashboard", userId),
+  scan: (userId: string) => request<LimitUpDashboard>("scan", userId, { method: "POST", signal: AbortSignal.timeout(30_000) }),
+  status: (userId: string) => request<LimitUpAiStatus>("status", userId),
   performance: (userId: string) => request<LimitUpAiPerformance>("performance", userId),
   notifications: (userId: string, type = "", unreadOnly = false) => {
     const params = new URLSearchParams();
