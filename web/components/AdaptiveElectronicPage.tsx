@@ -46,6 +46,23 @@ type Settings = {
   stopNewTrades: boolean;
   stopReason: string | null;
   consecutiveStopLosses: number;
+  strategyMode?: string;
+  strategyModeLabel?: string;
+  precisionPolicy?: {
+    longOnly: boolean;
+    allowedRegimes: string[];
+    allowedStrategies: string[];
+    minAiScore: number;
+    minTotalScore: number;
+    minHealthScore: number;
+    minIndustryStrength: number;
+    minRiskReward: number;
+    maxStopDistancePct: number;
+    maxNewTradesPerDay: number;
+    maxDailyLossPct: number;
+    riskPerTradePct: number;
+    requiresRealtimeBreakoutProxy: boolean;
+  };
   settingsVersion: number;
   updatedAt: string;
 };
@@ -61,6 +78,8 @@ type RiskState = {
   todayPnl: number;
   dailyMaxLoss: number;
   openTrades: number;
+  openedTradesToday?: number;
+  maxNewTradesPerDay?: number;
   stopNewTrades: boolean;
   stopReason: string | null;
   consecutiveStopLosses: number;
@@ -95,6 +114,8 @@ type Candidate = {
   stopDistancePct?: number;
   maxStopDistancePct?: number;
   stopDistanceCapped?: boolean;
+  tradeSide?: "LONG" | "SHORT" | string;
+  strategyMode?: string;
   targetPrice1: number;
   targetPrice2: number;
   relativeStrength: number;
@@ -350,18 +371,18 @@ function superAiEntryPhase() {
       message: "今天不開新當沖倉；系統只保留既有資料與觀察名單。",
     };
   }
-  if (minutes < 9 * 60) {
+  if (minutes < 9 * 60 + 30) {
     return {
       label: "開盤前",
       tone: "off",
-      message: "09:00 前不開新倉；開盤後才開始判斷正式進場。",
+      message: "09:30 前不開新倉；先避開開盤亂流，只觀察不進場。",
     };
   }
   if (minutes < 12 * 60) {
     return {
       label: "可進場時段",
       tone: "on",
-      message: "09:00～12:00 允許符合風控的超強 AI 新進場。",
+      message: "09:30～12:00 允許符合少量精準突破風控的新進場。",
     };
   }
   if (minutes <= 13 * 60 + 30) {
@@ -485,7 +506,7 @@ export function AdaptiveElectronicPage({
   const marketRegime = status?.marketState.regime;
   const visibleCandidates = useMemo(() => candidates.filter((item) => {
     const textMatch = !query || `${item.stockCode}${item.stockName}${item.subIndustry}${item.strategyName}`.includes(query);
-    const side = marketRegime === "CRASH" || item.strategyType === "CRASH" || item.relativeStrength < -3 ? "SHORT" : "LONG";
+    const side = item.tradeSide ?? (marketRegime === "CRASH" || item.strategyType === "CRASH" || item.relativeStrength < -3 ? "SHORT" : "LONG");
     const sideMatch = !sideFilter || sideFilter === side;
     return textMatch && sideMatch;
   }), [candidates, query, sideFilter, marketRegime]);
@@ -497,6 +518,9 @@ export function AdaptiveElectronicPage({
   const openPositions = performance?.openPositions ?? [];
   const closedTrades = performance?.closedTrades ?? [];
   const entryPhase = useMemo(() => superAiEntryPhase(), []);
+  const precisionPolicy = settings?.precisionPolicy;
+  const stopNewTrades = risk?.stopNewTrades === true || settings?.stopNewTrades === true;
+  const strategyModeLabel = settings?.strategyModeLabel ?? "少量精準突破模式";
 
   if (loading && !status) {
     return (
@@ -522,6 +546,15 @@ export function AdaptiveElectronicPage({
           <button disabled={working || !settings} onClick={() => void saveSettings({ enabled: !settings?.enabled })}>
             {settings?.enabled ? "停止" : "啟動"}
           </button>
+          <button
+            disabled={working || !settings}
+            onClick={() => void saveSettings({
+              stopNewTrades: !settings?.stopNewTrades,
+              stopReason: settings?.stopNewTrades ? null : "precision_observation_mode",
+            })}
+          >
+            {settings?.stopNewTrades ? "恢復新單" : "停新單"}
+          </button>
           <button disabled={working} onClick={() => void load()}>
             <RefreshCw className={working ? "spin-icon" : ""} />重新整理
           </button>
@@ -529,6 +562,11 @@ export function AdaptiveElectronicPage({
       </header>
 
       <p className="pattern-risk-notice"><ShieldAlert />{USER_WARNING}</p>
+      <p className="pattern-risk-notice">
+        <ShieldAlert />
+        {strategyModeLabel}：只做強勢盤高分突破；AI ≥ {precisionPolicy?.minAiScore ?? 88}、健康度 ≥ {precisionPolicy?.minHealthScore ?? 75}、族群強度 ≥ {precisionPolicy?.minIndustryStrength ?? 65}、R/R ≥ {precisionPolicy?.minRiskReward ?? 2.5}、停損 ≤ {precisionPolicy?.maxStopDistancePct ?? 2}%。
+        {stopNewTrades ? "目前停止新增 paper trade，掃描與排行照常更新。" : "目前允許符合條件的新 paper trade。"}
+      </p>
       <p className="pattern-risk-notice">
         <Activity />
         <span className={`pattern-system-state ${entryPhase.tone}`}>{entryPhase.label}</span>
@@ -549,6 +587,13 @@ export function AdaptiveElectronicPage({
         <StatCard label="今日損益" value={money(risk?.todayPnl)} tone={pnlClass(risk?.todayPnl)} />
         <StatCard label="今日最大允許虧損" value={money(risk?.dailyMaxLoss)} />
         <StatCard label="目前風險" value={risk?.stopNewTrades ? `停止新交易：${risk.stopReason ?? "風控觸發"}` : "可接受新訊號"} tone={risk?.stopNewTrades ? "pattern-loss" : "pattern-profit"} />
+      </section>
+
+      <section className="pattern-stats">
+        <StatCard label="策略模式" value={strategyModeLabel} />
+        <StatCard label="今日新單" value={`${risk?.openedTradesToday ?? 0}/${risk?.maxNewTradesPerDay ?? precisionPolicy?.maxNewTradesPerDay ?? 2}`} />
+        <StatCard label="精準門檻" value={`AI ${precisionPolicy?.minAiScore ?? 88} / 健康 ${precisionPolicy?.minHealthScore ?? 75}`} />
+        <StatCard label="停損上限" value={`${precisionPolicy?.maxStopDistancePct ?? 2}%`} />
       </section>
 
       <section className="pattern-panel">
@@ -704,7 +749,7 @@ export function AdaptiveElectronicPage({
             </thead>
             <tbody>
               {visibleCandidates.map((item) => {
-                const inferredSide = market?.regime === "CRASH" || item.strategyType === "CRASH" || item.relativeStrength < -3 ? "SHORT" : "LONG";
+                const inferredSide = item.tradeSide ?? (market?.regime === "CRASH" || item.strategyType === "CRASH" || item.relativeStrength < -3 ? "SHORT" : "LONG");
                 const aiScore = Math.min(100, item.totalScore * 0.6 + item.healthScore * 0.4 + (market?.regime === "BREAKOUT" || market?.regime === "RECOVERY" ? 10 : 4));
                 const risk = Math.max(0.01, Math.abs(item.currentPrice - item.stopLossPrice));
                 const reward = Math.max(0, Math.abs(item.targetPrice2 - item.currentPrice));

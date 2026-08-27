@@ -30,6 +30,16 @@ DEFAULT_MAX_STOP_DISTANCE_PCT = Decimal("1.0")
 MIN_CONFIGURABLE_STOP_DISTANCE_PCT = Decimal("0.3")
 MAX_CONFIGURABLE_STOP_DISTANCE_PCT = Decimal("3.0")
 INTRADAY_BULL_BREAKOUT_BONUS = Decimal("8")
+PRECISION_MIN_AI_SCORE = Decimal("88")
+PRECISION_MIN_TOTAL_SCORE = Decimal("82")
+PRECISION_MIN_HEALTH_SCORE = Decimal("75")
+PRECISION_MIN_INDUSTRY_STRENGTH = Decimal("65")
+PRECISION_MIN_RISK_REWARD = Decimal("2.5")
+PRECISION_MAX_STOP_DISTANCE_PCT = Decimal("2.0")
+PRECISION_MAX_NEW_TRADES_PER_DAY = 2
+PRECISION_MAX_DAILY_LOSS_PCT = Decimal("0.3")
+PRECISION_RISK_PER_TRADE_PCT = Decimal("0.15")
+PRECISION_MAX_FALSE_BREAKOUT_RISK = Decimal("35")
 
 MARKET_WEIGHTS: dict[str, dict[str, float | str]] = {
     "BREAKOUT": {"label": "強多", "long": 100, "short": 0},
@@ -105,6 +115,23 @@ def settings_payload(row: SuperAIDaytradeSetting) -> dict[str, Any]:
         "stopNewTrades": row.stop_new_trades,
         "stopReason": row.stop_reason,
         "consecutiveStopLosses": row.consecutive_stop_losses,
+        "strategyMode": "PRECISION_BREAKOUT",
+        "strategyModeLabel": "少量精準突破模式",
+        "precisionPolicy": {
+            "longOnly": True,
+            "allowedRegimes": ["BREAKOUT", "RECOVERY"],
+            "allowedStrategies": ["BREAKOUT"],
+            "minAiScore": float(PRECISION_MIN_AI_SCORE),
+            "minTotalScore": float(PRECISION_MIN_TOTAL_SCORE),
+            "minHealthScore": float(PRECISION_MIN_HEALTH_SCORE),
+            "minIndustryStrength": float(PRECISION_MIN_INDUSTRY_STRENGTH),
+            "minRiskReward": float(PRECISION_MIN_RISK_REWARD),
+            "maxStopDistancePct": float(PRECISION_MAX_STOP_DISTANCE_PCT),
+            "maxNewTradesPerDay": PRECISION_MAX_NEW_TRADES_PER_DAY,
+            "maxDailyLossPct": float(PRECISION_MAX_DAILY_LOSS_PCT),
+            "riskPerTradePct": float(PRECISION_RISK_PER_TRADE_PCT),
+            "requiresRealtimeBreakoutProxy": True,
+        },
         "settingsVersion": row.settings_version,
         "updatedAt": row.updated_at.isoformat(),
     }
@@ -136,6 +163,8 @@ def update_settings(db: Session, values: dict[str, Any], user_id: str, at: datet
         "emailRiskEnabled": "email_risk_enabled",
         "emailDailySummaryEnabled": "email_daily_summary_enabled",
         "emailErrorEnabled": "email_error_enabled",
+        "stopNewTrades": "stop_new_trades",
+        "stopReason": "stop_reason",
     }
     decimal_fields = {
         "maxCapital", "availableCapital", "riskPerTradePct", "dailyMaxLossPct",
@@ -144,6 +173,8 @@ def update_settings(db: Session, values: dict[str, Any], user_id: str, at: datet
     }
     for source, target in mapping.items():
         if source not in values or values[source] is None:
+            if source == "stopReason" and source in values:
+                row.stop_reason = None
             continue
         value = values[source]
         if source == "maxCapital":
@@ -259,11 +290,13 @@ def _intraday_bull_breakout_bonus(candidate: AdaptiveStockCandidate, regime: str
         side == "LONG"
         and regime == "BREAKOUT"
         and candidate.strategy_type == "BREAKOUT"
-        and Decimal(candidate.total_score) >= Decimal("65")
+        and Decimal(candidate.total_score) >= PRECISION_MIN_TOTAL_SCORE
+        and Decimal(candidate.health_score) >= PRECISION_MIN_HEALTH_SCORE
+        and Decimal(candidate.industry_strength) >= PRECISION_MIN_INDUSTRY_STRENGTH
         and Decimal(candidate.current_price) >= Decimal(candidate.breakout_price)
         and str(candidate.quote_source).startswith("TWSE MIS")
     ):
-        return INTRADAY_BULL_BREAKOUT_BONUS
+        return INTRADAY_BULL_BREAKOUT_BONUS / Decimal("2")
     return Decimal("0")
 
 
@@ -322,21 +355,29 @@ def risk_status(db: Session, settings: SuperAIDaytradeSetting, at: datetime) -> 
     realized_pnl = sum((trade.net_profit for trade in closed), Decimal("0"))
     unrealized_pnl = sum((trade.unrealized_profit for trade in open_trades), Decimal("0"))
     today_pnl = realized_pnl + unrealized_pnl
-    daily_limit = Decimal(settings.max_capital) * Decimal(settings.daily_max_loss_pct) / Decimal("100")
+    effective_daily_loss_pct = min(Decimal(settings.daily_max_loss_pct), PRECISION_MAX_DAILY_LOSS_PCT)
+    daily_limit = Decimal(settings.max_capital) * effective_daily_loss_pct / Decimal("100")
     stop_losses = [trade for trade in closed if trade.net_profit < 0 and "STOP" in (trade.exit_reason or "").upper()]
+    opened_today = int(db.scalar(select(func.count(AdaptivePaperTrade.id)).where(
+        AdaptivePaperTrade.entry_time >= start,
+        AdaptivePaperTrade.entry_time < end,
+    )) or 0)
     stop_new = (
         settings.stop_new_trades
         or today_pnl <= -daily_limit
         or settings.consecutive_stop_losses >= 3
-        or len(stop_losses) >= 3
+        or len(stop_losses) >= 1
+        or opened_today >= PRECISION_MAX_NEW_TRADES_PER_DAY
     )
     return {
         "todayPnl": float(_money(today_pnl)),
         "dailyMaxLoss": float(_money(daily_limit)),
         "openTrades": len(open_trades),
+        "openedTradesToday": opened_today,
+        "maxNewTradesPerDay": PRECISION_MAX_NEW_TRADES_PER_DAY,
         "stopNewTrades": bool(stop_new),
         "stopReason": settings.stop_reason
-            or ("daily_max_loss" if today_pnl <= -daily_limit else "consecutive_stop_losses" if len(stop_losses) >= 3 else None),
+            or ("daily_max_loss" if today_pnl <= -daily_limit else "first_stop_loss" if len(stop_losses) >= 1 else "daily_trade_limit" if opened_today >= PRECISION_MAX_NEW_TRADES_PER_DAY else "consecutive_stop_losses" if settings.consecutive_stop_losses >= 3 else None),
         "consecutiveStopLosses": max(settings.consecutive_stop_losses, len(stop_losses)),
     }
 
@@ -351,7 +392,8 @@ def sized_quantity(
 ) -> tuple[int, Decimal, Decimal]:
     risk_per_share = (stop - entry) if side == "SHORT" else (entry - stop)
     risk_per_share = max(Decimal("0.01"), risk_per_share)
-    risk_amount = Decimal(settings.max_capital) * Decimal(settings.risk_per_trade_pct) / Decimal("100")
+    effective_risk_pct = min(Decimal(settings.risk_per_trade_pct), PRECISION_RISK_PER_TRADE_PCT)
+    risk_amount = Decimal(settings.max_capital) * effective_risk_pct / Decimal("100")
     capital_limit = min(
         Decimal(settings.available_capital),
         Decimal(settings.max_capital) * Decimal(settings.max_position_pct) / Decimal("100"),
@@ -377,12 +419,8 @@ def trading_gate(
     rr = risk_reward(entry, stop, tp2, side)
     score = ai_score(candidate, regime, side)
     stop_pct = stop_distance_pct(entry, stop)
-    max_stop_pct = max_stop_distance_pct(side, score, Decimal(settings.max_stop_distance_pct))
+    max_stop_pct = PRECISION_MAX_STOP_DISTANCE_PCT
     stop_distance_capped = False
-    stop, stop_distance_capped = cap_stop_distance(entry, stop, side, max_stop_pct)
-    if stop_distance_capped:
-        rr = risk_reward(entry, stop, tp2, side)
-        stop_pct = stop_distance_pct(entry, stop)
     risk = risk_status(db, settings, at)
     open_trades = list(db.scalars(select(AdaptivePaperTrade).where(
         AdaptivePaperTrade.status == "open",
@@ -398,8 +436,24 @@ def trading_gate(
         failures.append("invalid_trading_mode")
     if risk["stopNewTrades"]:
         failures.append(str(risk["stopReason"] or "risk_stop"))
-    if side == "SHORT" and regime in {"BREAKOUT", "RECOVERY"}:
-        failures.append("market_strength_blocks_short")
+    if side == "SHORT":
+        failures.append("precision_breakout_long_only")
+    if regime not in {"BREAKOUT", "RECOVERY"}:
+        failures.append("precision_requires_strong_market")
+    if candidate.strategy_type != "BREAKOUT":
+        failures.append("precision_requires_breakout_strategy")
+    if Decimal(candidate.total_score) < PRECISION_MIN_TOTAL_SCORE:
+        failures.append("precision_total_score_below_82")
+    if Decimal(candidate.health_score) < PRECISION_MIN_HEALTH_SCORE:
+        failures.append("precision_health_score_below_75")
+    if Decimal(candidate.relative_strength) <= Decimal("0"):
+        failures.append("precision_relative_strength_not_positive")
+    if Decimal(candidate.industry_strength) < PRECISION_MIN_INDUSTRY_STRENGTH:
+        failures.append("precision_industry_strength_below_65")
+    if Decimal(candidate.false_breakout_risk) > PRECISION_MAX_FALSE_BREAKOUT_RISK:
+        failures.append("precision_false_breakout_risk_too_high")
+    if Decimal(candidate.current_price) < Decimal(candidate.breakout_price) or not str(candidate.quote_source).startswith("TWSE MIS"):
+        failures.append("precision_vwap_proxy_not_confirmed")
     if side == "LONG" and regime in {"BREAKOUT", "RECOVERY"}:
         if candidate.strategy_type != "BREAKOUT":
             failures.append("strong_market_requires_breakout_strategy")
@@ -411,9 +465,9 @@ def trading_gate(
             failures.append("strong_market_relative_strength_too_weak")
     if len(open_trades) >= settings.max_positions:
         failures.append("max_positions")
-    if score < settings.min_ai_score_to_trade:
+    if score < max(Decimal(settings.min_ai_score_to_trade), PRECISION_MIN_AI_SCORE):
         failures.append("ai_score_below_trade_threshold")
-    if rr < settings.min_risk_reward:
+    if rr < max(Decimal(settings.min_risk_reward), PRECISION_MIN_RISK_REWARD):
         failures.append("risk_reward_below_threshold")
     if stop_pct > max_stop_pct:
         failures.append("stop_distance_too_wide")
@@ -424,8 +478,9 @@ def trading_gate(
     if candidate.candidate_status in {"market_risk_high", "signal_invalid"} and side == "LONG":
         failures.append("market_risk_blocks_long")
     reasons = decision_reasons(candidate, regime, side, rr)
+    reasons.append("precision_breakout_mode")
     if _intraday_bull_breakout_bonus(candidate, regime, side):
-        reasons.append(f"intraday_bull_breakout_bonus=+{INTRADAY_BULL_BREAKOUT_BONUS}")
+        reasons.append(f"intraday_bull_breakout_bonus=+{INTRADAY_BULL_BREAKOUT_BONUS / Decimal('2')}")
     if stop_distance_capped:
         reasons.append(f"stop_distance_capped_to_{float(max_stop_pct):.2f}%")
     return {

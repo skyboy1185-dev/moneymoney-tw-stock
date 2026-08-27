@@ -37,7 +37,12 @@ from app.services.adaptive_strategies import BreakoutStrategy, RangeTradingStrat
 from app.services.electronic_stock_universe_service import common_filter_failures
 from app.services.market_regime_service import evaluate_market_regime, intraday_regime_override
 from app.services.risk_management_service import position_size_shares
-from app.services.super_ai_daytrade_service import ensure_settings as ensure_super_ai_settings, market_state, trading_gate
+from app.services.super_ai_daytrade_service import (
+    ensure_settings as ensure_super_ai_settings,
+    market_state,
+    trading_gate,
+    update_settings as update_super_ai_settings,
+)
 
 
 TAIPEI = ZoneInfo("Asia/Taipei")
@@ -205,6 +210,12 @@ def test_yahoo_fallback_quote_remains_observable() -> None:
 
 
 def test_new_entry_window_closes_exactly_at_noon() -> None:
+    assert adaptive_entry_window_open(
+        datetime(2026, 7, 31, 9, 29, 59, tzinfo=TAIPEI), True, date(2026, 7, 31),
+    ) is False
+    assert adaptive_entry_window_open(
+        datetime(2026, 7, 31, 9, 30, tzinfo=TAIPEI), True, date(2026, 7, 31),
+    ) is True
     assert adaptive_entry_window_open(
         datetime(2026, 7, 31, 11, 59, 59, tzinfo=TAIPEI), True, date(2026, 7, 31),
     ) is True
@@ -421,7 +432,7 @@ def test_recovery_market_shows_no_short_weight() -> None:
     assert state["shortWeight"] == 0
 
 
-def test_super_ai_breakout_uses_tactical_intraday_stop_when_structural_stop_is_too_wide() -> None:
+def test_super_ai_precision_breakout_rejects_wide_stop_instead_of_capping() -> None:
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -475,16 +486,17 @@ def test_super_ai_breakout_uses_tactical_intraday_stop_when_structural_stop_is_t
         settings.available_capital = Decimal("3000000")
         gate = trading_gate(db, settings, candidate, "BREAKOUT", now)
 
-        assert gate["stopDistancePct"] <= gate["maxStopDistancePct"]
-        assert gate["maxStopDistancePct"] == Decimal("1.0")
-        assert gate["stop"] == Decimal("99.00")
-        assert "stop_distance_too_wide" not in gate["failures"]
-        assert "stop_distance_capped_to_1.00%" in gate["reasons"]
+        assert not gate["allowed"]
+        assert gate["maxStopDistancePct"] == Decimal("2.0")
+        assert gate["stop"] == Decimal("92")
+        assert "stop_distance_too_wide" in gate["failures"]
+        assert "stop_distance_capped_to_1.00%" not in gate["reasons"]
 
-        candidate.stop_loss_price = Decimal("99.50")
+        candidate.stop_loss_price = Decimal("98.00")
         gate = trading_gate(db, settings, candidate, "BREAKOUT", now)
-        assert gate["stop"] == Decimal("99.50")
-        assert gate["stopDistancePct"] == Decimal("0.5000")
+        assert gate["allowed"], gate["failures"]
+        assert gate["stop"] == Decimal("98.00")
+        assert gate["stopDistancePct"] == Decimal("2.0000")
         assert "stop_distance_capped_to_1.00%" not in gate["reasons"]
 
         candidate.strategy_type = "CRASH"
@@ -494,12 +506,14 @@ def test_super_ai_breakout_uses_tactical_intraday_stop_when_structural_stop_is_t
         candidate.stop_loss_price = Decimal("92")
         gate = trading_gate(db, settings, candidate, "CRASH", now)
         assert gate["side"] == "SHORT"
-        assert gate["stop"] == Decimal("101.00")
-        assert gate["stopDistancePct"] == Decimal("1.0000")
-        assert "stop_distance_capped_to_1.00%" in gate["reasons"]
+        assert not gate["allowed"]
+        assert "precision_breakout_long_only" in gate["failures"]
+        assert "precision_requires_strong_market" in gate["failures"]
+        assert "precision_requires_breakout_strategy" in gate["failures"]
+        assert "stop_distance_capped_to_1.00%" not in gate["reasons"]
 
 
-def test_super_ai_intraday_bull_breakout_bonus_allows_realtime_breakout_candidate() -> None:
+def test_super_ai_precision_breakout_blocks_low_quality_realtime_breakout_candidate() -> None:
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -554,10 +568,120 @@ def test_super_ai_intraday_bull_breakout_bonus_allows_realtime_breakout_candidat
         settings.min_ai_score_to_trade = Decimal("80")
         gate = trading_gate(db, settings, candidate, "BREAKOUT", now)
 
+        assert not gate["allowed"]
+        assert "precision_total_score_below_82" in gate["failures"]
+        assert "precision_health_score_below_75" in gate["failures"]
+        assert "precision_industry_strength_below_65" in gate["failures"]
+        assert "intraday_bull_breakout_bonus=+8" not in gate["reasons"]
+        assert "stop_distance_capped_to_1.00%" not in gate["reasons"]
+
+
+def test_super_ai_precision_breakout_allows_high_quality_realtime_breakout_candidate() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 8, 26, 12, 15, tzinfo=TAIPEI)
+    candidate = super_ai_candidate(trade_date=date(2026, 8, 26), now=now)
+
+    with Session(engine) as db:
+        settings = ensure_super_ai_settings(db, now)
+        settings.max_capital = Decimal("3000000")
+        settings.available_capital = Decimal("3000000")
+        settings.min_ai_score_to_trade = Decimal("80")
+        gate = trading_gate(db, settings, candidate, "BREAKOUT", now)
+
         assert gate["allowed"], gate["failures"]
-        assert gate["aiScore"] >= Decimal("80")
-        assert "intraday_bull_breakout_bonus=+8" in gate["reasons"]
-        assert "stop_distance_capped_to_1.00%" in gate["reasons"]
+        assert gate["aiScore"] >= Decimal("88")
+        assert gate["riskAmount"] == Decimal("4500.00")
+        assert "precision_breakout_mode" in gate["reasons"]
+        assert "intraday_bull_breakout_bonus=+4" in gate["reasons"]
+        assert "stop_distance_capped_to_1.00%" not in gate["reasons"]
+
+
+def test_super_ai_settings_can_stop_new_trades() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 8, 26, 10, 0, tzinfo=TAIPEI)
+    candidate = super_ai_candidate(trade_date=date(2026, 8, 26), now=now)
+
+    with Session(engine) as db:
+        settings = update_super_ai_settings(
+            db,
+            {"stopNewTrades": True, "stopReason": "precision_observation_mode"},
+            "tester",
+            now,
+        )
+        gate = trading_gate(db, settings, candidate, "BREAKOUT", now)
+
+        assert not gate["allowed"]
+        assert "precision_observation_mode" in gate["failures"]
+
+        restored = update_super_ai_settings(
+            db,
+            {"stopNewTrades": False, "stopReason": None},
+            "tester",
+            now,
+        )
+        assert restored.stop_new_trades is False
+        assert restored.stop_reason is None
+
+
+def test_super_ai_precision_breakout_stops_after_first_stop_loss_today() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 8, 26, 10, 0, tzinfo=TAIPEI)
+    candidate = super_ai_candidate(trade_date=date(2026, 8, 26), now=now)
+    stopped_trade = open_super_ai_trade(now=now - timedelta(minutes=10))
+    stopped_trade.status = "closed"
+    stopped_trade.exit_reason = "STOP_LOSS"
+    stopped_trade.exit_time = now - timedelta(minutes=5)
+    stopped_trade.exit_price = Decimal("98")
+    stopped_trade.gross_profit = Decimal("-2000")
+    stopped_trade.net_profit = Decimal("-2500")
+
+    with Session(engine) as db:
+        db.add(stopped_trade)
+        db.commit()
+        settings = ensure_super_ai_settings(db, now)
+        gate = trading_gate(db, settings, candidate, "BREAKOUT", now)
+
+        assert not gate["allowed"]
+        assert "first_stop_loss" in gate["failures"]
+
+
+def test_super_ai_precision_breakout_limits_new_trades_per_day() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 8, 26, 10, 0, tzinfo=TAIPEI)
+    candidate = super_ai_candidate(trade_date=date(2026, 8, 26), now=now)
+    trade1 = open_super_ai_trade(now=now - timedelta(minutes=20))
+    trade1.entry_signal_key = "daily-limit-1"
+    trade2 = open_super_ai_trade(now=now - timedelta(minutes=10))
+    trade2.entry_signal_key = "daily-limit-2"
+
+    with Session(engine) as db:
+        db.add_all([trade1, trade2])
+        db.commit()
+        settings = ensure_super_ai_settings(db, now)
+        gate = trading_gate(db, settings, candidate, "BREAKOUT", now)
+
+        assert not gate["allowed"]
+        assert "daily_trade_limit" in gate["failures"]
 
 
 def test_super_ai_intraday_bull_breakout_bonus_requires_realtime_quote() -> None:

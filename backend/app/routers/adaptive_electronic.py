@@ -36,13 +36,12 @@ from ..services.adaptive_parameters import ensure_default_parameters
 from ..services.adaptive_performance_service import performance_payload
 from ..services.gmail_messaging import gmail_notification_dispatcher
 from ..services.super_ai_daytrade_service import (
+    PRECISION_MAX_STOP_DISTANCE_PCT,
     SYSTEM_NAME,
     ai_score,
-    cap_stop_distance,
     ensure_settings as ensure_super_ai_settings,
     levels_for_side,
     market_state,
-    max_stop_distance_pct,
     notification_payload,
     risk_status,
     risk_reward,
@@ -83,13 +82,13 @@ def _super_ai_candidate_payload(
     side = trade_side_for(regime, item)
     entry, stop, _tp1, tp2 = levels_for_side(item, side)
     score = ai_score(item, regime, side)
-    max_stop_pct = max_stop_distance_pct(side, score, Decimal(settings.max_stop_distance_pct))
-    stop, capped = cap_stop_distance(entry, stop, side, max_stop_pct)
     payload["stopLossPrice"] = float(stop)
     payload["stopDistancePct"] = round(float(stop_distance_pct(entry, stop)), 2)
     payload["riskReward"] = float(risk_reward(entry, stop, tp2, side))
-    payload["maxStopDistancePct"] = float(max_stop_pct)
-    payload["stopDistanceCapped"] = capped
+    payload["maxStopDistancePct"] = float(PRECISION_MAX_STOP_DISTANCE_PCT)
+    payload["stopDistanceCapped"] = False
+    payload["tradeSide"] = side
+    payload["strategyMode"] = "PRECISION_BREAKOUT"
     return payload
 
 

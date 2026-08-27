@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 
 TAIPEI = ZoneInfo("Asia/Taipei")
-ENTRY_START = time(9, 0)
+ENTRY_START = time(9, 30)
 ENTRY_CUTOFF = time(12, 0)
 
 
