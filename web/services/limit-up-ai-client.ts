@@ -2,6 +2,13 @@ import type { LimitUpAiNotification, LimitUpAiPerformance, LimitUpAiSettings, Li
 
 const base = "/api/limit-up-ai";
 
+export class LimitUpAiClientError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "LimitUpAiClientError";
+  }
+}
+
 async function request<T>(path: string, userId: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${base}/${path}`, {
     ...init,
@@ -13,7 +20,12 @@ async function request<T>(path: string, userId: string, init?: RequestInit): Pro
     signal: init?.signal ?? AbortSignal.timeout(15_000),
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error ?? payload.detail ?? "專抓漲停飆股 AI 讀取失敗");
+  if (!response.ok) {
+    const message = response.status === 401
+      ? "請先登入後再使用漲停機器人。"
+      : payload.error ?? payload.detail ?? "專抓漲停飆股 AI 讀取失敗";
+    throw new LimitUpAiClientError(message, response.status);
+  }
   return payload as T;
 }
 

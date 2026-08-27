@@ -427,6 +427,7 @@ footer { min-height: 64px; padding: 18px 24px; display: flex; justify-content: c
 footer span { color: #566177; }
 
 .error-banner { margin-bottom: 16px; padding: 12px 15px; color: #ffb9ba; border: 1px solid rgba(255,95,97,.3); background: rgba(255,95,97,.09); border-radius: 9px; }
+.error-banner a { margin-left: 10px; color: #ffd7d7; text-decoration: underline; font-weight: 800; }
 .page-loading, .table-loading { min-height: 420px; display: flex; flex-direction: column; gap: 14px; align-items: center; justify-content: center; color: var(--muted); }
 .spinner { width: 28px; height: 28px; display: inline-block; border: 3px solid rgba(255,255,255,.16); border-top-color: #8f83ff; border-radius: 50%; animation: spin .8s linear infinite; }
 .spinner.small { width: 16px; height: 16px; border-width: 2px; }

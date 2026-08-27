@@ -6,7 +6,7 @@ import type { ElectronicChipFlowAlert, ElectronicChipFlowAlertsResponse } from "
 import { selectLargeOrderRankings } from "@/lib/electronic-chip-flow-rankings";
 import { finiteNumber, normalizeLargeOrderResponse, normalizeLimitUpAiStatus, normalizeLimitUpDashboard, normalizeLimitUpReplay, normalizeNotificationPayload } from "@/lib/limit-up-ai-normalize";
 import type { LimitUpAiNotification, LimitUpAiPerformanceBucket, LimitUpAiSettings, LimitUpAiStatus, LimitUpCandidate, LimitUpDashboard, LimitUpPosition, LimitUpReplay, LimitUpTrade } from "@/lib/limit-up-ai-types";
-import { limitUpAiClient } from "@/services/limit-up-ai-client";
+import { LimitUpAiClientError, limitUpAiClient } from "@/services/limit-up-ai-client";
 
 function money(value: number | null | undefined): string {
   return `NT$${finiteNumber(value).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}`;
@@ -76,6 +76,17 @@ function robotStatusLabel(status?: string): string {
     unknown: "狀態確認中",
   };
   return labels[status ?? ""] ?? status ?? "狀態確認中";
+}
+
+function limitUpErrorMessage(reason: unknown, fallback: string): string {
+  if (reason instanceof LimitUpAiClientError && reason.status === 401) {
+    return "請先登入後再使用漲停機器人。";
+  }
+  return reason instanceof Error ? reason.message : fallback;
+}
+
+function isLoginRequiredMessage(message: string): boolean {
+  return message.includes("請先登入") || message.includes("非公開模式");
 }
 
 function CandidateTable({ title, subtitle, items, compact = false }: { title: string; subtitle: string; items: LimitUpCandidate[]; compact?: boolean }) {
@@ -314,7 +325,7 @@ export function LimitUpAiPage({ symbol }: { symbol?: string }) {
       if (statusResult.status === "fulfilled") {
         setRobotStatus(normalizeLimitUpAiStatus(statusResult.value));
       } else {
-        failures.push("機器人狀態暫時無法取得");
+        failures.push(limitUpErrorMessage(statusResult.reason, "機器人狀態暫時無法取得"));
       }
 
       if (dashboardResult.status === "fulfilled") {
@@ -323,7 +334,7 @@ export function LimitUpAiPage({ symbol }: { symbol?: string }) {
         setData(safeDashboard);
         setSettingsDraft((current) => current ?? safeDashboard.settings);
       } else {
-        failures.push(dashboardResult.reason instanceof Error ? dashboardResult.reason.message : "漲停機器人主資料讀取失敗");
+        failures.push(limitUpErrorMessage(dashboardResult.reason, "漲停機器人主資料讀取失敗"));
       }
 
       if (replayResult.status === "fulfilled") {
@@ -385,7 +396,7 @@ export function LimitUpAiPage({ symbol }: { symbol?: string }) {
       setSettingsDraft(saved);
       await load(true);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "設定儲存失敗");
+      setError(limitUpErrorMessage(reason, "設定儲存失敗"));
     }
   };
 
@@ -399,7 +410,7 @@ export function LimitUpAiPage({ symbol }: { symbol?: string }) {
       setSettingsDraft((current) => current ?? safeDashboard.settings);
       await load(true);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "漲停機器人手動掃描失敗");
+      setError(limitUpErrorMessage(reason, "漲停機器人手動掃描失敗"));
     } finally {
       setScanning(false);
     }
@@ -446,7 +457,7 @@ export function LimitUpAiPage({ symbol }: { symbol?: string }) {
         <button onClick={() => void runManualScan()} disabled={scanning}><RefreshCw className={scanning ? "spin-icon" : ""} size={15} />立即掃描</button>
       </div>
     </header>
-    {error && <div className="error-banner"><AlertTriangle size={16} />{error}</div>}
+    {error && <div className="error-banner"><AlertTriangle size={16} />{error}{isLoginRequiredMessage(error) && <a href="/login">前往登入</a>}</div>}
     <div className="data-anomaly-banner"><ShieldCheck /><div><strong>模擬交易提醒</strong><span>{data.dataNotice}</span></div></div>
 
     <LargeOrderTop10Panel data={largeOrderData} currentSymbol={symbol} candidateSymbols={candidateSymbols} onSelectStock={selectStock} />
