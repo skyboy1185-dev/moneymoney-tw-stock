@@ -96,14 +96,14 @@ function statusMessage(data: ElectronicChipFlowAlertsResponse | null): string {
   if (!data) return "熱門股大單監測載入中…";
   if (data.status === "disconnected") return "盤中大單監測服務暫時無法連線";
   if (data.status === "unavailable") return "大單監測等待逐筆成交行情";
-  if (!data.marketOpen || data.status === "closed") return "目前非盤中時段，大單動能監控暫停";
+  if (!data.marketOpen || data.status === "closed") return "今日累計榜保留中；若空白代表今日尚無大單累計資料";
   if (data.providerRateLimited) {
     return `Fugle 額度暫時限流，約 ${data.providerRetrySeconds ?? 0} 秒後自動續掃`;
   }
   if (data.status === "warming" || data.status === "scanning") {
     return `熱門股＋電子股輪巡中 ${data.scannedCount}/${data.candidateCount} 檔`;
   }
-  return `目前尚無符合Top10條件的熱門股（近 ${data.windowMinutes} 分鐘）`;
+  return "目前尚無開盤累計Top10資料";
 }
 
 function TrendIcon({ alert }: { alert: ElectronicChipFlowAlert }) {
@@ -196,6 +196,8 @@ function AlertItems({
   return <>
     {alerts.map((alert, index) => {
       const flow = orderFlow(alert);
+      const sessionBased = alert.rankingBasis === "session";
+      const momentumCaption = sessionBased ? "開盤累計" : `近 ${windowMinutes} 分`;
       return <button
         className={`chip-alert-item level-${alert.alertLevel}`}
         key={`${alert.symbol}-${index}`}
@@ -208,7 +210,7 @@ function AlertItems({
         <b>{alert.symbol}</b>
         <em><TrendIcon alert={alert} />{alert.simultaneousIncrease ? (direction === "short" ? "大小單同步偏空" : "大小單同步增加") : alert.trendLabel}</em>
         <span>今日累積｜大單 多 {formatLots(flow.dayLargeLong)}／空 {formatLots(flow.dayLargeShort)}・散戶 多 {formatLots(flow.dayRetailLong)}／空 {formatLots(flow.dayRetailShort)} 張</span>
-        <small>{alert.simultaneousIncrease ? `合力 ${formatSigned(alert.combinedNetBuyLots)}` : `${direction === "short" ? "賣壓" : "動能"} ${formatSigned(alert.momentumChangeLots)}`}・近 {windowMinutes} 分・{alert.time}</small>
+        <small>{alert.simultaneousIncrease ? `合力 ${formatSigned(alert.combinedNetBuyLots)}` : `${direction === "short" ? "賣壓" : "動能"} ${formatSigned(alert.momentumChangeLots)}`}・{momentumCaption}・{alert.time}</small>
       </button>
     })}
   </>;
@@ -229,9 +231,10 @@ function CompactSignalPills({
     {alerts.map((alert) => {
       const flow = orderFlow(alert);
       const momentumLots = direction === "short"
-        ? alert.recentNetSellLots ?? Math.max(0, -alert.recentNetBuyLots)
-        : Math.max(0, alert.recentNetBuyLots);
+        ? alert.sessionNetSellLots ?? alert.recentNetSellLots ?? Math.max(0, -alert.recentNetBuyLots)
+        : alert.sessionNetBuyLots ?? Math.max(0, alert.recentNetBuyLots);
       const momentumLabel = direction === "short" ? "賣壓" : "買盤";
+      const momentumCaption = alert.rankingBasis === "session" ? "開盤累計" : `${windowMinutes}分`;
       return <button
         className={`chip-signal-pill ${direction} level-${alert.alertLevel}`}
         key={`${direction}-${alert.symbol}`}
@@ -242,7 +245,7 @@ function CompactSignalPills({
         <span>{alert.rank ? <b className="chip-signal-rank">#{alert.rank}</b> : (direction === "short" ? <TrendingDown size={11} /> : <TrendingUp size={11} />)}{direction === "short" ? "空" : "多"}</span>
         <strong>{alert.symbol} {alert.name}</strong>
         <b>{momentumLabel} {formatLots(momentumLots)} 張</b>
-        <small>{alert.simultaneousIncrease ? "大小單同步" : alert.trendLabel}・{windowMinutes}分・{alert.time}</small>
+        <small>{alert.simultaneousIncrease ? "大小單同步" : alert.trendLabel}・{momentumCaption}・{alert.time}</small>
         <em>大 {formatLots(flow.largeLong)}／空 {formatLots(flow.largeShort)}</em>
       </button>;
     })}
@@ -297,8 +300,8 @@ function CompactMomentumSummary({
         onClick={() => onToggleExpanded("long")}
         aria-expanded={expanded === "long"}
       >
-        <Zap size={13} /><strong>多方連續買入Top{rankingLimit}</strong><b>{data?.longCount ?? alerts.length}</b>
-        <small>{data ? `顯示 ${alerts.length}/${rankingLimit}・命中 ${data.longCount ?? alerts.length}・掃描 ${data.scannedCount}/${data.candidateCount}` : "載入中"}</small>
+        <Zap size={13} /><strong>多方開盤累計Top{rankingLimit}</strong><b>{data?.longRankingCount ?? alerts.length}</b>
+        <small>{data ? `顯示 ${alerts.length}/${rankingLimit}・正式 ${data.longCount ?? 0}・掃描 ${data.scannedCount}/${data.candidateCount}` : "載入中"}</small>
       </button>
       <button
         className={`chip-compact-side short ${expanded === "short" ? "active" : ""}`}
@@ -306,8 +309,8 @@ function CompactMomentumSummary({
         onClick={() => onToggleExpanded("short")}
         aria-expanded={expanded === "short"}
       >
-        <TrendingDown size={13} /><strong>空方連續賣出Top{rankingLimit}</strong><b>{data?.shortCount ?? shortAlerts.length}</b>
-        <small>顯示 {shortAlerts.length}/{rankingLimit}・命中 {data?.shortCount ?? shortAlerts.length}・加空 {data?.shortStrengtheningCount ?? 0}</small>
+        <TrendingDown size={13} /><strong>空方開盤累計Top{rankingLimit}</strong><b>{data?.shortRankingCount ?? shortAlerts.length}</b>
+        <small>顯示 {shortAlerts.length}/{rankingLimit}・正式 {data?.shortCount ?? 0}・加空 {data?.shortStrengtheningCount ?? 0}</small>
       </button>
     </div>
     <div className="chip-compact-signals" aria-live="polite">
@@ -327,7 +330,7 @@ function CompactMomentumSummary({
       </> : <span className="chip-alert-message">{statusMessage(data)}</span>}
     </div>
     {data && <small className="chip-compact-status">
-      Top收合持續偵測 {data.autoTopTrackingCount ?? 0}・釘選加碼 {data.extraPinnedTrackingCount ?? 0}/{data.extraPinnedTrackingLimit ?? 10}・高頻 {data.highFrequencyTrackingCount}・{data.marketOpen ? "盤中監控" : "盤後暫停"}
+      Top收合持續偵測 {data.autoTopTrackingCount ?? 0}・釘選加碼 {data.extraPinnedTrackingCount ?? 0}/{data.extraPinnedTrackingLimit ?? 10}・高頻 {data.highFrequencyTrackingCount}・{data.marketOpen ? "盤中監控" : "盤後保留今日累計"}
     </small>}
   </div>;
 }
@@ -588,13 +591,14 @@ function MomentumPanel({
   };
 
   const rowFacts = (alert: ElectronicChipFlowAlert) => {
+    const sessionBased = alert.rankingBasis === "session";
     const forceLots = isShort
-      ? alert.recentNetSellLots ?? Math.max(0, -alert.recentNetBuyLots)
-      : Math.max(0, alert.recentNetBuyLots);
+      ? sessionBased ? alert.sessionNetSellLots ?? alert.recentNetSellLots ?? Math.max(0, -alert.recentNetBuyLots) : alert.recentNetSellLots ?? Math.max(0, -alert.recentNetBuyLots)
+      : sessionBased ? alert.sessionNetBuyLots ?? Math.max(0, alert.recentNetBuyLots) : Math.max(0, alert.recentNetBuyLots);
     const oppositeLots = isShort ? Math.max(0, alert.recentNetBuyLots) : (alert.recentNetSellLots ?? Math.max(0, -alert.recentNetBuyLots));
-    const dayForceLots = isShort ? Math.max(0, -alert.largeNetLots) : Math.max(0, alert.largeNetLots);
+    const dayForceLots = isShort ? alert.sessionLargeSellLots ?? Math.max(0, -alert.largeNetLots) : alert.sessionLargeBuyLots ?? Math.max(0, alert.largeNetLots);
     const changeLots = isShort ? -alert.momentumChangeLots : alert.momentumChangeLots;
-    const ratio = isShort ? alert.sellBuyRatio ?? 0 : alert.buySellRatio;
+    const ratio = isShort ? alert.sessionSellBuyRatio ?? alert.sellBuyRatio ?? 0 : alert.sessionBuySellRatio ?? alert.buySellRatio;
     const steps = isShort ? alert.negativeSteps ?? 0 : alert.positiveSteps;
     const groupResonance = groupResonances.find((resonance) => resonance.symbols.includes(alert.symbol));
     const tags = [
@@ -602,18 +606,20 @@ function MomentumPanel({
       alert.reinforced ? (isShort ? "持續加空" : "持續轉強") : "",
       alert.simultaneousIncrease ? (isShort ? "大小單同步偏空" : "大小單同步") : "",
       alert.trendStreak >= 2 ? `${alert.trendStreak}段連續` : "",
+      sessionBased ? "開盤累計" : "",
+      alert.rankingFillReason === "gross" ? (isShort ? "賣買抵銷" : "買賣抵銷") : "",
       groupResonance ? `族群共振 ${groupResonance.group}` : "",
       alert.largeOrderOffsetting ? "多空抵銷" : "",
       alert.isWarning ? "轉弱" : "",
     ].filter(Boolean);
-    return { forceLots, oppositeLots, dayForceLots, changeLots, ratio, steps, groupResonance, tags };
+    return { forceLots, oppositeLots, dayForceLots, changeLots, ratio, steps, groupResonance, tags, sessionBased };
   };
 
   return <aside className={`chip-momentum-panel ${isShort ? "short-side" : "long-side"}`} aria-label={isShort ? "空方大單動能雷達" : "多方大單動能雷達"}>
     <header>
       <div>
         <strong>{isShort ? <TrendingDown size={14} /> : <Zap size={14} />}{isShort ? `空方連續大單賣出 Top${rankingLimit}` : `多方連續大單買入 Top${rankingLimit}`}</strong>
-        <span>目前顯示 {rankedAlerts.length}/{rankingLimit}；優先看排名、強度、近段{sideLabel}、{ratioLabel}與是否續強。</span>
+        <span>目前顯示 {rankedAlerts.length}/{rankingLimit}；優先看開盤累計排名、強度、累計{sideLabel}、{ratioLabel}與是否續強。</span>
       </div>
       <div className="chip-momentum-summary">
         <span className={isShort ? "short" : "positive"}>{isShort ? <TrendingDown size={12} /> : <TrendingUp size={12} />}{isShort ? `空方Top${rankingLimit} ${rankedAlerts.length}/${rankingLimit}` : `多方Top${rankingLimit} ${rankedAlerts.length}/${rankingLimit}`}</span>
@@ -677,7 +683,7 @@ function MomentumPanel({
             <strong>{Math.round(alert.rankScore ?? 0)}</strong>
           </div>
           <div className="chip-strength-metrics">
-            <span><small>近 {data.windowMinutes} 分{sideLabel}</small><strong>{formatLots(facts.forceLots)} 張</strong></span>
+            <span><small>{facts.sessionBased ? "開盤累計" : `近 ${data.windowMinutes} 分`}{sideLabel}</small><strong>{formatLots(facts.forceLots)} 張</strong></span>
             <span><small>{ratioLabel}</small><strong>{facts.ratio ? `${facts.ratio.toFixed(2)}x` : "—"}</strong></span>
             <span><small>{stepLabel}</small><strong>{facts.steps} 段</strong></span>
             <span><small>較前次</small><strong className={facts.changeLots >= 0 ? "flow-long" : "flow-short"}>{formatSigned(facts.changeLots)} 張</strong></span>
@@ -911,13 +917,9 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
           warningCount: 0,
           strengtheningCount: 0,
           jointIncreaseCount: 0,
-          longRankingCount: 0,
-          longRankings: [],
           shortCount: 0,
-          shortRankingCount: 0,
           shortStrengtheningCount: 0,
           shortAlerts: [],
-          shortRankings: [],
           trackedShortAlerts: [],
         };
         if (!rawPayload.marketOpen) {
@@ -1271,7 +1273,7 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
   // Keep one item per symbol. A previous fill-to-four implementation made a
   // single alert (for example 新普) appear back-to-back many times.
   const scrollingAlerts = alerts;
-  const longLabel = data?.marketOpen ? `多方連續大單買入 Top${rankingLimit}` : `多方Top${rankingLimit} 暫停`;
+  const longLabel = data?.marketOpen ? `多方開盤累計大單買入 Top${rankingLimit}` : `多方今日累計Top${rankingLimit}`;
   const selectStock = (symbol: string) => {
     setExpanded(null);
     if (onSelectStock) {
@@ -1345,21 +1347,21 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
             <div className="chip-alert-group" aria-hidden="true"><AlertItems alerts={scrollingAlerts} windowMinutes={data?.windowMinutes ?? 5} onSelectStock={selectStock} /></div>
           </div> : <span className="chip-alert-message">{statusMessage(data)}</span>}
         </div>
-        {data && <small className="chip-alert-coverage">多方Top{rankingLimit} 顯示 {alerts.length}/{rankingLimit}・命中 {data.longCount ?? alerts.length}・Top收合偵測 {data.autoTopTrackingCount ?? 0}</small>}
+        {data && <small className="chip-alert-coverage">多方Top{rankingLimit} 顯示 {alerts.length}/{rankingLimit}・正式 {data.longCount ?? 0}・Top收合偵測 {data.autoTopTrackingCount ?? 0}</small>}
       </div>
       <div className="chip-alert-row short-row">
         <button className="chip-alert-label" type="button" onClick={() => setExpanded((current) => current === "short" ? null : "short")} aria-expanded={expanded === "short"}>
           {hasShortAlerts ? <TrendingDown size={14} /> : <Radio size={13} />}
-          <strong>{data?.marketOpen ? `空方連續大單賣出 Top${rankingLimit}` : `空方Top${rankingLimit} 暫停`}</strong><em>{hasShortAlerts ? `${shortAlerts.length} 檔` : "空方"}</em>
+          <strong>{data?.marketOpen ? `空方開盤累計大單賣出 Top${rankingLimit}` : `空方今日累計Top${rankingLimit}`}</strong><em>{hasShortAlerts ? `${shortAlerts.length} 檔` : "空方"}</em>
           {expanded === "short" ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
         </button>
         <div className="chip-alert-viewport" aria-live="polite">
           {shortAlerts.length === 1 ? <div className="chip-alert-group chip-alert-single short-group"><AlertItems alerts={shortAlerts} direction="short" windowMinutes={data?.windowMinutes ?? 5} onSelectStock={selectStock} /></div> : hasShortAlerts ? <div className="chip-alert-track">
             <div className="chip-alert-group short-group"><AlertItems alerts={shortAlerts} direction="short" windowMinutes={data?.windowMinutes ?? 5} onSelectStock={selectStock} /></div>
             <div className="chip-alert-group short-group" aria-hidden="true"><AlertItems alerts={shortAlerts} direction="short" windowMinutes={data?.windowMinutes ?? 5} onSelectStock={selectStock} /></div>
-          </div> : <span className="chip-alert-message">{data?.marketOpen ? "目前尚未偵測到大戶持續加空" : "目前非盤中時段，空方動能監控暫停"}</span>}
+          </div> : <span className="chip-alert-message">{data?.marketOpen ? "目前尚未累計到空方Top資料" : "今日尚無空方累計資料"}</span>}
         </div>
-        {data && <small className="chip-alert-coverage">空方Top{rankingLimit} 顯示 {shortAlerts.length}/{rankingLimit}・命中 {data.shortCount ?? shortAlerts.length}・持續加空 {data.shortStrengtheningCount ?? 0}</small>}
+        {data && <small className="chip-alert-coverage">空方Top{rankingLimit} 顯示 {shortAlerts.length}/{rankingLimit}・正式 {data.shortCount ?? 0}・持續加空 {data.shortStrengtheningCount ?? 0}</small>}
       </div>
     </>}
     {expanded && data && <MomentumPanel

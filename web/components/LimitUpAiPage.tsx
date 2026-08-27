@@ -103,19 +103,19 @@ function LargeOrderRankingTable({
       <div><h2>{title}</h2><p>{subtitle}</p></div>
       <b>Top {Math.min(items.length, 10)}</b>
     </div>
-    {items.length ? <div className="rocket-table-wrap"><table><thead><tr><th>排名</th><th>股票</th><th>{direction === "long" ? "大單淨買" : "大單淨賣"}</th><th>連續次數</th><th>{direction === "long" ? "買賣比" : "賣買比"}</th><th>趨勢</th><th>資料</th><th>漲停AI</th></tr></thead><tbody>{items.slice(0, 10).map((item, index) => {
+    {items.length ? <div className="rocket-table-wrap"><table><thead><tr><th>排名</th><th>股票</th><th>{direction === "long" ? "開盤累計淨買" : "開盤累計淨賣"}</th><th>連續次數</th><th>{direction === "long" ? "累計買賣比" : "累計賣買比"}</th><th>趨勢</th><th>資料</th><th>漲停AI</th></tr></thead><tbody>{items.slice(0, 10).map((item, index) => {
       const rank = item.rank ?? index + 1;
       const netLots = direction === "long"
-        ? Math.max(0, item.recentNetBuyLots)
-        : Math.max(0, item.recentNetSellLots ?? -item.recentNetBuyLots);
+        ? Math.max(0, item.sessionNetBuyLots ?? item.recentNetBuyLots)
+        : Math.max(0, item.sessionNetSellLots ?? item.recentNetSellLots ?? -item.recentNetBuyLots);
       const steps = direction === "long" ? item.positiveSteps : item.negativeSteps ?? 0;
-      const ratio = direction === "long" ? item.buySellRatio : item.sellBuyRatio ?? 0;
+      const ratio = direction === "long" ? item.sessionBuySellRatio ?? item.buySellRatio : item.sessionSellBuyRatio ?? item.sellBuyRatio ?? 0;
       const matched = candidateSymbols.has(item.symbol);
-      const status = item.currentQualifies ? "正式大單訊號" : matched ? "已進漲停AI候選" : "觀察中";
+      const status = item.currentQualifies ? "正式大單訊號" : matched ? "已進漲停AI候選" : item.trendLabel || "觀察中";
       return <tr key={`${direction}-${item.symbol}`} className={rank <= 3 ? "top-rank" : ""}>
         <td><span className="chip-alert-rank">#{rank}</span></td>
         <td><button className="limit-up-stock-link" onClick={() => onSelectStock(item.symbol)}><strong>{item.symbol} {item.name}</strong><small>{item.market}・{item.industry}</small></button></td>
-        <td><b className={direction === "long" ? "profit" : "loss"}>{lots(netLots)}</b><small>日大單買 {lots(item.dayLargeBuyLots)} / 賣 {lots(item.dayLargeSellLots)}</small></td>
+        <td><b className={direction === "long" ? "profit" : "loss"}>{lots(netLots)}</b><small>日大單買 {lots(item.sessionLargeBuyLots ?? item.dayLargeBuyLots)} / 賣 {lots(item.sessionLargeSellLots ?? item.dayLargeSellLots)}</small></td>
         <td><strong>{steps}</strong><small>{item.currentQualifies ? "目前仍符合" : "等待下一筆確認"}</small></td>
         <td><strong>{ratio ? ratio.toFixed(2) : "—"}</strong><small>門檻 {item.effectiveNetThresholdLots ? lots(item.effectiveNetThresholdLots) : "估算中"}</small></td>
         <td>{item.trendLabel}<small>{item.message}</small></td>
@@ -152,23 +152,23 @@ function LargeOrderTop10Panel({
     {currentSymbol && <article className="rocket-panel limit-up-current-rank-card">
       <span>目前查詢股票</span>
       <strong>{currentSymbol}</strong>
-      {longRank ? <p className="profit">目前多方大單買入第 {longRankNumber} 名，近 {data?.windowMinutes ?? 5} 分鐘淨買 {lots(Math.max(0, longRank.recentNetBuyLots))}。</p>
-        : shortRank ? <p className="loss">目前空方大單賣出第 {shortRankNumber} 名，近 {data?.windowMinutes ?? 5} 分鐘淨賣 {lots(Math.max(0, shortRank.recentNetSellLots ?? -shortRank.recentNetBuyLots))}。</p>
+      {longRank ? <p className="profit">目前多方開盤累計大單買入第 {longRankNumber} 名，累計淨買 {lots(Math.max(0, longRank.sessionNetBuyLots ?? longRank.recentNetBuyLots))}。</p>
+        : shortRank ? <p className="loss">目前空方開盤累計大單賣出第 {shortRankNumber} 名，累計淨賣 {lots(Math.max(0, shortRank.sessionNetSellLots ?? shortRank.recentNetSellLots ?? -shortRank.recentNetBuyLots))}。</p>
           : <p>目前不在大單動能 Top{rankingLimit}；代表不是當下前 10 強的連續大單方向標的。</p>}
     </article>}
     {data?.notice && <div className="data-anomaly-banner"><ShieldCheck /><div><strong>大單資料狀態</strong><span>{data.notice}</span></div></div>}
     <div className="limit-up-large-order-grid">
       <LargeOrderRankingTable
-        title={`多方大單買入 Top${rankingLimit}`}
-        subtitle={`最近 ${data?.windowMinutes ?? 5} 分鐘連續主動買盤排名。`}
+        title={`多方開盤累計大單買入 Top${rankingLimit}`}
+        subtitle="從 09:00 開盤累計大單淨買排名；未達正式訊號會標示觀察或抵銷。"
         direction="long"
         items={longAlerts}
         candidateSymbols={candidateSymbols}
         onSelectStock={onSelectStock}
       />
       <LargeOrderRankingTable
-        title={`空方大單賣出 Top${rankingLimit}`}
-        subtitle={`最近 ${data?.windowMinutes ?? 5} 分鐘連續主動賣盤排名。`}
+        title={`空方開盤累計大單賣出 Top${rankingLimit}`}
+        subtitle="從 09:00 開盤累計大單淨賣排名；未達正式訊號會標示觀察或抵銷。"
         direction="short"
         items={shortAlerts}
         candidateSymbols={candidateSymbols}

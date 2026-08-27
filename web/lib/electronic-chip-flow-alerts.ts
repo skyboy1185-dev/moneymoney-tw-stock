@@ -37,6 +37,14 @@ export interface ElectronicChipFlowAlert {
   recentGrossLargeLots?: number;
   effectiveNetThresholdLots?: number;
   largeOrderOffsetting?: boolean;
+  rankingBasis?: "recent" | "session";
+  rankingFillReason?: "net" | "gross";
+  sessionNetBuyLots?: number;
+  sessionNetSellLots?: number;
+  sessionLargeBuyLots?: number;
+  sessionLargeSellLots?: number;
+  sessionBuySellRatio?: number;
+  sessionSellBuyRatio?: number;
   updatedAt: string;
   lastScannedAt?: string | null;
   lastTradeAt?: string | null;

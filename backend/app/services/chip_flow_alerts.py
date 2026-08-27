@@ -704,40 +704,89 @@ def analyze_large_order_ranking(
     direction: str,
     as_of: datetime | None = None,
 ) -> dict[str, object] | None:
-    """Rank current large-order pressure even before it becomes a strict alert."""
-    if len(snapshots) < 3:
+    """Rank session-cumulative large-order pressure from the opening bell."""
+    if not snapshots:
         return None
     ordered = sorted(snapshots, key=lambda item: _aware(item.snapshot_time))
     latest_time = _aware(ordered[-1].snapshot_time)
     if as_of is not None and _aware(as_of) - latest_time > timedelta(minutes=rules.max_stale_minutes):
         return None
     series = _metrics_series(ordered, rules)
-    if not series:
-        return None
-    latest = series[-1]
-    previous = series[-2] if len(series) > 1 else latest
     short_side = direction == "short"
-    force_lots = (
-        float(latest["recentNetSellLots"])
-        if short_side else max(0.0, float(latest["recentNetBuyLots"]))
-    )
-    if force_lots <= 0:
+    latest_snapshot = ordered[-1]
+    previous_snapshot = ordered[-2] if len(ordered) > 1 else latest_snapshot
+    session_buy_lots = round(latest_snapshot.large_buy_shares / 1_000, 2)
+    session_sell_lots = round(latest_snapshot.large_sell_shares / 1_000, 2)
+    session_net_lots = round(latest_snapshot.large_net_shares / 1_000, 2)
+    session_net_buy_lots = max(0.0, session_net_lots)
+    session_net_sell_lots = max(0.0, -session_net_lots)
+    session_side_net_lots = session_net_sell_lots if short_side else session_net_buy_lots
+    session_side_gross_lots = session_sell_lots if short_side else session_buy_lots
+    if session_side_net_lots <= 0 and session_side_gross_lots <= 0:
         return None
-    gross_side_lots = (
-        float(latest["recentSellLots"])
-        if short_side else float(latest["recentBuyLots"])
+    previous_session_net_lots = previous_snapshot.large_net_shares / 1_000
+    previous_side_net_lots = (
+        max(0.0, -previous_session_net_lots)
+        if short_side else max(0.0, previous_session_net_lots)
+    )
+    session_gross_lots = session_buy_lots + session_sell_lots
+    session_offsetting = (
+        session_buy_lots > 0
+        and session_sell_lots > 0
+        and session_gross_lots >= rules.min_recent_net_lots * 2
+        and abs(session_net_lots) / session_gross_lots <= 0.2
+    )
+    session_buy_sell_ratio = (
+        session_buy_lots / session_sell_lots
+        if session_sell_lots > 0
+        else 99.0 if session_buy_lots > 0 else 0.0
+    )
+    session_sell_buy_ratio = (
+        session_sell_lots / session_buy_lots
+        if session_buy_lots > 0
+        else 99.0 if session_sell_lots > 0 else 0.0
     )
 
     qualifies_field = "shortQualifies" if short_side else "qualifies"
-    force_field = "recentNetSellLots" if short_side else "recentNetBuyLots"
     step_field = "negativeSteps" if short_side else "positiveSteps"
     ratio_field = "sellBuyRatio" if short_side else "buySellRatio"
+    latest = series[-1] if series else {
+        "snapshotTime": latest_time,
+        "updatedAt": _aware(latest_snapshot.updated_at),
+        "largeNetLots": session_net_lots,
+        "dayLargeBuyLots": session_buy_lots,
+        "dayLargeSellLots": session_sell_lots,
+        "daySmallBuyLots": round(latest_snapshot.small_buy_shares / 1_000, 2),
+        "daySmallSellLots": round(latest_snapshot.small_sell_shares / 1_000, 2),
+        "recentNetBuyLots": session_net_lots,
+        "recentNetSellLots": session_net_sell_lots,
+        "recentSmallNetBuyLots": round(latest_snapshot.small_net_shares / 1_000, 2),
+        "combinedNetBuyLots": round((latest_snapshot.large_net_shares + latest_snapshot.small_net_shares) / 1_000, 2),
+        "recentBuyLots": session_buy_lots,
+        "recentSellLots": session_sell_lots,
+        "recentSmallBuyLots": round(latest_snapshot.small_buy_shares / 1_000, 2),
+        "recentSmallSellLots": round(latest_snapshot.small_sell_shares / 1_000, 2),
+        "buySellRatio": round(session_buy_sell_ratio, 2),
+        "sellBuyRatio": round(session_sell_buy_ratio, 2),
+        "positiveSteps": 0,
+        "negativeSteps": 0,
+        "smallPositiveSteps": 0,
+        "recentGrossLargeLots": session_gross_lots,
+        "effectiveNetThresholdLots": rules.min_recent_net_lots,
+        "largeOrderOffsetting": session_offsetting,
+        "lastLargeOrderAt": latest_time,
+        "simultaneousIncrease": False,
+        "qualifies": False,
+        "shortQualifies": False,
+    }
+    previous = series[-2] if len(series) > 1 else latest
     current_qualifies = bool(latest[qualifies_field])
     qualifying = [item for item in series if bool(item[qualifies_field])]
-    force_change = round(force_lots - max(0.0, float(previous[force_field])), 2)
+    force_change = round(session_side_net_lots - previous_side_net_lots, 2)
     steps = int(latest[step_field])
     ratio = float(latest[ratio_field])
-    offsetting = bool(latest["largeOrderOffsetting"])
+    session_ratio = session_sell_buy_ratio if short_side else session_buy_sell_ratio
+    offsetting = bool(latest["largeOrderOffsetting"]) or session_offsetting
     reinforced = current_qualifies and force_change >= rules.min_momentum_change_lots
     simultaneous = (
         float(latest["recentNetBuyLots"]) < 0 and float(latest["recentSmallNetBuyLots"]) < 0
@@ -750,6 +799,10 @@ def analyze_large_order_ranking(
         trend, trend_label, alert_level = "strengthening", ("持續加空" if short_side else "持續轉強"), ("critical" if short_side else "positive")
     elif current_qualifies:
         trend, trend_label, alert_level = "sustained", ("空方達標" if short_side else "正式大單訊號"), ("critical" if short_side else "positive")
+    elif session_side_net_lots > 0:
+        trend, trend_label, alert_level = "sustained", ("開盤累計賣壓強" if short_side else "開盤累計買盤強"), "info"
+    elif session_offsetting:
+        trend, trend_label, alert_level = "weakening", ("賣買抵銷" if short_side else "買賣抵銷"), "warning"
     elif force_change >= rules.min_momentum_change_lots:
         trend, trend_label, alert_level = "starting", ("賣壓觀察" if short_side else "買盤觀察"), "info"
     else:
@@ -757,14 +810,17 @@ def analyze_large_order_ranking(
 
     side_text = "賣" if short_side else "買"
     message = (
-        f"排名觀察：近 {rules.window_minutes} 分鐘大單{side_text} {gross_side_lots:g} 張、"
-        f"{'淨賣' if short_side else '淨買'} {force_lots:g} 張、"
-        f"{'賣買比' if short_side else '買賣比'} {ratio:g}x、連續 {steps} 段。"
+        f"開盤累計排名：大單{side_text} {session_side_gross_lots:g} 張、"
+        f"{'淨賣' if short_side else '淨買'} {session_side_net_lots:g} 張、"
+        f"{'賣買比' if short_side else '買賣比'} {session_ratio:g}x；"
+        f"近 {rules.window_minutes} 分鐘連續 {steps} 段。"
     )
     if current_qualifies:
         message += " 已達正式大單訊號條件。"
+    elif session_side_net_lots <= 0 and session_side_gross_lots > 0:
+        message += " 累計總量大但淨額不足，列為抵銷觀察。"
     else:
-        message += " 尚未達正式門檻，先列入Top10觀察。"
+        message += " 尚未達正式門檻，先列入開盤累計Top10觀察。"
 
     alert = _public_alert(stock, latest)
     alert.update({
@@ -772,6 +828,14 @@ def analyze_large_order_ranking(
         "recentNetSellLots": latest["recentNetSellLots"],
         "sellBuyRatio": latest["sellBuyRatio"],
         "negativeSteps": latest["negativeSteps"],
+        "rankingBasis": "session",
+        "rankingFillReason": "net" if session_side_net_lots > 0 else "gross",
+        "sessionNetBuyLots": round(session_net_buy_lots, 2),
+        "sessionNetSellLots": round(session_net_sell_lots, 2),
+        "sessionLargeBuyLots": session_buy_lots,
+        "sessionLargeSellLots": session_sell_lots,
+        "sessionBuySellRatio": round(session_buy_sell_ratio, 2),
+        "sessionSellBuyRatio": round(session_sell_buy_ratio, 2),
         "occurrenceCount": len(qualifying),
         "firstDetectedAt": (
             cast(datetime, qualifying[0]["snapshotTime"]).isoformat()
@@ -784,11 +848,12 @@ def analyze_large_order_ranking(
         ),
         "peakRecentNetBuyLots": (
             round(-max(float(item["recentNetSellLots"]) for item in series), 2)
-            if short_side else round(max(float(item["recentNetBuyLots"]) for item in series), 2)
+            if short_side and series else round(max(float(item["recentNetBuyLots"]) for item in series), 2)
+            if series else round(-session_net_sell_lots if short_side else session_net_buy_lots, 2)
         ),
         "momentumChangeLots": round(-force_change if short_side else force_change, 2),
         "momentumChangePercent": (
-            round(force_change / max(0.01, abs(float(previous[force_field]))) * 100, 1)
+            round(force_change / max(0.01, abs(previous_side_net_lots)) * 100, 1)
             if previous is not latest else 0.0
         ),
         "trend": trend,
@@ -948,6 +1013,32 @@ def _alert_float(alert: dict[str, object], field: str, default: float = 0.0) -> 
 
 def _momentum_rank_score(alert: dict[str, object], direction: str) -> float:
     short_side = direction == "short"
+    if alert.get("rankingBasis") == "session":
+        force = _alert_float(alert, "sessionNetSellLots" if short_side else "sessionNetBuyLots")
+        gross = _alert_float(alert, "sessionLargeSellLots" if short_side else "sessionLargeBuyLots")
+        ratio = _alert_float(alert, "sessionSellBuyRatio" if short_side else "sessionBuySellRatio")
+        recent_force = (
+            _alert_float(alert, "recentNetSellLots")
+            if short_side else max(0.0, _alert_float(alert, "recentNetBuyLots"))
+        )
+        steps = _alert_float(alert, "negativeSteps" if short_side else "positiveSteps")
+        score = 0.0
+        if bool(alert.get("currentQualifies")):
+            score += 10_000
+        if alert.get("rankingFillReason") == "net":
+            score += 2_000
+        else:
+            score += 250
+        if bool(alert.get("largeOrderOffsetting")):
+            score -= 300
+        if bool(alert.get("reinforced")) or alert.get("trend") == "strengthening":
+            score += 600
+        score += force * 25
+        score += gross * 5
+        score += recent_force * 8
+        score += steps * 60
+        score += min(ratio, 99.0) * 6
+        return round(score, 2)
     force = (
         _alert_float(alert, "recentNetSellLots")
         if short_side else max(0.0, _alert_float(alert, "recentNetBuyLots"))
@@ -1632,18 +1723,19 @@ class ElectronicChipFlowAlertMonitor:
         if not market_open and self._auto_top_tracking_symbols:
             self._auto_top_tracking_symbols.clear()
         high_frequency_symbols = self._high_frequency_symbols(eligible_symbols, current)
+        rows_by_symbol = self.service.alert_snapshots_snapshot(
+            [stock.symbol for stock in stocks],
+            current.date(),
+        )
         if market_open:
-            rows_by_symbol = self.service.alert_snapshots_snapshot(
-                [stock.symbol for stock in stocks],
-                current.date(),
-            )
             market_pulse = build_market_order_pulse(
                 cast(dict[str, Sequence[ChipFlowAlertSnapshot]], rows_by_symbol),
                 self.rules,
                 as_of=current,
             )
-            for stock in stocks:
-                rows = rows_by_symbol.get(stock.symbol, [])
+        for stock in stocks:
+            rows = rows_by_symbol.get(stock.symbol, [])
+            if market_open:
                 alert = analyze_large_order_momentum(
                     stock,
                     cast(Sequence[ChipFlowAlertSnapshot], rows),
@@ -1656,15 +1748,6 @@ class ElectronicChipFlowAlertMonitor:
                 else:
                     if stock.symbol not in all_pinned_stocks:
                         self._hot_symbols.discard(stock.symbol)
-                long_ranking = analyze_large_order_ranking(
-                    stock,
-                    cast(Sequence[ChipFlowAlertSnapshot], rows),
-                    self.rules,
-                    direction="long",
-                    as_of=current,
-                )
-                if long_ranking is not None:
-                    long_rankings.append(long_ranking)
                 short_alert = analyze_large_order_short_momentum(
                     stock,
                     cast(Sequence[ChipFlowAlertSnapshot], rows),
@@ -1674,15 +1757,6 @@ class ElectronicChipFlowAlertMonitor:
                 if short_alert is not None:
                     short_alerts.append(short_alert)
                     self._hot_symbols.add(stock.symbol)
-                short_ranking = analyze_large_order_ranking(
-                    stock,
-                    cast(Sequence[ChipFlowAlertSnapshot], rows),
-                    self.rules,
-                    direction="short",
-                    as_of=current,
-                )
-                if short_ranking is not None:
-                    short_rankings.append(short_ranking)
                 if stock.symbol in client_pinned_stocks:
                     tracked = analyze_large_order_momentum(
                         stock,
@@ -1702,6 +1776,24 @@ class ElectronicChipFlowAlertMonitor:
                     )
                     if tracked_short is not None:
                         tracked_short_alerts.append(tracked_short)
+            long_ranking = analyze_large_order_ranking(
+                stock,
+                cast(Sequence[ChipFlowAlertSnapshot], rows),
+                self.rules,
+                direction="long",
+                as_of=current if market_open else None,
+            )
+            if long_ranking is not None:
+                long_rankings.append(long_ranking)
+            short_ranking = analyze_large_order_ranking(
+                stock,
+                cast(Sequence[ChipFlowAlertSnapshot], rows),
+                self.rules,
+                direction="short",
+                as_of=current if market_open else None,
+            )
+            if short_ranking is not None:
+                short_rankings.append(short_ranking)
         alerts = _rank_momentum_alerts(alerts, "long")
         short_alerts = _rank_momentum_alerts(short_alerts, "short")
         long_rankings = _rank_momentum_alerts(long_rankings, "long")
@@ -1728,9 +1820,17 @@ class ElectronicChipFlowAlertMonitor:
         top_short_alerts = short_alerts[:MOMENTUM_RANK_LIMIT]
         top_long_rankings = long_rankings[:MOMENTUM_RANK_LIMIT]
         top_short_rankings = short_rankings[:MOMENTUM_RANK_LIMIT]
+        auto_top_candidates = sorted(
+            (
+                item for item in (*top_long_rankings, *top_short_rankings)
+                if item.get("rankingFillReason") == "net"
+            ),
+            key=lambda item: _alert_float(item, "rankScore"),
+            reverse=True,
+        )[:MOMENTUM_RANK_LIMIT]
         next_auto_top_tracking_symbols = {
             str(item["symbol"])
-            for item in (*top_long_rankings, *top_short_rankings)
+            for item in auto_top_candidates
         }
         if market_open:
             self._auto_top_tracking_symbols = (

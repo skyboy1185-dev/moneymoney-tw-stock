@@ -783,6 +783,89 @@ def test_payload_keeps_long_top_ten_rankings_when_no_strict_alerts() -> None:
     assert set(monitor.high_frequency_symbols_snapshot(now)) == set(ranked_symbols)
 
 
+def test_payload_ranks_opening_cumulative_buying_when_recent_window_is_flat() -> None:
+    stocks = tuple(
+        ThemeStock(str(4050 + index), f"Flat {index}", "上市", "AI", ("AI",))
+        for index in range(12)
+    )
+
+    def rows(force_lots: int) -> list[SimpleNamespace]:
+        buy_shares = 20_000 + force_lots * 1_000
+        sell_shares = 10_000
+        return [
+            alert_snapshot(0, buy_shares=20_000, sell_shares=sell_shares),
+            alert_snapshot(2, buy_shares=buy_shares, sell_shares=sell_shares),
+            alert_snapshot(5, buy_shares=buy_shares, sell_shares=sell_shares),
+            alert_snapshot(10, buy_shares=buy_shares, sell_shares=sell_shares),
+        ]
+
+    class ServiceStub:
+        provider = SimpleNamespace(
+            capabilities=SimpleNamespace(available=True, source="test-stream"),
+        )
+
+        def alert_snapshots_snapshot(
+            self,
+            stock_ids: list[str],
+            trade_date: date,
+        ) -> dict[str, list[SimpleNamespace]]:
+            return {
+                stock_id: rows(20 + int(stock_id) - 4050)
+                for stock_id in stock_ids
+            }
+
+    monitor = ElectronicChipFlowAlertMonitor(service=ServiceStub())  # type: ignore[arg-type]
+    monitor._stocks = stocks
+    now = datetime(2026, 7, 29, 10, 10, tzinfo=TAIPEI)
+
+    payload = monitor.payload(now=now, client_id="browser-one")
+    ranked_symbols = [alert["symbol"] for alert in payload["longRankings"]]
+
+    assert len(ranked_symbols) == MOMENTUM_RANK_LIMIT
+    assert ranked_symbols == [str(symbol) for symbol in range(4061, 4051, -1)]
+    assert all(alert["rankingBasis"] == "session" for alert in payload["longRankings"])
+    assert payload["longRankings"][0]["sessionNetBuyLots"] > 0
+
+
+def test_payload_keeps_opening_cumulative_rankings_after_close() -> None:
+    stocks = tuple(
+        ThemeStock(str(4070 + index), f"After {index}", "上市", "AI", ("AI",))
+        for index in range(12)
+    )
+
+    def rows(force_lots: int) -> list[SimpleNamespace]:
+        return [
+            alert_snapshot(0, buy_shares=20_000, sell_shares=5_000),
+            alert_snapshot(5, buy_shares=20_000 + force_lots * 1_000, sell_shares=7_000),
+        ]
+
+    class ServiceStub:
+        provider = SimpleNamespace(
+            capabilities=SimpleNamespace(available=True, source="test-stream"),
+        )
+
+        def alert_snapshots_snapshot(
+            self,
+            stock_ids: list[str],
+            trade_date: date,
+        ) -> dict[str, list[SimpleNamespace]]:
+            return {
+                stock_id: rows(20 + int(stock_id) - 4070)
+                for stock_id in stock_ids
+            }
+
+    monitor = ElectronicChipFlowAlertMonitor(service=ServiceStub())  # type: ignore[arg-type]
+    monitor._stocks = stocks
+    now = datetime(2026, 7, 29, 14, 0, tzinfo=TAIPEI)
+
+    payload = monitor.payload(now=now, client_id="browser-one")
+
+    assert payload["marketOpen"] is False
+    assert payload["alerts"] == []
+    assert len(payload["longRankings"]) == MOMENTUM_RANK_LIMIT
+    assert payload["longRankings"][0]["symbol"] == "4081"
+
+
 def test_payload_ranks_short_momentum_top_ten() -> None:
     stocks = tuple(
         ThemeStock(str(4100 + index), f"Short {index}", "銝?", "AI", ("AI",))
