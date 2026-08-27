@@ -16,10 +16,14 @@ from app.services.popular_stock_universe import merge_momentum_stocks
 from app.services.day_trading_schedule import (
     MIN_DAY_TRADING_TURNOVER,
     MIN_DAY_TRADING_VOLUME_SHARES,
+    MIN_FALLBACK_CONFIDENCE_SCORE,
+    MIN_FALLBACK_CONFIRMATION_SCORE,
     MIN_OFFICIAL_CONFIDENCE_SCORE,
     MIN_OFFICIAL_CONFIRMATION_SCORE,
+    MIN_OFFICIAL_HEALTH_SCORE,
     StableRecommendationSelector,
     TradingScheduleConfig,
+    _ranking_key,
     intraday_liquidity_minimums,
     recommendation_qualification,
     trading_session_state,
@@ -480,6 +484,109 @@ def test_recommendation_requires_stronger_intraday_confirmation() -> None:
     assert f"盤中確認分數未達 {MIN_OFFICIAL_CONFIRMATION_SCORE}" in weak_confirmation_failures
     assert not unconfirmed_breakout_passed
     assert "5 分 K 突破結構尚未確認" in unconfirmed_breakout_failures
+
+
+def test_vwap_fallback_can_replace_missing_three_gate_for_official_entry() -> None:
+    now = datetime(2026, 7, 21, 9, 20, tzinfo=TAIPEI)
+    config = TradingScheduleConfig()
+    session = trading_session_state(config, now, quote_samples=10, infrastructure_ok=True)
+
+    passed, failures = recommendation_qualification(
+        _candidate(
+            "fallback-ok",
+            confidence=MIN_FALLBACK_CONFIDENCE_SCORE,
+            confirmationScore=MIN_FALLBACK_CONFIRMATION_SCORE,
+            healthScore=MIN_OFFICIAL_HEALTH_SCORE,
+            entryConfirmationMode="vwap_fallback",
+            threeGateReady=False,
+            threeGateDirection=None,
+            threeGateInvalidated=False,
+        ),
+        config,
+        session,
+        now,
+    )
+
+    assert passed
+    assert not failures
+
+
+def test_vwap_fallback_keeps_higher_confirmation_thresholds() -> None:
+    now = datetime(2026, 7, 21, 9, 20, tzinfo=TAIPEI)
+    config = TradingScheduleConfig()
+    session = trading_session_state(config, now, quote_samples=10, infrastructure_ok=True)
+
+    low_confidence_passed, low_confidence_failures = recommendation_qualification(
+        _candidate(
+            "fallback-low-confidence",
+            confidence=MIN_FALLBACK_CONFIDENCE_SCORE - 1,
+            confirmationScore=MIN_FALLBACK_CONFIRMATION_SCORE,
+            entryConfirmationMode="vwap_fallback",
+            threeGateDirection=None,
+        ),
+        config,
+        session,
+        now,
+    )
+    weak_confirmation_passed, weak_confirmation_failures = recommendation_qualification(
+        _candidate(
+            "fallback-weak-confirmation",
+            confidence=MIN_FALLBACK_CONFIDENCE_SCORE,
+            confirmationScore=MIN_FALLBACK_CONFIRMATION_SCORE - 1,
+            entryConfirmationMode="vwap_fallback",
+            threeGateDirection=None,
+        ),
+        config,
+        session,
+        now,
+    )
+
+    assert not low_confidence_passed
+    assert f"VWAP 替代模式信心分數未達 {MIN_FALLBACK_CONFIDENCE_SCORE}" in low_confidence_failures
+    assert not weak_confirmation_passed
+    assert f"VWAP 替代模式盤中確認分數未達 {MIN_FALLBACK_CONFIRMATION_SCORE}" in weak_confirmation_failures
+
+
+def test_three_gate_opposed_or_invalidated_blocks_official_entry() -> None:
+    now = datetime(2026, 7, 21, 9, 20, tzinfo=TAIPEI)
+    config = TradingScheduleConfig()
+    session = trading_session_state(config, now, quote_samples=10, infrastructure_ok=True)
+
+    opposed_passed, opposed_failures = recommendation_qualification(
+        _candidate("opposed", threeGateDirection="short", entryConfirmationMode="three_gate"),
+        config,
+        session,
+        now,
+    )
+    invalidated_passed, invalidated_failures = recommendation_qualification(
+        _candidate("invalidated", threeGateDirection="long", threeGateInvalidated=True),
+        config,
+        session,
+        now,
+    )
+
+    assert not opposed_passed
+    assert "三關價方向與訊號方向相反" in opposed_failures
+    assert not invalidated_passed
+    assert "三關價型態已失效" in invalidated_failures
+
+
+def test_three_gate_alignment_ranks_ahead_of_vwap_fallback_when_scores_match() -> None:
+    now = datetime(2026, 7, 21, 9, 20, tzinfo=TAIPEI)
+    aligned = _candidate(
+        "aligned",
+        generatedAt=now.isoformat(),
+        threeGateDirection="long",
+        entryConfirmationMode="three_gate",
+    )
+    fallback = _candidate(
+        "fallback",
+        generatedAt=now.isoformat(),
+        threeGateDirection=None,
+        entryConfirmationMode="vwap_fallback",
+    )
+
+    assert _ranking_key(aligned) > _ranking_key(fallback)
 
 
 def test_noon_qualification_blocks_new_long_and_short() -> None:

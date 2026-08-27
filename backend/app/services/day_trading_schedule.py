@@ -11,8 +11,12 @@ from .theme_stock_universe import is_target_theme_symbol
 
 TAIPEI = ZoneInfo("Asia/Taipei")
 MAX_LONG_CHASE_CHANGE_PERCENT = 5.0
-MIN_OFFICIAL_CONFIDENCE_SCORE = 80
-MIN_OFFICIAL_CONFIRMATION_SCORE = 45
+MIN_OFFICIAL_CONFIDENCE_SCORE = 70
+MIN_OFFICIAL_CONFIRMATION_SCORE = 35
+MIN_OFFICIAL_HEALTH_SCORE = 65
+MIN_FALLBACK_CONFIDENCE_SCORE = 75
+MIN_FALLBACK_CONFIRMATION_SCORE = 40
+THREE_GATE_ALIGNMENT_RANKING_BONUS = 6
 MIN_DAY_TRADING_VOLUME_SHARES = 1_000_000
 MIN_DAY_TRADING_TURNOVER = 100_000_000
 MIN_LIQUIDITY_PROGRESS = 0.10
@@ -251,9 +255,22 @@ def recommendation_qualification(
         failures.append("訊號已失效或尚未確認")
     if str(candidate.get("action", "")).startswith(("等待", "觀望", "禁止", "行情異常")):
         failures.append("尚未形成正式進場指令")
-    if float(candidate.get("confidenceScore", 0)) < MIN_OFFICIAL_CONFIDENCE_SCORE:
+    confidence_score = float(candidate.get("confidenceScore", 0))
+    confirmation_score = float(candidate.get("confirmationScore", 0))
+    entry_mode = str(candidate.get("entryConfirmationMode") or "three_gate")
+    three_gate_direction = str(candidate.get("threeGateDirection") or "")
+    if candidate.get("threeGateInvalidated"):
+        failures.append("三關價型態已失效")
+    if three_gate_direction in {"long", "short"} and three_gate_direction != direction:
+        failures.append("三關價方向與訊號方向相反")
+    if entry_mode == "vwap_fallback":
+        if confidence_score < MIN_FALLBACK_CONFIDENCE_SCORE:
+            failures.append(f"VWAP 替代模式信心分數未達 {MIN_FALLBACK_CONFIDENCE_SCORE}")
+        if confirmation_score < MIN_FALLBACK_CONFIRMATION_SCORE:
+            failures.append(f"VWAP 替代模式盤中確認分數未達 {MIN_FALLBACK_CONFIRMATION_SCORE}")
+    if confidence_score < MIN_OFFICIAL_CONFIDENCE_SCORE:
         failures.append(f"信心分數未達 {MIN_OFFICIAL_CONFIDENCE_SCORE}")
-    if float(candidate.get("confirmationScore", 0)) < MIN_OFFICIAL_CONFIRMATION_SCORE:
+    if confirmation_score < MIN_OFFICIAL_CONFIRMATION_SCORE:
         failures.append(f"盤中確認分數未達 {MIN_OFFICIAL_CONFIRMATION_SCORE}")
     five_minute_structure = str(candidate.get("fiveMinuteStructure", ""))
     five_minute_setup = str(candidate.get("fiveMinuteSetup", ""))
@@ -263,8 +280,8 @@ def recommendation_qualification(
         and ("未確認" in five_minute_structure or "尚未" in five_minute_structure)
     ):
         failures.append("5 分 K 突破結構尚未確認")
-    if float(candidate.get("healthScore", 0)) < 70:
-        failures.append("健康度未達 70")
+    if float(candidate.get("healthScore", 0)) < MIN_OFFICIAL_HEALTH_SCORE:
+        failures.append(f"健康度未達 {MIN_OFFICIAL_HEALTH_SCORE}")
     if float(candidate.get("riskRewardRatio", 0)) < config.minimum_risk_reward:
         failures.append(f"風險報酬比未達 1：{config.minimum_risk_reward:g}")
     required_volume, required_turnover = intraday_liquidity_minimums(config, current)
@@ -319,8 +336,19 @@ def _ranking_key(item: dict[str, Any]) -> tuple[float, ...]:
     distance = abs(float(item.get("price", 0)) - (
         float(item.get("entryMin", 0)) + float(item.get("entryMax", 0))
     ) / 2)
+    three_gate_aligned = (
+        str(item.get("threeGateDirection") or "") in {"long", "short"}
+        and item.get("threeGateDirection") == item.get("direction")
+    )
+    confirmation_mode_adjustment = (
+        THREE_GATE_ALIGNMENT_RANKING_BONUS
+        if three_gate_aligned
+        else -2
+        if item.get("entryConfirmationMode") == "vwap_fallback"
+        else 0
+    )
     return (
-        float(item.get("marketAlignment", 0)),
+        float(item.get("marketAlignment", 0)) + confirmation_mode_adjustment,
         float(item.get("confidenceScore", 0)),
         float(item.get("confirmationScore", 0)),
         float(item.get("healthScore", 0)),

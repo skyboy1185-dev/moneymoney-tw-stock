@@ -178,6 +178,12 @@ export function LiveSignalCard({
       <div><span>中關</span><strong>{number(signal.threeGate.middle)}</strong></div>
       <div><span>下關</span><strong>{number(signal.threeGate.lower)}</strong></div>
     </div>}
+    {!signal.threeGate && signal.entryConfirmationModeLabel && <div className="signal-three-gate">
+      <div><span>進場確認模式</span><strong>{signal.entryConfirmationModeLabel}</strong></div>
+      <div><span>VWAP</span><strong>{signal.vwapStatus}</strong></div>
+      <div><span>5 分 K</span><strong>{signal.threeGateFallback ? "已確認" : "等待確認"}</strong></div>
+      <div><span>三關價</span><strong>{signal.threeGateStatus ?? "資料載入中"}</strong></div>
+    </div>}
     <div className="signal-scores">
       <div><span>信心分數</span><strong>{signal.confidenceScore}</strong><i><b style={{ width: `${signal.confidenceScore}%` }} /></i></div>
       <div><span>健康度</span><strong>{signal.healthScore}</strong><i><b style={{ width: `${signal.healthScore}%` }} /></i></div>
@@ -247,7 +253,7 @@ export function DayTradingRankingTable({
       <td><strong>{number(item.price)}</strong><small className={item.changePercent >= 0 ? "text-up" : "text-down"}>{number(item.changePercent)}%</small></td>
       <td>{compact(item.volume)}<small>{compact(item.turnover)}</small></td>
       <td><span className={`direction-tag ${item.direction}`}>{item.directionLabel}</span></td>
-      <td><span className={`recommendation-tag ${item.isOfficialRecommendation ? "official" : "candidate"}`}>{item.recommendationLabel}</span><strong>{item.isOfficialRecommendation ? item.action : item.action === "放空資格待確認" ? item.action : `候選觀察：${item.action}`}</strong><small>{item.qualificationFailures?.slice(0, 2).join(" · ") || time(item.generatedAt)}</small></td>
+      <td><span className={`recommendation-tag ${item.isOfficialRecommendation ? "official" : "candidate"}`}>{item.recommendationLabel}</span><strong>{item.isOfficialRecommendation ? item.action : item.action === "放空資格待確認" ? item.action : `候選觀察：${item.action}`}</strong><small>{[item.entryConfirmationModeLabel, item.qualificationFailures?.slice(0, 2).join(" · ") || time(item.generatedAt)].filter(Boolean).join(" · ")}</small></td>
       <td><span>{item.confidenceScore}／{item.healthScore}</span><small>R:R 1:{number(item.riskRewardRatio, 1)}</small></td>
       <td>{item.vwapStatus}<small>{item.volumeStatus}</small></td>
       <td className={item.largeOrderContinuousBuy ? "text-up" : item.largeOrderContinuousSell ? "text-down" : ""}>

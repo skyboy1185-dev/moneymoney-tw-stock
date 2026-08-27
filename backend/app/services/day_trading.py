@@ -693,16 +693,60 @@ class MockDayTradingEngine:
                     if direction == "long"
                     else metrics["fiveMinuteShortSetup"]
                 )
-            confirmed = (
+            confirmation_score = round(metrics["confirmationScore"])
+            directional_active_force = active_force >= 15 if direction == "long" else active_force <= -15
+            directional_vwap_confirmed = (
+                above_vwap and (vwap_up or retest_confirmed or metrics["fiveMinuteBreakout"] or metrics["fiveMinuteBollingerRetest"])
+                if direction == "long"
+                else (not above_vwap) and ((not vwap_up) or retest_confirmed or metrics["fiveMinuteBreakdown"])
+            )
+            three_gate_aligned = (
+                three_gate_decision is not None
+                and three_gate_decision.direction == direction
+            )
+            three_gate_opposed = (
+                three_gate_decision is not None
+                and three_gate_decision.direction != direction
+            )
+            three_gate_invalidated = bool(opening_retest is not None and opening_retest.invalidated)
+            three_gate_confirmed = (
                 three_gate_decision is not None
                 and opening_retest is not None
                 and opening_retest.ready
                 and bool(metrics["qualified"])
                 and directional_setup
                 and confidence >= 75
+                and confirmation_score >= 40
+                and not three_gate_opposed
+                and not three_gate_invalidated
                 and not chase_blocked
             )
-            if three_gate_decision is None:
+            fallback_vwap_confirmed = (
+                three_gate_decision is None
+                and bool(metrics["qualified"])
+                and directional_setup
+                and directional_vwap_confirmed
+                and directional_active_force
+                and confidence >= 75
+                and confirmation_score >= 40
+                and not chase_blocked
+            )
+            confirmed = three_gate_confirmed or fallback_vwap_confirmed
+            entry_confirmation_mode = (
+                "three_gate"
+                if three_gate_decision is not None
+                else "vwap_fallback"
+                if fallback_vwap_confirmed
+                else "waiting_three_gate"
+            )
+            entry_confirmation_mode_label = (
+                "三關價模式"
+                if entry_confirmation_mode == "three_gate"
+                else "VWAP 替代模式"
+                if entry_confirmation_mode == "vwap_fallback"
+                else "等待三關價／替代確認"
+            )
+            if three_gate_decision is None and not fallback_vwap_confirmed:
                 action = "等待三關價載入"
             elif opening_retest is not None and opening_retest.required and not opening_retest.ready:
                 action = opening_retest.status
@@ -759,14 +803,25 @@ class MockDayTradingEngine:
             )
             exact_trade = quote.source == "TWSE MIS"
             official_strategy = (
-                three_gate_decision is not None
+                confirmed
                 and bool(metrics["qualified"])
                 and exact_trade
                 and quote.is_realtime
             )
+            data_notice = (
+                f"{LIVE_DATA_NOTICE}；三關價未載入，使用 VWAP＋5 分 K 替代確認。"
+                if official_strategy and entry_confirmation_mode == "vwap_fallback"
+                else LIVE_DATA_NOTICE
+                if official_strategy
+                else f"價格取自 {quote.source}；正在累積實際行情樣本，暫不產生正式訊號。"
+            )
             warnings: list[str] = []
             if three_gate_decision is None:
-                warnings.append("尚未取得前一交易日三關價，停止產生正式進場訊號")
+                warnings.append(
+                    "三關價未載入，已改用 VWAP＋5 分 K＋主動買賣力替代確認"
+                    if fallback_vwap_confirmed
+                    else "尚未取得前一交易日三關價，等待 VWAP＋5 分 K＋主動買賣力替代確認"
+                )
             if opening_retest is not None and opening_retest.invalidated:
                 warnings.append("開盤三關價型態今日已失效，禁止進場且不在同一根 K 反手")
             elif opening_retest is not None and opening_retest.required and not opening_retest.ready:
@@ -778,17 +833,17 @@ class MockDayTradingEngine:
             if chase_blocked:
                 warnings.append(str(timing["reason"]))
             if metrics["fiveMinuteReady"] and direction == "long" and not directional_setup:
-                warnings.append("尚未符合三關價回測與 5 分 K 均線向上的多方結構")
+                warnings.append("尚未符合三關價／VWAP 替代與 5 分 K 均線向上的多方結構")
             if metrics["fiveMinuteReady"] and direction == "short" and not directional_setup:
-                warnings.append("尚未符合三關價回測與 5 分 K 均線向下的空方結構")
+                warnings.append("尚未符合三關價／VWAP 替代與 5 分 K 均線向下的空方結構")
             if not volume_accelerating:
                 warnings.append("近期量能尚未明顯增加")
             reasons = [
-                opening_retest.status if opening_retest is not None else "等待三關價回測判讀",
+                opening_retest.status if opening_retest is not None else entry_confirmation_mode_label,
                 (
                     f"{three_gate_decision.status}（上 {three_gate.upper:,.2f}／中 {three_gate.middle:,.2f}／下 {three_gate.lower:,.2f}）"
                     if three_gate_decision is not None and three_gate is not None
-                    else "三關價資料載入中"
+                    else "三關價資料載入中，採 VWAP 替代確認"
                 ),
                 f"價格{'站上' if above_vwap else '跌破'}監控期間 VWAP {vwap:,.2f}",
                 f"1 分鐘趨勢 {trend_1m:+.2f}%",
@@ -848,7 +903,7 @@ class MockDayTradingEngine:
                 "entryTimingStatus": timing["reason"],
                 "stopDistancePercent": round(risk_distance / price * 100, 2),
                 "marketAlignment": market_alignment,
-                "confirmationScore": round(metrics["confirmationScore"]),
+                "confirmationScore": confirmation_score,
                 "volumeScore": round(metrics["volumeScore"]),
                 "activeForce": round(abs(active_force)),
                 "industryScore": 0,
@@ -858,11 +913,7 @@ class MockDayTradingEngine:
                 "quoteTimestamp": quote.quote_timestamp,
                 "dataSource": quote.source,
                 "dataMode": "official" if official_strategy else "warming_up",
-                "dataNotice": (
-                    LIVE_DATA_NOTICE
-                    if official_strategy
-                    else f"價格取自 {quote.source}；正在累積實際行情樣本，暫不產生正式訊號。"
-                ),
+                "dataNotice": data_notice,
                 "quoteIsRealtime": quote.is_realtime,
                 "bestBid": quote.best_bid,
                 "bestAsk": quote.best_ask,
@@ -890,6 +941,11 @@ class MockDayTradingEngine:
                     if metrics["fiveMinuteBollingerMiddle"] is not None else None
                 ),
                 "fiveMinuteSetup": metrics["fiveMinuteSetup"],
+                "entryConfirmationMode": entry_confirmation_mode,
+                "entryConfirmationModeLabel": entry_confirmation_mode_label,
+                "threeGateFallback": fallback_vwap_confirmed,
+                "threeGateAligned": three_gate_aligned,
+                "threeGateOpposed": three_gate_opposed,
                 "threeGateReady": three_gate is not None,
                 "threeGate": (
                     {
@@ -909,7 +965,7 @@ class MockDayTradingEngine:
                 "threeGateRetestRequired": opening_retest.required if opening_retest else False,
                 "threeGateRetestTouched": opening_retest.touched if opening_retest else False,
                 "threeGateRetestReady": opening_retest.ready if opening_retest else False,
-                "threeGateInvalidated": opening_retest.invalidated if opening_retest else False,
+                "threeGateInvalidated": three_gate_invalidated,
                 "threeGateEntryLevel": opening_retest.level if opening_retest else None,
                 "threeGateEntryStatus": opening_retest.status if opening_retest else "等待三關價回測判讀",
             })

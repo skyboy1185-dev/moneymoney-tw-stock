@@ -147,6 +147,11 @@ export interface DayTradingSignal {
   dataNotice?: string;
   quoteStatus?: string;
   quoteIsRealtime?: boolean;
+  entryConfirmationMode?: "three_gate" | "vwap_fallback" | "waiting_three_gate";
+  entryConfirmationModeLabel?: string;
+  threeGateFallback?: boolean;
+  threeGateAligned?: boolean;
+  threeGateOpposed?: boolean;
   threeGateReady?: boolean;
   threeGate?: {
     sourceDate: string;
