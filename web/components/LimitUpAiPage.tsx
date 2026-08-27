@@ -3,35 +3,41 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, AlertTriangle, Bell, BellRing, CheckCheck, CircleDollarSign, Flame, Gauge, RefreshCw, Settings, ShieldCheck, Target, Volume2, VolumeX, X, Zap } from "lucide-react";
 import type { ElectronicChipFlowAlert, ElectronicChipFlowAlertsResponse } from "@/lib/electronic-chip-flow-alerts";
+import { finiteNumber, normalizeLargeOrderResponse, normalizeLimitUpDashboard, normalizeLimitUpReplay, normalizeNotificationPayload } from "@/lib/limit-up-ai-normalize";
 import type { LimitUpAiNotification, LimitUpAiPerformanceBucket, LimitUpAiSettings, LimitUpCandidate, LimitUpDashboard, LimitUpPosition, LimitUpReplay, LimitUpTrade } from "@/lib/limit-up-ai-types";
 import { limitUpAiClient } from "@/services/limit-up-ai-client";
 
-function money(value: number): string {
-  return `NT$${value.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}`;
+function money(value: number | null | undefined): string {
+  return `NT$${finiteNumber(value).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}`;
 }
 
-function signedMoney(value: number): string {
-  return `${value > 0 ? "+" : value < 0 ? "-" : ""}${money(Math.abs(value))}`;
+function signedMoney(value: number | null | undefined): string {
+  const amount = finiteNumber(value);
+  return `${amount > 0 ? "+" : amount < 0 ? "-" : ""}${money(Math.abs(amount))}`;
 }
 
-function percent(value: number): string {
-  return `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
+function percent(value: number | null | undefined): string {
+  const amount = finiteNumber(value);
+  return `${amount > 0 ? "+" : ""}${amount.toFixed(2)}%`;
 }
 
-function price(value: number): string {
-  return value.toLocaleString("zh-TW", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function price(value: number | null | undefined): string {
+  return finiteNumber(value).toLocaleString("zh-TW", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function lots(value: number): string {
-  return `${value.toLocaleString("zh-TW", { maximumFractionDigits: 1 })} 張`;
+function lots(value: number | null | undefined): string {
+  return `${finiteNumber(value).toLocaleString("zh-TW", { maximumFractionDigits: 1 })} 張`;
 }
 
 function time(value: string): string {
-  return new Date(value).toLocaleTimeString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" });
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "時間待確認";
+  return parsed.toLocaleTimeString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" });
 }
 
-function pnlClass(value: number): string {
-  return value > 0 ? "profit" : value < 0 ? "loss" : "";
+function pnlClass(value: number | null | undefined): string {
+  const amount = finiteNumber(value);
+  return amount > 0 ? "profit" : amount < 0 ? "loss" : "";
 }
 
 function actionLabel(action: string): string {
@@ -130,10 +136,12 @@ function LargeOrderTop10Panel({
   onSelectStock: (symbol: string) => void;
 }) {
   const rankingLimit = data?.rankingLimit ?? 10;
-  const longRank = currentSymbol ? data?.alerts.find((item) => item.symbol === currentSymbol) : undefined;
-  const shortRank = currentSymbol ? data?.shortAlerts.find((item) => item.symbol === currentSymbol) : undefined;
-  const longRankNumber = longRank ? longRank.rank ?? (data?.alerts.indexOf(longRank) ?? -1) + 1 : null;
-  const shortRankNumber = shortRank ? shortRank.rank ?? (data?.shortAlerts.indexOf(shortRank) ?? -1) + 1 : null;
+  const longAlerts = Array.isArray(data?.alerts) ? data.alerts : [];
+  const shortAlerts = Array.isArray(data?.shortAlerts) ? data.shortAlerts : [];
+  const longRank = currentSymbol ? longAlerts.find((item) => item.symbol === currentSymbol) : undefined;
+  const shortRank = currentSymbol ? shortAlerts.find((item) => item.symbol === currentSymbol) : undefined;
+  const longRankNumber = longRank ? longRank.rank ?? longAlerts.indexOf(longRank) + 1 : null;
+  const shortRankNumber = shortRank ? shortRank.rank ?? shortAlerts.indexOf(shortRank) + 1 : null;
   return <section className="limit-up-large-order-ranking">
     <header className="rocket-panel limit-up-large-order-header">
       <div><span>這裡就是大單動能前10排名</span><h2>連續大單動能 Top{rankingLimit}</h2><p>同一套即時大單排名：多方看連續大單買入，空方看連續大單賣出；漲停 AI 會另外標示是否已通過完整條件。</p></div>
@@ -152,7 +160,7 @@ function LargeOrderTop10Panel({
         title={`多方大單買入 Top${rankingLimit}`}
         subtitle={`最近 ${data?.windowMinutes ?? 5} 分鐘連續主動買盤排名。`}
         direction="long"
-        items={data?.alerts ?? []}
+        items={longAlerts}
         candidateSymbols={candidateSymbols}
         onSelectStock={onSelectStock}
       />
@@ -160,7 +168,7 @@ function LargeOrderTop10Panel({
         title={`空方大單賣出 Top${rankingLimit}`}
         subtitle={`最近 ${data?.windowMinutes ?? 5} 分鐘連續主動賣盤排名。`}
         direction="short"
-        items={data?.shortAlerts ?? []}
+        items={shortAlerts}
         candidateSymbols={candidateSymbols}
         onSelectStock={onSelectStock}
       />
@@ -228,6 +236,19 @@ function SettingsPanel({ settings, onChange, onSave }: { settings: LimitUpAiSett
   </section>;
 }
 
+function LoadErrorState({ error, loading, onRetry }: { error: string; loading: boolean; onRetry: () => void }) {
+  return <div className="rocket-page limit-up-ai-page">
+    <header className="rocket-heading limit-up-heading">
+      <div><p>LIMIT-UP MOMENTUM DAYTRADE AI</p><h1><Zap size={27} />專抓漲停飆股AI</h1><span>頁面已載入，但後端資料暫時無法取得；不會再讓整個畫面白屏。</span></div>
+      <div className="rocket-heading-actions">
+        <button onClick={onRetry} disabled={loading}><RefreshCw className={loading ? "spin-icon" : ""} size={15} />重試載入</button>
+      </div>
+    </header>
+    <div className="error-banner"><AlertTriangle size={16} />{error || "專抓漲停飆股 AI 資料讀取失敗"}</div>
+    <div className="data-anomaly-banner"><ShieldCheck /><div><strong>目前狀態</strong><span>可能是 Railway 後端尚未部署完成、服務暖機中，或資料庫表尚未建立。前端已進入安全降級模式。</span></div></div>
+  </div>;
+}
+
 export function LimitUpAiPage({ symbol }: { symbol?: string }) {
   const [userId, setUserId] = useState("");
   const [data, setData] = useState<LimitUpDashboard | null>(null);
@@ -275,25 +296,32 @@ export function LimitUpAiPage({ symbol }: { symbol?: string }) {
         limitUpAiClient.replayToday(userId),
         limitUpAiClient.notifications(userId, messageFilter),
         fetch("/api/chip-flow/electronic-alerts?clientId=limit-up-ai-page", { cache: "no-store" })
-          .then((response) => response.json() as Promise<ElectronicChipFlowAlertsResponse>)
-          .catch(() => null),
+          .then(async (response) => {
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) return normalizeLargeOrderResponse({ ...payload, status: "disconnected" });
+            return normalizeLargeOrderResponse(payload);
+          })
+          .catch(() => normalizeLargeOrderResponse({ status: "disconnected", error: "大單資料暫時無法取得。" })),
       ]);
-      setData(dashboard);
-      if (largeOrderPayload) setLargeOrderData(largeOrderPayload);
-      setReplay(replayToday);
-      setSettingsDraft((current) => current ?? dashboard.settings);
-      setMessages(notificationPayload.items);
-      const newestId = Math.max(0, ...notificationPayload.items.map((item) => item.id));
+      const safeDashboard = normalizeLimitUpDashboard(dashboard);
+      const safeReplay = normalizeLimitUpReplay(replayToday);
+      const safeNotifications = normalizeNotificationPayload(notificationPayload);
+      setData(safeDashboard);
+      setLargeOrderData(largeOrderPayload);
+      setReplay(safeReplay);
+      setSettingsDraft((current) => current ?? safeDashboard.settings);
+      setMessages(safeNotifications.items);
+      const newestId = Math.max(0, ...safeNotifications.items.map((item) => item.id));
       if (!initializedMessages.current) {
         initializedMessages.current = true;
         lastNotificationId.current = newestId;
       } else {
-        const fresh = notificationPayload.items
+        const fresh = safeNotifications.items
           .filter((item) => item.id > lastNotificationId.current && !item.isRead && ["BUY", "SELL", "TAKE_PROFIT", "STOP_LOSS", "ACTIONABLE", "NEAR_LIMIT"].includes(item.type))
           .sort((a, b) => a.id - b.id);
         if (fresh.length) {
           setToasts((current) => [...fresh, ...current].slice(0, 4));
-          if (dashboard.settings.soundEnabled) {
+          if (safeDashboard.settings.soundEnabled) {
             try { playTone(); } catch { /* browser may block sound until first interaction */ }
           }
         }
@@ -350,7 +378,7 @@ export function LimitUpAiPage({ symbol }: { symbol?: string }) {
   };
 
   if (loading && !data) return <div className="table-loading"><span className="spinner" /><span>載入專抓漲停飆股 AI...</span></div>;
-  if (!data) return <div className="error-banner">{error || "專抓漲停飆股 AI 目前沒有資料"}</div>;
+  if (!data) return <LoadErrorState error={error || "專抓漲停飆股 AI 目前沒有資料"} loading={loading} onRetry={() => void load()} />;
 
   return <div className="rocket-page limit-up-ai-page">
     <div className="limit-up-toast-stack">{toasts.map((item) => <article key={item.id} className={`limit-up-toast ${item.type.toLowerCase()}`}>
