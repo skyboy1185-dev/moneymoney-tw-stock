@@ -110,4 +110,17 @@ describe("selectLargeOrderRankings", () => {
     expect(selectLargeOrderRankings(payload, "long").map((item) => item.symbol)).toEqual(["2330"]);
     expect(selectLargeOrderRankings(payload, "short").map((item) => item.symbol)).toEqual(["2303"]);
   });
+
+  it("adds display ranks when ranking rows do not include rank values", () => {
+    const payload = basePayload({
+      longRankings: [alert("2408"), alert("2330")],
+      shortRankings: [alert("2303")],
+    });
+
+    expect(selectLargeOrderRankings(payload, "long").map((item) => [item.symbol, item.rank])).toEqual([
+      ["2408", 1],
+      ["2330", 2],
+    ]);
+    expect(selectLargeOrderRankings(payload, "short").map((item) => [item.symbol, item.rank])).toEqual([["2303", 1]]);
+  });
 });

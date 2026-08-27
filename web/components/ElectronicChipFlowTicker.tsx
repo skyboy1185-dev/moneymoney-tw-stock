@@ -351,9 +351,10 @@ function Top10QuickRows({
   onSelectStock: (symbol: string) => void;
 }) {
   const rankingLimit = data?.rankingLimit ?? 10;
+  const statusLabel = data ? (data.marketOpen ? "盤中累計" : "非交易保留") : "載入中";
   const rows = [
-    { direction: "long" as const, title: `多方開盤累計大單買入 Top${rankingLimit}`, items: alerts.slice(0, rankingLimit) },
-    { direction: "short" as const, title: `空方開盤累計大單賣出 Top${rankingLimit}`, items: shortAlerts.slice(0, rankingLimit) },
+    { direction: "long" as const, title: `多方開盤累計大單買入 Top${rankingLimit}`, items: alerts.slice(0, rankingLimit), total: data?.longRankingCount ?? alerts.length },
+    { direction: "short" as const, title: `空方開盤累計大單賣出 Top${rankingLimit}`, items: shortAlerts.slice(0, rankingLimit), total: data?.shortRankingCount ?? shortAlerts.length },
   ];
   const forceLots = (alert: ElectronicChipFlowAlert, direction: "long" | "short") => direction === "short"
     ? alert.sessionNetSellLots ?? alert.recentNetSellLots ?? Math.max(0, -alert.recentNetBuyLots)
@@ -368,7 +369,7 @@ function Top10QuickRows({
       >
         {row.direction === "long" ? <Zap size={12} /> : <TrendingDown size={12} />}
         <strong>{row.title}</strong>
-        <small>{row.items.length ? `${row.items.length}/${rankingLimit}` : "累計中"}</small>
+        <small>{row.items.length ? `${row.items.length}/${rankingLimit}` : `${statusLabel}・0/${rankingLimit}`}</small>
       </button>
       <div className="chip-top10-list">
         {row.items.length ? row.items.map((alert, index) => <button
@@ -382,7 +383,7 @@ function Top10QuickRows({
           <b>{alert.symbol}</b>
           <span>{alert.name}</span>
           <em>{formatLots(forceLots(alert, row.direction))}張</em>
-        </button>) : <span className="chip-top10-empty">{row.direction === "long" ? "多方Top10累計中" : "空方Top10累計中"}</span>}
+        </button>) : <span className="chip-top10-empty">{row.direction === "long" ? "多方Top10尚無資料" : "空方Top10尚無資料"}・{statusLabel}・API {row.total}</span>}
       </div>
     </div>)}
   </div>;
@@ -617,10 +618,12 @@ function MomentumPanel({
   const isShort = direction === "short";
   const rankingLimit = data.rankingLimit ?? 10;
   const rankedAlerts = alerts
-    .filter((alert) => alert.rank && alert.rank <= rankingLimit)
+    .slice(0, rankingLimit)
+    .map((alert, index) => ({ ...alert, rank: alert.rank ?? index + 1 }))
     .sort((left, right) => (left.rank ?? 99) - (right.rank ?? 99));
+  const rankedSymbols = new Set(rankedAlerts.map((alert) => alert.symbol));
   const pinnedTrackingAlerts = alerts.filter((alert) => {
-    const ranked = Boolean(alert.rank && alert.rank <= rankingLimit);
+    const ranked = rankedSymbols.has(alert.symbol);
     return !ranked && (
       pinnedSymbols.has(alert.symbol)
       || extraPinnedSymbols.has(alert.symbol)
@@ -788,7 +791,7 @@ function MomentumPanel({
 
 export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: ElectronicChipFlowTickerProps) {
   const [data, setData] = useState<ElectronicChipFlowAlertsResponse | null>(null);
-  const [tickerAlerts, setTickerAlerts] = useState<ElectronicChipFlowAlert[]>([]);
+  const [, setTickerAlerts] = useState<ElectronicChipFlowAlert[]>([]);
   const [momentumToasts, setMomentumToasts] = useState<MomentumToast[]>([]);
   const [threeGateToasts, setThreeGateToasts] = useState<ThreeGateToast[]>([]);
   const tickerSignature = useRef("");
@@ -1074,14 +1077,16 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
     };
   }, []);
 
-  const alerts = tickerAlerts;
-  const shortAlerts = selectLargeOrderRankings(data, "short");
+  const longRankingAlerts = selectLargeOrderRankings(data, "long");
+  const shortRankingAlerts = selectLargeOrderRankings(data, "short");
+  const alerts = longRankingAlerts;
+  const shortAlerts = shortRankingAlerts;
   const disposedSymbols = new Set(data?.disposedExcludedSymbols ?? []);
   const pinnedSet = new Set(pinnedSymbols);
   const rankingLimit = data?.rankingLimit ?? 10;
   const autoTopSymbols = new Set([
-    ...selectLargeOrderRankings(data, "long").map((alert) => alert.symbol),
-    ...selectLargeOrderRankings(data, "short").map((alert) => alert.symbol),
+    ...longRankingAlerts.map((alert) => alert.symbol),
+    ...shortRankingAlerts.map((alert) => alert.symbol),
   ]);
   const extraPinnedTrackingSymbols = new Set(
     pinnedSymbols
@@ -1100,7 +1105,7 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
     return left.symbol.localeCompare(right.symbol);
   };
   const trackedPanelAlerts = data?.trackedAlerts ?? [];
-  const liveLongPanelAlerts = selectLargeOrderRankings(data, "long");
+  const liveLongPanelAlerts = longRankingAlerts;
   const liveLongPanelSymbols = new Set([
     ...liveLongPanelAlerts.map((alert) => alert.symbol),
     ...trackedPanelAlerts.map((alert) => alert.symbol),
@@ -1109,7 +1114,7 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
     new Map([...liveLongPanelAlerts, ...trackedPanelAlerts].map((alert) => [alert.symbol, alert])).values(),
   );
   const trackedPanelSymbols = new Set(trackedPanelAlerts.map((alert) => alert.symbol));
-  const alertPanelSymbols = new Set(selectLargeOrderRankings(data, "long").map((alert) => alert.symbol));
+  const alertPanelSymbols = new Set(longRankingAlerts.map((alert) => alert.symbol));
   const panelAlerts = [
     ...livePanelAlerts.map((alert) => [alert.symbol, alert] as const),
     ...pinnedAlertSnapshots
@@ -1117,7 +1122,7 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
       .map((alert) => [alert.symbol, alert] as const),
   ].map(([, alert]) => alert).sort(sortRankedThenPinned);
   const trackedShortPanelAlerts = data?.trackedShortAlerts ?? [];
-  const liveShortRankedAlerts = selectLargeOrderRankings(data, "short");
+  const liveShortRankedAlerts = shortRankingAlerts;
   const liveShortPanelSymbols = new Set([
     ...liveShortRankedAlerts.map((alert) => alert.symbol),
     ...trackedShortPanelAlerts.map((alert) => alert.symbol),
