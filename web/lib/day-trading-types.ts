@@ -72,6 +72,9 @@ export interface MarketRegime {
   mode?: "official" | "warming_up" | "demo";
   dataNotice?: string;
   disclaimer?: string;
+  degraded?: boolean;
+  fallbackReason?: string | null;
+  fallbackAt?: string | null;
 }
 
 export interface DayTradingStrategyRobot {

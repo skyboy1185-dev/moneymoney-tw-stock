@@ -40,8 +40,11 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
       status: response.status,
       headers: { "Content-Type": response.headers.get("content-type") ?? "application/json" },
     });
-  } catch {
-    return NextResponse.json({ error: "當沖機器人後端暫時無法連線" }, { status: 503 });
+  } catch (error) {
+    return NextResponse.json({
+      error: "當沖後端暫時無法連線，核心狀態會在恢復後自動更新。",
+      detail: error instanceof Error ? error.message : undefined,
+    }, { status: 503 });
   }
 }
 

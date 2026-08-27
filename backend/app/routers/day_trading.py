@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -71,6 +72,7 @@ from ..services.day_trading_schedule import (
 from ..services.line_messaging import line_notification_dispatcher
 
 router = APIRouter(prefix="/day-trading", tags=["day-trading"])
+logger = logging.getLogger(__name__)
 settings = get_settings()
 TAIPEI = ZoneInfo("Asia/Taipei")
 DAY_TRADING_COMMISSION_RATE = 0.001425
@@ -422,6 +424,189 @@ def _selection(
     }
 
 
+def _selection_fallback(
+    reason: Exception,
+    *,
+    now: datetime | None = None,
+    stream_healthy: bool = True,
+) -> dict[str, Any]:
+    current = now or datetime.now(UTC)
+    reason_text = str(reason) or reason.__class__.__name__
+    reason_text = reason_text[:240]
+    try:
+        config = TradingScheduleConfig(
+            timezone=settings.twse_timezone,
+            holidays=_holiday_dates(),
+        )
+    except Exception:
+        config = TradingScheduleConfig()
+    try:
+        quote_samples = day_trading_engine.sample_count
+    except Exception:
+        quote_samples = 0
+    session = trading_session_state(
+        config,
+        current,
+        data_status="source_error",
+        quote_samples=quote_samples,
+        infrastructure_ok=False,
+        recovering=True,
+    )
+    regime: dict[str, Any] = {
+        "direction": "data_anomaly",
+        "directionLabel": "資料降級",
+        "score": 0,
+        "environmentScore": 0,
+        "environmentLabel": "核心資料降級",
+        "preferredDirection": "暫停新進場",
+        "shortRestriction": "核心資料降級，暫停放空與新進場",
+        "risk": "高",
+        "longPermission": 0,
+        "shortPermission": 0,
+        "suitableStrategies": ["等待資料恢復"],
+        "forbiddenStrategies": ["新增做多", "新增放空", "追價進場"],
+        "reasons": [
+            "當沖核心選股流程暫時失敗，系統已切換降級模式",
+            "正式進場訊號已暫停，避免依賴不完整資料",
+            f"錯誤摘要：{reason_text}",
+        ],
+        "dataStatus": "source_error",
+        "dataDelaySeconds": 999,
+        "dataSource": "day-trading safe fallback",
+        "marketOpen": session["phase"] in {"warmup", "scanning", "long_only", "entry_closed", "closing"},
+        "session": "09:00～13:30",
+        "updatedAt": current.isoformat(),
+        "metrics": {
+            "weightedIndex": "—",
+            "otcIndex": "—",
+            "indexFutures": "—",
+            "vwap": "—",
+            "oneMinuteTrend": "—",
+            "fiveMinuteTrend": "—",
+            "fifteenMinuteTrend": "—",
+            "advancers": 0,
+            "decliners": 0,
+            "limitUp": 0,
+            "limitDown": 0,
+            "largeOrderForce": "—",
+            "smallOrderForce": "—",
+            "relativeVolume": 0,
+            "strongIndustries": [],
+            "weakIndustries": [],
+            "breadth": 0,
+            "volatility": "資料不足",
+        },
+        "mode": "demo",
+        "dataNotice": "當沖核心資料暫時降級；正式進場已暫停。",
+        "degraded": True,
+        "fallbackReason": reason_text,
+        "fallbackAt": current.isoformat(),
+    }
+    try:
+        strategy = strategy_context(regime, session)
+    except Exception:
+        strategy = {
+            "activeRobot": {
+                "id": "safe-fallback",
+                "name": "安全降級模式",
+                "direction": "both",
+                "directionLabel": "多空暫停",
+                "useWhen": "核心資料異常時",
+                "description": "保留頁面與監控狀態，但不產生正式進場訊號。",
+                "entryRule": "等待行情、選股與資料庫恢復正常。",
+                "avoidRule": "資料未恢復前不追價、不加碼、不放空。",
+                "confidence": 0,
+                "confidenceLabel": "暫停",
+                "status": "paused",
+                "statusLabel": "核心資料降級",
+                "reasons": regime["reasons"],
+            },
+            "strategyRobots": [],
+        }
+    infrastructure = {
+        "quoteSource": "error",
+        "redis": day_trading_cache.status,
+        "database": "error",
+        "stream": "healthy" if stream_healthy else "degraded",
+    }
+    summary = "當沖核心資料暫時降級，正式進場已暫停。"
+    return {
+        "recommended": [],
+        "candidates": [],
+        "totalRecommended": 0,
+        "maximumRecommendations": config.maximum_recommendations,
+        "session": session,
+        "infrastructure": infrastructure,
+        "summary": summary,
+        "regime": {**regime, **strategy},
+        "degraded": True,
+        "fallbackReason": reason_text,
+        "fallbackAt": current.isoformat(),
+    }
+
+
+def _safe_selection(
+    db: Session,
+    user_id: str,
+    *,
+    raw_signals: list[dict[str, Any]] | None = None,
+    now: datetime | None = None,
+    force_candidate_ranking: bool = False,
+    stream_healthy: bool = True,
+) -> dict[str, Any]:
+    try:
+        return _selection(
+            db,
+            user_id,
+            raw_signals=raw_signals,
+            now=now,
+            force_candidate_ranking=force_candidate_ranking,
+        )
+    except Exception as reason:
+        try:
+            db.rollback()
+        except Exception:
+            logger.exception("Failed to roll back after day-trading selection failure")
+        logger.exception("Day-trading selection failed; returning degraded fallback")
+        return _selection_fallback(reason, now=now, stream_healthy=stream_healthy)
+
+
+def _market_regime_payload(selection: dict[str, Any]) -> dict[str, Any]:
+    degraded = bool(selection.get("degraded") or selection["regime"].get("degraded"))
+    return {
+        **selection["regime"],
+        "marketOpen": selection["session"]["phase"] in {"warmup", "scanning", "long_only", "entry_closed", "closing"},
+        "automation": selection["session"],
+        "infrastructure": selection["infrastructure"],
+        "recommendationSummary": selection["summary"],
+        "recommendedCount": selection["totalRecommended"],
+        "maximumRecommendations": selection["maximumRecommendations"],
+        "supervisor": day_trading_automation.state,
+        "mode": selection["regime"].get("mode", "demo"),
+        "dataNotice": selection["regime"].get("dataNotice", DATA_NOTICE),
+        "disclaimer": DISCLAIMER,
+        "cacheMode": day_trading_cache.mode,
+        "degraded": degraded,
+        "fallbackReason": selection.get("fallbackReason") or selection["regime"].get("fallbackReason"),
+        "fallbackAt": selection.get("fallbackAt") or selection["regime"].get("fallbackAt"),
+    }
+
+
+def _signal_selection_payload(selection: dict[str, Any]) -> dict[str, Any]:
+    degraded = bool(selection.get("degraded") or selection["regime"].get("degraded"))
+    return {
+        "recommended": selection["recommended"],
+        "candidates": selection["candidates"],
+        "totalRecommended": selection["totalRecommended"],
+        "maximumRecommendations": selection["maximumRecommendations"],
+        "supervisor": day_trading_automation.state,
+        "summary": selection["summary"],
+        "degraded": degraded,
+        "fallbackReason": selection.get("fallbackReason") or selection["regime"].get("fallbackReason"),
+        "fallbackAt": selection.get("fallbackAt") or selection["regime"].get("fallbackAt"),
+    }
+
+
 def _position_payload(item: DayTradingPosition) -> dict[str, Any]:
     direction_factor = 1 if item.direction == "long" else -1
     gross = (item.current_price - item.entry_price) * item.quantity * 1000 * direction_factor
@@ -486,21 +671,8 @@ def get_market_regime(
     user_id: str = Depends(_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    selection = _selection(db, user_id)
-    payload = {
-        **selection["regime"],
-        "marketOpen": selection["session"]["phase"] in {"warmup", "scanning", "long_only", "entry_closed", "closing"},
-        "automation": selection["session"],
-        "infrastructure": selection["infrastructure"],
-        "recommendationSummary": selection["summary"],
-        "recommendedCount": selection["totalRecommended"],
-        "maximumRecommendations": selection["maximumRecommendations"],
-        "supervisor": day_trading_automation.state,
-        "mode": selection["regime"].get("mode", "demo"),
-        "dataNotice": selection["regime"].get("dataNotice", DATA_NOTICE),
-        "disclaimer": DISCLAIMER,
-        "cacheMode": day_trading_cache.mode,
-    }
+    selection = _safe_selection(db, user_id)
+    payload = _market_regime_payload(selection)
     day_trading_cache.put("market-regime", payload)
     return payload
 
@@ -510,7 +682,7 @@ def get_signals(
     user_id: str = Depends(_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    selection = _selection(db, user_id)
+    selection = _safe_selection(db, user_id)
     signals = selection["recommended"]
     day_trading_cache.put(f"signals:{user_id}", selection)
     return {
@@ -520,6 +692,9 @@ def get_signals(
         "mode": selection["regime"].get("mode", "demo"),
         "dataNotice": selection["regime"].get("dataNotice", DATA_NOTICE),
         "disclaimer": DISCLAIMER,
+        "degraded": bool(selection.get("degraded") or selection["regime"].get("degraded")),
+        "fallbackReason": selection.get("fallbackReason") or selection["regime"].get("fallbackReason"),
+        "fallbackAt": selection.get("fallbackAt") or selection["regime"].get("fallbackAt"),
         "updatedAt": datetime.now(UTC).isoformat(),
     }
 
@@ -663,7 +838,7 @@ def get_rankings(
     user_id: str = Depends(_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    selection = _selection(db, user_id, force_candidate_ranking=True)
+    selection = _safe_selection(db, user_id, force_candidate_ranking=True)
     rows = selection["candidates"]
     if direction != "all":
         rows = [item for item in rows if item["direction"] == direction]
@@ -671,6 +846,10 @@ def get_rankings(
         "items": [{**item, "rank": index + 1} for index, item in enumerate(rows)],
         "total": len(rows), "recommendedTotal": selection["totalRecommended"],
         "maximumRecommendations": selection["maximumRecommendations"],
+        "summary": selection["summary"],
+        "degraded": bool(selection.get("degraded") or selection["regime"].get("degraded")),
+        "fallbackReason": selection.get("fallbackReason") or selection["regime"].get("fallbackReason"),
+        "fallbackAt": selection.get("fallbackAt") or selection["regime"].get("fallbackAt"),
     }
 
 
@@ -1070,7 +1249,11 @@ async def _stream_events(request: Request, user_id: str):
     yield "retry: 2000\n\n"
     while not await request.is_disconnected():
         with SessionLocal() as db:
-            regime = day_trading_engine.market_regime()
+            try:
+                regime = day_trading_engine.market_regime()
+            except Exception as reason:
+                logger.exception("Day-trading market regime failed during stream loop")
+                regime = _selection_fallback(reason, stream_healthy=False)["regime"]
             scenario = day_trading_engine.consume_scenario()
             events: list[dict[str, Any]] = []
             positions = db.scalars(select(DayTradingPosition).where(
@@ -1115,29 +1298,14 @@ async def _stream_events(request: Request, user_id: str):
                         alert = _create_alert(db, user_id, position, event)
                         event["alert"] = _alert_payload(alert)
                         events.append(event)
-            raw_signals = day_trading_engine.signals()
-            selection = _selection(db, user_id, raw_signals=raw_signals)
-            signal_payload = {
-                "recommended": selection["recommended"],
-                "candidates": selection["candidates"],
-                "totalRecommended": selection["totalRecommended"],
-                "maximumRecommendations": selection["maximumRecommendations"],
-                "supervisor": day_trading_automation.state,
-                "summary": selection["summary"],
-            }
-            regime = {
-                **selection["regime"],
-                "marketOpen": selection["session"]["phase"] in {"warmup", "scanning", "long_only", "entry_closed", "closing"},
-                "automation": selection["session"],
-                "infrastructure": selection["infrastructure"],
-                "recommendationSummary": selection["summary"],
-                "recommendedCount": selection["totalRecommended"],
-                "maximumRecommendations": selection["maximumRecommendations"],
-                "mode": selection["regime"].get("mode", "demo"),
-                "dataNotice": selection["regime"].get("dataNotice", DATA_NOTICE),
-                "disclaimer": DISCLAIMER,
-                "cacheMode": day_trading_cache.mode,
-            }
+            try:
+                raw_signals = day_trading_engine.signals()
+            except Exception:
+                logger.exception("Day-trading raw signals failed during stream loop")
+                raw_signals = None
+            selection = _safe_selection(db, user_id, raw_signals=raw_signals)
+            signal_payload = _signal_selection_payload(selection)
+            regime = _market_regime_payload(selection)
             if scenario == "emergency_exit" and not positions:
                 events.append({
                     "type": "emergency_exit", "level": "emergency", "id": f"demo-emergency-{int(datetime.now(UTC).timestamp())}",
