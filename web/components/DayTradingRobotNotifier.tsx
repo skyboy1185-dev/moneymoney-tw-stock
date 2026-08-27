@@ -24,18 +24,6 @@ interface RobotToast {
   timestamp: string;
 }
 
-interface AdaptiveSignal {
-  id: number;
-  stockCode: string | null;
-  stockName: string | null;
-  signalType: string;
-  action: string;
-  price: number | null;
-  healthScore: number | null;
-  reasons: string[];
-  createdAt: string;
-}
-
 interface AdaptiveNotification {
   id: number;
   category: string;
@@ -71,7 +59,8 @@ const headers = { "x-user-id": AUTOMATION_USER_ID };
 const ROCKET_TRADE_TYPES = new Set(["BUY", "ADD", "REDUCE", "TAKE_PROFIT", "SELL", "STOP_LOSS"]);
 const SUPER_AI_TOAST_CATEGORIES = new Set(["BUY", "SHORT", "ADD", "REDUCE", "STOP_LOSS", "TAKE_PROFIT", "EXIT"]);
 
-function time(value: string): string {
+function time(value?: string | null): string {
+  if (!value) return "—";
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value || "—";
   return parsed.toLocaleTimeString("zh-TW", {
@@ -83,8 +72,32 @@ function time(value: string): string {
   });
 }
 
-function taipeiDate(value: string): string {
-  return new Date(value).toLocaleDateString("sv-SE", { timeZone: "Asia/Taipei" });
+function taipeiDate(value?: string | null): string {
+  if (!value) return "";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return parsed.toLocaleDateString("sv-SE", { timeZone: "Asia/Taipei" });
+}
+
+function fixed(value: unknown, digits = 2): string {
+  return typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "—";
+}
+
+function integer(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value) ? value.toLocaleString("zh-TW") : "—";
+}
+
+function okResponse(result: PromiseSettledResult<Response>): Response | null {
+  return result.status === "fulfilled" && result.value.ok ? result.value : null;
+}
+
+async function jsonOr<T>(response: Response | null, fallback: T): Promise<T> {
+  if (!response) return fallback;
+  try {
+    return await response.json() as T;
+  } catch {
+    return fallback;
+  }
 }
 
 function alertKind(alert: DayTradingAlert): RobotToastKind {
@@ -145,7 +158,7 @@ export function DayTradingRobotNotifier({ onOpen }: { onOpen?: (target: RobotTar
         const [
           regimeResponse, signalResponse, alertResponse, adaptiveNotificationResponse,
           rocketResponse, longOnlyResponse, focusedLongResponse,
-        ] = await Promise.all([
+        ] = await Promise.allSettled([
           fetch("/api/day-trading/market-regime", { cache: "no-store", headers }),
           fetch("/api/day-trading/signals/today", { cache: "no-store", headers }),
           fetch("/api/day-trading/alerts", { cache: "no-store", headers }),
@@ -155,16 +168,20 @@ export function DayTradingRobotNotifier({ onOpen }: { onOpen?: (target: RobotTar
           fetch("/api/long-term/events?mode=focused_long&afterId=0&limit=100", { cache: "no-store" }),
         ]);
         const today = taipeiDate(new Date().toISOString());
-        const regime = regimeResponse.ok ? await regimeResponse.json() as RegimeResponse : null;
-        const signals = signalResponse.ok
-          ? await signalResponse.json() as { tradingDate: string; items: DayTradingSignal[] }
-          : { tradingDate: today, items: [] };
-        const alerts = alertResponse.ok
-          ? await alertResponse.json() as { items: DayTradingAlert[] }
-          : { items: [] };
-        const adaptiveNotificationPayload = adaptiveNotificationResponse.ok
-          ? await adaptiveNotificationResponse.json() as { items: AdaptiveNotification[] }
-          : { items: [] };
+        const regime = await jsonOr<RegimeResponse | null>(okResponse(regimeResponse), null);
+        const signals = await jsonOr<{ tradingDate: string; items: DayTradingSignal[] }>(
+          okResponse(signalResponse),
+          { tradingDate: today, items: [] },
+        );
+        if (!Array.isArray(signals.items)) signals.items = [];
+        if (!signals.tradingDate) signals.tradingDate = today;
+        const alerts = await jsonOr<{ items: DayTradingAlert[] }>(okResponse(alertResponse), { items: [] });
+        if (!Array.isArray(alerts.items)) alerts.items = [];
+        const adaptiveNotificationPayload = await jsonOr<{ items: AdaptiveNotification[] }>(
+          okResponse(adaptiveNotificationResponse),
+          { items: [] },
+        );
+        if (!Array.isArray(adaptiveNotificationPayload.items)) adaptiveNotificationPayload.items = [];
         const adaptiveNotifications = {
           items: adaptiveNotificationPayload.items.map((item) => ({
             ...item,
@@ -173,22 +190,19 @@ export function DayTradingRobotNotifier({ onOpen }: { onOpen?: (target: RobotTar
             action: item.category,
             reasons: [
               item.strategy ? `策略 ${item.strategy}` : "",
-              item.aiScore == null ? "" : `AI ${item.aiScore.toFixed(0)}`,
-              item.riskReward == null ? "" : `R/R 1:${item.riskReward.toFixed(2)}`,
+              item.aiScore == null ? "" : `AI ${fixed(item.aiScore, 0)}`,
+              item.riskReward == null ? "" : `R/R 1:${fixed(item.riskReward, 2)}`,
             ].filter(Boolean),
             healthScore: item.aiScore,
             createdAt: item.timestamp,
           })),
         };
-        const rocketSignals = rocketResponse.ok
-          ? await rocketResponse.json() as { items: RocketNotification[] }
-          : { items: [] };
-        const longOnlySignals = longOnlyResponse.ok
-          ? await longOnlyResponse.json() as { items: LongTermTradeMessage[] }
-          : { items: [] };
-        const focusedLongSignals = focusedLongResponse.ok
-          ? await focusedLongResponse.json() as { items: LongTermTradeMessage[] }
-          : { items: [] };
+        const rocketSignals = await jsonOr<{ items: RocketNotification[] }>(okResponse(rocketResponse), { items: [] });
+        if (!Array.isArray(rocketSignals.items)) rocketSignals.items = [];
+        const longOnlySignals = await jsonOr<{ items: LongTermTradeMessage[] }>(okResponse(longOnlyResponse), { items: [] });
+        if (!Array.isArray(longOnlySignals.items)) longOnlySignals.items = [];
+        const focusedLongSignals = await jsonOr<{ items: LongTermTradeMessage[] }>(okResponse(focusedLongResponse), { items: [] });
+        if (!Array.isArray(focusedLongSignals.items)) focusedLongSignals.items = [];
         const session = regime?.supervisor?.session ?? regime?.automation;
         const supervisorRunning = regime?.supervisor?.status === "running";
         const activePhase = session
@@ -220,7 +234,7 @@ export function DayTradingRobotNotifier({ onOpen }: { onOpen?: (target: RobotTar
             target: "day-trading",
             title: signal.direction === "long" ? "AI 當沖機器人｜模擬買進" : "AI 當沖機器人｜模擬放空",
             stock: `${signal.symbol} ${signal.stockName}`,
-            message: `${signal.action}・進場 ${signal.entryMin.toFixed(2)}～${signal.entryMax.toFixed(2)}・停損 ${signal.stopLoss.toFixed(2)}`,
+            message: `${signal.action}・進場 ${fixed(signal.entryMin)}～${fixed(signal.entryMax)}・停損 ${fixed(signal.stopLoss)}`,
             reason: `信心 ${signal.confidenceScore}・RR ${signal.riskRewardRatio}`,
             timestamp: signal.recommendedAt ?? signal.generatedAt,
           });
@@ -238,7 +252,7 @@ export function DayTradingRobotNotifier({ onOpen }: { onOpen?: (target: RobotTar
                 : kind === "sell" ? "AI 當沖機器人｜模擬賣出"
                 : "AI 當沖機器人｜模擬減碼",
             stock: alert.message,
-            message: `${alert.action}・價格 ${alert.price.toFixed(2)}`,
+            message: `${alert.action}・價格 ${fixed(alert.price)}`,
             reason: alert.reason,
             timestamp: alert.createdAt,
           });
@@ -251,7 +265,7 @@ export function DayTradingRobotNotifier({ onOpen }: { onOpen?: (target: RobotTar
           ))
           .forEach((signal) => {
             const isEntry = ["BUY", "SHORT", "ADD"].includes(signal.category);
-            const price = signal.price == null ? "—" : signal.price.toFixed(2);
+            const price = fixed(signal.price);
             items.push({
               id: `adaptive-notification:${signal.id}`,
               kind: signal.category === "STOP_LOSS" ? "stop" : isEntry ? (signal.category === "SHORT" ? "short" : "buy") : "sell",
@@ -260,7 +274,7 @@ export function DayTradingRobotNotifier({ onOpen }: { onOpen?: (target: RobotTar
               stock: `${signal.stockCode ?? "—"} ${signal.stockName ?? ""}`.trim(),
               message: `${signal.action}・價格 ${price}`,
               reason: signal.reasons.slice(0, 2).join("；")
-                || (signal.healthScore == null ? "正式策略訊號" : `健康度 ${signal.healthScore.toFixed(1)}`),
+                || (signal.healthScore == null ? "正式策略訊號" : `健康度 ${fixed(signal.healthScore, 1)}`),
               timestamp: signal.createdAt,
             });
           });
@@ -300,7 +314,7 @@ export function DayTradingRobotNotifier({ onOpen }: { onOpen?: (target: RobotTar
               target: "long-term",
               title: `長線選股｜${replacement ? `換股${action}` : `模擬${action}`}（${modeLabel}）`,
               stock: `${signal.stockCode} ${signal.stockName}`,
-              message: `價格 ${signal.price.toFixed(2)}・${signal.quantity.toLocaleString("zh-TW")} 股`,
+              message: `價格 ${fixed(signal.price)}・${integer(signal.quantity)} 股`,
               reason: signal.reason,
               timestamp: signal.timestamp,
             });

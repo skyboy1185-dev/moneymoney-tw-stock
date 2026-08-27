@@ -99,7 +99,7 @@ function StrategyAllocationCell({
       {quantity > 0 ? displayLotsAndShares(quantity) : "未新增部位"}
     </b>
     <span>{allocation?.status ?? "此策略當時尚未啟用"}</span>
-    {allocatedCapital > 0 && <small>模擬占用 {allocatedCapital.toLocaleString("zh-TW")} 元</small>}
+    {allocatedCapital > 0 && <small>模擬占用 {displayNumber(allocatedCapital, 0)} 元</small>}
   </div>;
 }
 
@@ -422,7 +422,7 @@ export function DayTradingDashboard() {
     {regime.automation.phase === "long_only" && <div className="automation-banner phase-long-only"><Activity /><div><strong>12:00 後停止新進場</strong><span>多空都不再新增部位；既有持倉仍依三關價、5 分 K、量能、大單與停損停利持續管理。</span></div></div>}
     <section className={`regime-hero day-trading-regime ${regimeTone}`}>
       <div className="regime-light" />
-      <div><small>盤中市場與機器人狀態</small><strong>{regime.directionLabel} · {regime.automation.robotStatus}</strong><p>{regime.recommendationSummary || regime.automation.statusMessage}</p><small>資料來源：{regime.dataSource} · 更新：{new Date(regime.updatedAt).toLocaleTimeString("zh-TW", { hour12: false })}</small></div>
+      <div><small>盤中市場與機器人狀態</small><strong>{regime.directionLabel} · {regime.automation.robotStatus}</strong><p>{regime.recommendationSummary || regime.automation.statusMessage}</p><small>資料來源：{regime.dataSource} · 更新：{displayTime(regime.updatedAt)}</small></div>
       <div className="regime-stat"><span>多空分數</span><b>{regime.score} / 100</b></div>
       <div className="regime-stat"><span>當沖環境</span><b>{regime.environmentScore} · {regime.environmentLabel}</b></div>
       <div className="regime-stat"><span>推薦方向</span><b>{regime.preferredDirection}</b></div>
@@ -484,7 +484,7 @@ export function DayTradingDashboard() {
       </div>
       {candidates.length ? <div className="adaptive-table-wrap"><table><thead><tr><th>排名</th><th>股票</th><th>方向</th><th>信心／確認</th><th>健康／動能</th><th>大單</th><th>RR／流動性</th><th>狀態與刷掉原因</th></tr></thead><tbody>{candidates.slice(0, 20).map((candidate) => {
         const blocker = candidate.qualificationFailures?.[0] ?? "符合正式推薦條件";
-        return <tr key={candidate.id}><td>#{candidate.rank}</td><td><b>{candidate.symbol}</b><span>{candidate.stockName} · {candidate.market}</span></td><td><b className={candidate.direction === "long" ? "text-up" : "text-down"}>{candidate.direction === "long" ? "做多" : "放空"}</b><span>{candidate.action}</span></td><td><b>{displayNumber(candidate.confidenceScore, 0)} / {displayNumber(candidate.confirmationScore, 0)}</b><span>門檻 80 / 45</span></td><td><b>{displayNumber(candidate.healthScore, 0)}</b><span>{candidate.vwapStatus}</span></td><td><b>{displayNumber(candidate.largeOrderForce, 0)}</b><span>{candidate.largeOrderStatus ?? (candidate.largeOrderContinuousBuy || candidate.largeOrderContinuousSell ? "連續性通過" : "連續性不足")}</span></td><td><b>{displayNumber(candidate.riskRewardRatio)}</b><span>量 {candidate.volume.toLocaleString("zh-TW")}</span></td><td><span className={`candidate-status ${candidate.isOfficialRecommendation ? "confirmed" : "blocked"}`}>{candidate.isOfficialRecommendation ? "正式可進場" : "候選未通過"}</span><small>{blocker}</small></td></tr>;
+        return <tr key={candidate.id}><td>#{candidate.rank}</td><td><b>{candidate.symbol}</b><span>{candidate.stockName} · {candidate.market}</span></td><td><b className={candidate.direction === "long" ? "text-up" : "text-down"}>{candidate.direction === "long" ? "做多" : "放空"}</b><span>{candidate.action}</span></td><td><b>{displayNumber(candidate.confidenceScore, 0)} / {displayNumber(candidate.confirmationScore, 0)}</b><span>門檻 80 / 45</span></td><td><b>{displayNumber(candidate.healthScore, 0)}</b><span>{candidate.vwapStatus}</span></td><td><b>{displayNumber(candidate.largeOrderForce, 0)}</b><span>{candidate.largeOrderStatus ?? (candidate.largeOrderContinuousBuy || candidate.largeOrderContinuousSell ? "連續性通過" : "連續性不足")}</span></td><td><b>{displayNumber(candidate.riskRewardRatio)}</b><span>量 {displayNumber(candidate.volume, 0)}</span></td><td><span className={`candidate-status ${candidate.isOfficialRecommendation ? "confirmed" : "blocked"}`}>{candidate.isOfficialRecommendation ? "正式可進場" : "候選未通過"}</span><small>{blocker}</small></td></tr>;
       })}</tbody></table></div> : <div className="adaptive-empty">目前沒有候選排名；若非正式進場時段，系統只監控既有持倉。</div>}
     </section>
 
@@ -532,7 +532,7 @@ function CandidateReplaySection({
     </div>
     {items.length ? <div className="adaptive-table-wrap"><table><thead><tr><th>時間 / 當時排名</th><th>股票</th><th>方向</th><th>新版判斷</th><th>信心 / 確認</th><th>大單動能</th><th>健康 / RR</th><th>刷掉原因</th></tr></thead><tbody>{items.slice(0, 80).map((item) => {
       const failure = item.replayFailures?.[0] ?? "符合新版正式條件";
-      return <tr key={`${item.snapshotAt}-${item.id}`}><td><b>{displayTime(item.snapshotAt)}</b><span>#{item.rank}</span></td><td><b>{item.symbol}</b><span>{item.stockName} · {item.market}</span></td><td><b className={item.direction === "long" ? "text-up" : "text-down"}>{item.direction === "long" ? "多" : "空"}</b><span>{item.action}</span></td><td><span className={`candidate-status ${item.wouldBeOfficialRecommendation ? "confirmed" : "blocked"}`}>{item.wouldBeOfficialRecommendation ? "會列正式" : "不列正式"}</span><small>原本：{item.originalOfficialRecommendation ? "正式" : "候選"}</small></td><td><b>{displayNumber(item.confidenceScore, 0)} / {displayNumber(item.confirmationScore, 0)}</b><span>門檻 80 / 45</span></td><td><b>{displayNumber(item.largeOrderForce, 0)}</b><span>{item.largeOrderStatus ?? (item.largeOrderContinuousBuy || item.largeOrderContinuousSell ? "連續大單成立" : "連續大單不足")}</span></td><td><b>{displayNumber(item.healthScore, 0)} / {displayNumber(item.riskRewardRatio)}</b><span>量 {item.volume.toLocaleString("zh-TW")}</span></td><td><small>{failure}</small></td></tr>;
+      return <tr key={`${item.snapshotAt}-${item.id}`}><td><b>{displayTime(item.snapshotAt)}</b><span>#{item.rank}</span></td><td><b>{item.symbol}</b><span>{item.stockName} · {item.market}</span></td><td><b className={item.direction === "long" ? "text-up" : "text-down"}>{item.direction === "long" ? "多" : "空"}</b><span>{item.action}</span></td><td><span className={`candidate-status ${item.wouldBeOfficialRecommendation ? "confirmed" : "blocked"}`}>{item.wouldBeOfficialRecommendation ? "會列正式" : "不列正式"}</span><small>原本：{item.originalOfficialRecommendation ? "正式" : "候選"}</small></td><td><b>{displayNumber(item.confidenceScore, 0)} / {displayNumber(item.confirmationScore, 0)}</b><span>門檻 80 / 45</span></td><td><b>{displayNumber(item.largeOrderForce, 0)}</b><span>{item.largeOrderStatus ?? (item.largeOrderContinuousBuy || item.largeOrderContinuousSell ? "連續大單成立" : "連續大單不足")}</span></td><td><b>{displayNumber(item.healthScore, 0)} / {displayNumber(item.riskRewardRatio)}</b><span>量 {displayNumber(item.volume, 0)}</span></td><td><small>{failure}</small></td></tr>;
     })}</tbody></table></div> : <div className="adaptive-empty">目前還沒有候選快照；自動掃描啟動後，每輪會開始保存 Top 20，之後這裡就能回推今天哪些會正式。</div>}
   </section>;
 }

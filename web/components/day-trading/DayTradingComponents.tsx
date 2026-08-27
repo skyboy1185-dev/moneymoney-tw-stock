@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle, Bell, BellRing, CheckCircle2, CircleDollarSign, Clock3, Download,
-  Eye, Gauge, Play, ShieldAlert, Siren, TrendingDown,
+  Eye, Play, ShieldAlert, Siren, TrendingDown,
   TrendingUp, Volume2, VolumeX, Wifi, WifiOff, X,
 } from "lucide-react";
 import { filterSignals, isExpired, signalRemainingMs } from "@/lib/day-trading-engine";
@@ -12,24 +12,37 @@ import type {
   DayTradingTrade, EmergencyEvent, MarketRegime, StreamConnection,
 } from "@/lib/day-trading-types";
 
-const number = (value: number, digits = 2) => Number.isFinite(value)
+const number = (value: number | null | undefined, digits = 2) => typeof value === "number" && Number.isFinite(value)
   ? value.toLocaleString("zh-TW", { minimumFractionDigits: digits, maximumFractionDigits: digits })
   : "—";
-const compact = (value: number) => value >= 100_000_000
+const compact = (value: number | null | undefined) => typeof value === "number" && Number.isFinite(value) && value >= 100_000_000
   ? `${number(value / 100_000_000, 2)} 億`
-  : value >= 10_000 ? `${number(value / 10_000, 1)} 萬` : number(value, 0);
-const lotsAndShares = (value: number) => {
-  if (!Number.isFinite(value)) return "—";
+  : typeof value === "number" && Number.isFinite(value) && value >= 10_000 ? `${number(value / 10_000, 1)} 萬` : number(value, 0);
+const lotsAndShares = (value: number | null | undefined) => {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
   const lots = value.toLocaleString("zh-TW", { maximumFractionDigits: 3 });
   const shares = Math.round(value * 1_000).toLocaleString("zh-TW");
   return `${lots} 張（${shares} 股）`;
 };
-const time = (value?: string) => value
-  ? new Date(value).toLocaleTimeString("zh-TW", { hour12: false })
-  : "—";
-const taipeiDate = (value: string | Date) => new Intl.DateTimeFormat("en-CA", {
-  timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit",
-}).format(typeof value === "string" ? new Date(value) : value);
+const time = (value?: string | null) => {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "—";
+  return parsed.toLocaleTimeString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" });
+};
+const dateTime = (value?: string | null) => {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "—";
+  return parsed.toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" });
+};
+const taipeiDate = (value: string | Date) => {
+  const parsed = typeof value === "string" ? new Date(value) : value;
+  if (Number.isNaN(parsed.getTime())) return "";
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(parsed);
+};
 
 function downloadCsv(filename: string, lines: unknown[][]) {
   const csvCell = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`;
@@ -381,7 +394,6 @@ export function DayTradingPerformancePanel({
     ?? monthPositions.filter((item) => item.direction === "short").reduce((sum, item) => sum + item.unrealizedProfit, 0);
   const monthShortTotal = monthShortRealized + monthShortUnrealized;
   const reportTime = new Date().toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" });
-  const pnlClass = (value: number) => value >= 0 ? "text-up" : "text-down";
   const strategyKey = performance?.strategy?.key ?? "paper";
   const strategyLabel = performance?.strategy?.label ?? "模擬策略";
 
@@ -400,13 +412,13 @@ export function DayTradingPerformancePanel({
       ["代號", "名稱", "方向", "狀態", "進場時間", "進場點位", "出場／現價", "數量（張）", "盈虧", "報酬率", "進場原因", "出場原因"],
       ...todayPositions.map((item) => [
         item.symbol, item.stockName, item.direction === "long" ? "做多" : "放空", "持倉中",
-        new Date(item.openedAt).toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" }),
+        dateTime(item.openedAt),
         item.entryPrice, item.currentPrice, item.quantity, item.unrealizedProfit,
         `${item.returnPercentage}%`, item.latestAction, "",
       ]),
       ...todayTrades.map((item) => [
         item.symbol, item.stockName, item.direction === "long" ? "做多" : "放空", "已出場",
-        new Date(item.entryTime).toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" }),
+        dateTime(item.entryTime),
         item.entryPrice, item.exitPrice, item.quantity, item.profit,
         `${item.returnPercentage}%`, item.entryReason, item.exitReason,
       ]),
@@ -427,14 +439,14 @@ export function DayTradingPerformancePanel({
       ["代號", "名稱", "方向", "狀態", "進場時間", "進場點位", "出場時間", "出場／現價", "數量（張）", "手續費", "交易稅", "滑價", "盈虧", "報酬率", "進場原因", "出場原因", "策略"],
       ...monthPositions.map((item) => [
         item.symbol, item.stockName, item.direction === "long" ? "做多" : "放空", "持倉中",
-        new Date(item.openedAt).toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" }), item.entryPrice,
+        dateTime(item.openedAt), item.entryPrice,
         "", item.currentPrice, item.quantity, "", "", "", item.unrealizedProfit,
         `${item.returnPercentage}%`, item.latestAction, "", "",
       ]),
       ...trades.map((item) => [
         item.symbol, item.stockName, item.direction === "long" ? "做多" : "放空", "已出場",
-        new Date(item.entryTime).toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" }), item.entryPrice,
-        new Date(item.exitTime).toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" }), item.exitPrice,
+        dateTime(item.entryTime), item.entryPrice,
+        dateTime(item.exitTime), item.exitPrice,
         item.quantity, item.fee, item.tax, item.slippage, item.profit,
         `${item.returnPercentage}%`, item.entryReason, item.exitReason, item.strategyName,
       ]),
@@ -465,8 +477,8 @@ export function DayTradingPerformancePanel({
       </article>
     </div>
     <div className="adaptive-trade-columns">
-      <div><h3>今日模擬持倉</h3>{todayPositions.length ? <div className="adaptive-trade-table"><table><thead><tr><th>股票</th><th>方向</th><th>進場價格／時間</th><th>成交數量（張／股）</th><th>目前價格</th><th>未實現盈虧</th></tr></thead><tbody>{todayPositions.map((item) => <tr key={item.id}><td><b>{item.symbol}</b><span>{item.stockName}</span></td><td>{item.direction === "long" ? "做多（買進）" : "放空（先賣）"}</td><td><b>{item.direction === "long" ? "買進價" : "放空價"} {number(item.entryPrice)}</b><span>{new Date(item.openedAt).toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" })}</span></td><td><b>{lotsAndShares(item.quantity)}</b><span>1 張＝1,000 股</span></td><td><b>現價 {number(item.currentPrice)}</b></td><td className={item.unrealizedProfit >= 0 ? "profit" : "loss"}>{number(item.unrealizedProfit, 0)} 元<span>{number(item.returnPercentage)}%</span></td></tr>)}</tbody></table></div> : <p className="adaptive-trade-empty">{todayTrades.length ? `今日機器人已進場，並完成 ${todayTrades.length} 筆出場交易。` : "今天尚無模擬進場紀錄。"}</p>}</div>
-      <div><h3>今日已完成交易</h3>{todayTrades.length ? <div className="adaptive-trade-table"><table><thead><tr><th>股票</th><th>方向</th><th>買賣點（進場／出場）</th><th>成交數量（張／股）</th><th>淨盈虧</th><th>出場原因</th></tr></thead><tbody>{todayTrades.map((item) => <tr key={item.id}><td><b>{item.symbol}</b><span>{item.stockName}</span></td><td>{item.direction === "long" ? "做多（買進後賣出）" : "放空（先賣後回補）"}</td><td><b>進場 {number(item.entryPrice)} → 出場 {number(item.exitPrice)}</b><span>{new Date(item.exitTime).toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" })}</span></td><td><b>{lotsAndShares(item.quantity)}</b><span>1 張＝1,000 股</span></td><td className={item.profit >= 0 ? "profit" : "loss"}>{number(item.profit, 0)} 元<span>{number(item.returnPercentage)}%</span></td><td>{item.exitReason}</td></tr>)}</tbody></table></div> : <p className="adaptive-trade-empty">今天尚無已完成的模擬交易。</p>}</div>
+      <div><h3>今日模擬持倉</h3>{todayPositions.length ? <div className="adaptive-trade-table"><table><thead><tr><th>股票</th><th>方向</th><th>進場價格／時間</th><th>成交數量（張／股）</th><th>目前價格</th><th>未實現盈虧</th></tr></thead><tbody>{todayPositions.map((item) => <tr key={item.id}><td><b>{item.symbol}</b><span>{item.stockName}</span></td><td>{item.direction === "long" ? "做多（買進）" : "放空（先賣）"}</td><td><b>{item.direction === "long" ? "買進價" : "放空價"} {number(item.entryPrice)}</b><span>{dateTime(item.openedAt)}</span></td><td><b>{lotsAndShares(item.quantity)}</b><span>1 張＝1,000 股</span></td><td><b>現價 {number(item.currentPrice)}</b></td><td className={item.unrealizedProfit >= 0 ? "profit" : "loss"}>{number(item.unrealizedProfit, 0)} 元<span>{number(item.returnPercentage)}%</span></td></tr>)}</tbody></table></div> : <p className="adaptive-trade-empty">{todayTrades.length ? `今日機器人已進場，並完成 ${todayTrades.length} 筆出場交易。` : "今天尚無模擬進場紀錄。"}</p>}</div>
+      <div><h3>今日已完成交易</h3>{todayTrades.length ? <div className="adaptive-trade-table"><table><thead><tr><th>股票</th><th>方向</th><th>買賣點（進場／出場）</th><th>成交數量（張／股）</th><th>淨盈虧</th><th>出場原因</th></tr></thead><tbody>{todayTrades.map((item) => <tr key={item.id}><td><b>{item.symbol}</b><span>{item.stockName}</span></td><td>{item.direction === "long" ? "做多（買進後賣出）" : "放空（先賣後回補）"}</td><td><b>進場 {number(item.entryPrice)} → 出場 {number(item.exitPrice)}</b><span>{dateTime(item.exitTime)}</span></td><td><b>{lotsAndShares(item.quantity)}</b><span>1 張＝1,000 股</span></td><td className={item.profit >= 0 ? "profit" : "loss"}>{number(item.profit, 0)} 元<span>{number(item.returnPercentage)}%</span></td><td>{item.exitReason}</td></tr>)}</tbody></table></div> : <p className="adaptive-trade-empty">今天尚無已完成的模擬交易。</p>}</div>
     </div>
     <footer><AlertTriangle size={14} />原版策略每次正式訊號固定模擬 2 張，歷史績效完整保留；不代表真實成交，也不構成投資建議。</footer>
   </section>;
