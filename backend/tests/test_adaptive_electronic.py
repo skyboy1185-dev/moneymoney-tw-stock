@@ -515,13 +515,13 @@ def test_super_ai_intraday_bull_breakout_bonus_allows_realtime_breakout_candidat
         main_industry="Optical",
         sub_industry="光電",
         strategy_type="BREAKOUT",
-        total_score=Decimal("69.66"),
+        total_score=Decimal("72"),
         technical_score=Decimal("54"),
         chip_score=Decimal("0"),
         fundamental_score=Decimal("0"),
         industry_score=Decimal("3.66"),
         market_score=Decimal("6.67"),
-        health_score=Decimal("60.49"),
+        health_score=Decimal("65"),
         previous_health_score=None,
         current_price=Decimal("85.50"),
         entry_price_low=Decimal("83.50"),
@@ -535,7 +535,7 @@ def test_super_ai_intraday_bull_breakout_bonus_allows_realtime_breakout_candidat
         volume_status="量縮整理",
         industry_strength=Decimal("36.60"),
         false_breakout_risk=Decimal("0"),
-        candidate_status="waiting_confirmation",
+        candidate_status="can_enter",
         rank=1,
         score_breakdown_json="{}",
         selected_reasons="[]",
@@ -724,13 +724,15 @@ def super_ai_watch_signal(
     now: datetime,
     stock_code: str = "2330",
     signal_key: str = "watch-entry-window-test",
+    signal_type: str = "new_top5",
+    action: str = "WATCH",
 ) -> AdaptiveSignal:
     return AdaptiveSignal(
         signal_key=signal_key,
         stock_code=stock_code,
         stock_name="TSMC",
-        signal_type="new_top5",
-        action="WATCH",
+        signal_type=signal_type,
+        action=action,
         strategy_type="BREAKOUT",
         price=Decimal("100"),
         health_score=Decimal("88"),
@@ -740,7 +742,37 @@ def super_ai_watch_signal(
     )
 
 
-def test_super_ai_paper_trade_enters_before_noon_cutoff() -> None:
+def open_super_ai_trade(*, now: datetime, quantity: int = 1000) -> AdaptivePaperTrade:
+    return AdaptivePaperTrade(
+        stock_code="2330",
+        stock_name="TSMC",
+        strategy_type="BREAKOUT",
+        entry_signal_key=f"open-trade-{now.isoformat()}",
+        side="LONG",
+        trade_mode="PAPER",
+        quantity_shares=quantity,
+        entry_price=Decimal("100"),
+        entry_time=now,
+        entry_reason="test",
+        stop_loss_price=Decimal("98"),
+        target_price_1=Decimal("103"),
+        target_price_2=Decimal("106"),
+        last_price=Decimal("100"),
+        ai_score=Decimal("88"),
+        market_regime="BREAKOUT",
+        sector_status="AI",
+        initial_capital=Decimal("5000000"),
+        risk_amount=Decimal("2000"),
+        initial_r=Decimal("2"),
+        entry_reasons_json="[]",
+        exit_reasons_json="[]",
+        status="open",
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def test_super_ai_paper_trade_enters_confirmed_signal_before_noon_cutoff() -> None:
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -754,7 +786,7 @@ def test_super_ai_paper_trade_enters_before_noon_cutoff() -> None:
         stocks=[],
     )
     candidate = super_ai_candidate(trade_date=payload.market.trade_date, now=now)
-    signal = super_ai_watch_signal(now=now)
+    signal = super_ai_watch_signal(now=now, signal_type="entry_confirmed", action="BUY")
 
     with Session(engine) as db:
         db.add_all([candidate, signal])
@@ -766,6 +798,105 @@ def test_super_ai_paper_trade_enters_before_noon_cutoff() -> None:
         stored_signal = db.scalar(select(AdaptiveSignal).where(AdaptiveSignal.signal_key == signal.signal_key))
         assert stored_signal is not None
         assert stored_signal.signal_type == "entry_confirmed"
+
+
+def test_super_ai_observation_signal_does_not_enter_trade() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 8, 26, 10, 30, tzinfo=TAIPEI)
+    payload = AdaptiveScanPayload(
+        market=market(trade_date=date(2026, 8, 26), updated_at=now, market_open=True),
+        industries=[],
+        stocks=[],
+    )
+    candidate = super_ai_candidate(trade_date=payload.market.trade_date, now=now)
+    signal = super_ai_watch_signal(now=now, signal_type="new_top5", action="WATCH")
+
+    with Session(engine) as db:
+        db.add_all([candidate, signal])
+        db.commit()
+        update_adaptive_paper_trades(db, payload, [candidate], [signal], "BREAKOUT")
+        db.commit()
+
+        assert db.scalar(select(func.count(AdaptivePaperTrade.id))) == 0
+        stored_signal = db.scalar(select(AdaptiveSignal).where(AdaptiveSignal.signal_key == signal.signal_key))
+        assert stored_signal is not None
+        assert stored_signal.signal_type == "new_top5"
+
+
+def test_super_ai_open_trade_takes_partial_profit_at_tp1() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 8, 26, 10, 30, tzinfo=TAIPEI)
+    trade = open_super_ai_trade(now=now)
+
+    with Session(engine) as db:
+        db.add(trade)
+        db.commit()
+        signal_key = update_open_trade_from_market_price(
+            db,
+            trade_id=trade.id,
+            price=Decimal("103"),
+            at=now + timedelta(minutes=5),
+            regime="BREAKOUT",
+        )
+        db.commit()
+
+        assert signal_key is not None
+        open_trade = db.get(AdaptivePaperTrade, trade.id)
+        assert open_trade is not None
+        assert open_trade.status == "open"
+        assert open_trade.quantity_shares == 700
+        assert open_trade.stop_loss_price > Decimal("100")
+        assert db.scalar(select(func.count(AdaptivePaperTrade.id)).where(
+            AdaptivePaperTrade.status == "closed",
+            AdaptivePaperTrade.exit_reason == "TAKE_PROFIT_1_PARTIAL",
+        )) == 1
+        assert db.scalar(select(func.count(SuperAIDaytradeNotification.id))) == 1
+
+
+def test_super_ai_open_trade_uses_trailing_stop_after_tp1_partial() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 8, 26, 10, 30, tzinfo=TAIPEI)
+    trade = open_super_ai_trade(now=now)
+
+    with Session(engine) as db:
+        db.add(trade)
+        db.commit()
+        update_open_trade_from_market_price(
+            db,
+            trade_id=trade.id,
+            price=Decimal("103"),
+            at=now + timedelta(minutes=5),
+            regime="BREAKOUT",
+        )
+        update_open_trade_from_market_price(
+            db,
+            trade_id=trade.id,
+            price=Decimal("101.50"),
+            at=now + timedelta(minutes=10),
+            regime="BREAKOUT",
+        )
+        db.commit()
+
+        closed_trade = db.get(AdaptivePaperTrade, trade.id)
+        assert closed_trade is not None
+        assert closed_trade.status == "closed"
+        assert closed_trade.exit_reason == "TRAILING_STOP"
+        assert closed_trade.quantity_shares == 700
 
 
 def test_super_ai_paper_trade_blocks_after_noon_cutoff_for_naive_utc_payload() -> None:
@@ -784,7 +915,7 @@ def test_super_ai_paper_trade_blocks_after_noon_cutoff_for_naive_utc_payload() -
         stocks=[],
     )
     candidate = super_ai_candidate(trade_date=trade_date, now=early_watch)
-    signal = super_ai_watch_signal(now=early_watch)
+    signal = super_ai_watch_signal(now=early_watch, signal_type="entry_confirmed", action="BUY")
 
     with Session(engine) as db:
         db.add_all([candidate, signal])
@@ -795,7 +926,7 @@ def test_super_ai_paper_trade_blocks_after_noon_cutoff_for_naive_utc_payload() -
         assert db.scalar(select(func.count(AdaptivePaperTrade.id))) == 0
         stored_signal = db.scalar(select(AdaptiveSignal).where(AdaptiveSignal.signal_key == signal.signal_key))
         assert stored_signal is not None
-        assert stored_signal.signal_type == "new_top5"
+        assert stored_signal.signal_type == "entry_confirmed"
 
 
 def test_super_ai_blocked_entry_does_not_create_watch_notification() -> None:

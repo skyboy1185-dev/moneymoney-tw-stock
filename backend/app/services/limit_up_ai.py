@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -15,10 +16,16 @@ from .chip_flow_alerts import electronic_chip_flow_alert_monitor, enrich_day_tra
 from .chip_flow_repository import ChipFlowRepository
 from .day_trading import day_trading_engine
 from .day_trading_restrictions import day_trading_restrictions
+from .official_market_data import StockQuoteRequest, official_market_data_provider
+from .popular_stock_universe import OfficialPopularStockProvider
 
 
 TAIPEI = ZoneInfo("Asia/Taipei")
 SNAPSHOT_LIMIT = 20
+FULL_MARKET_SIGNAL_CACHE_SECONDS = 10
+POPULAR_UNIVERSE_CACHE_SECONDS = 90
+_FULL_MARKET_SIGNAL_CACHE: tuple[datetime, list[dict[str, Any]]] | None = None
+_POPULAR_UNIVERSE_CACHE: tuple[datetime, tuple[Any, ...]] | None = None
 
 
 def _num(value: Any, default: float = 0.0) -> float:
@@ -347,6 +354,149 @@ def _rank(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return ranked
 
 
+def _await_sync(coro):
+    return asyncio.run(coro)
+
+
+def _cached_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [dict(item) for item in rows]
+
+
+def _popular_universe(now: datetime) -> tuple[Any, ...]:
+    global _POPULAR_UNIVERSE_CACHE
+    if (
+        _POPULAR_UNIVERSE_CACHE is not None
+        and now - _POPULAR_UNIVERSE_CACHE[0] <= timedelta(seconds=POPULAR_UNIVERSE_CACHE_SECONDS)
+    ):
+        return _POPULAR_UNIVERSE_CACHE[1]
+    stocks = tuple(_await_sync(OfficialPopularStockProvider().fetch()))
+    _POPULAR_UNIVERSE_CACHE = (now, stocks)
+    return stocks
+
+
+def _quote_to_limit_up_signal(quote, market: str) -> dict[str, Any] | None:
+    price = float(quote.price)
+    previous_close = float(quote.previous_close)
+    if price <= 0 or previous_close <= 0:
+        return None
+    limit_price = _limit_up_price(previous_close)
+    limit_distance = (limit_price - price) / limit_price * 100 if limit_price else 99.0
+    turnover = price * int(quote.volume)
+    intraday_range = max(float(quote.high) - float(quote.low), price * 0.004)
+    range_position = _clamp((price - float(quote.low)) / intraday_range * 100, 0, 100)
+    volume_ratio_proxy = _clamp(turnover / 100_000_000, 0, 8)
+    near_limit = 0 <= limit_distance <= 4.0
+    strong_intraday = (
+        quote.change_percent >= 3
+        and range_position >= 65
+        and turnover >= 80_000_000
+    )
+    if not (near_limit or strong_intraday):
+        return None
+    vwap_proxy_ok = price >= float(quote.open) or range_position >= 55
+    large_order_force = _clamp(
+        quote.change_percent * 22
+        + volume_ratio_proxy * 28
+        + max(0.0, 4.0 - limit_distance) * 24
+        + (18 if range_position >= 75 else 0),
+        0,
+        360,
+    )
+    volume_score = _clamp(volume_ratio_proxy * 50, 0, 220)
+    confirmation_score = _clamp(
+        45
+        + quote.change_percent * 4
+        + volume_ratio_proxy * 6
+        + (10 if near_limit else 0)
+        + (8 if vwap_proxy_ok else 0),
+        0,
+        100,
+    )
+    return {
+        "id": f"{quote.symbol}-limit-up-market",
+        "symbol": quote.symbol,
+        "stockName": quote.name,
+        "market": market,
+        "price": price,
+        "previousClose": previous_close,
+        "limitDistancePercent": round(limit_distance, 2),
+        "open": float(quote.open),
+        "high": float(quote.high),
+        "low": float(quote.low),
+        "changePercent": float(quote.change_percent),
+        "volume": int(quote.volume),
+        "turnover": round(turnover),
+        "averageTurnover20d": max(turnover, 100_000_000 if turnover >= 100_000_000 else turnover),
+        "volumeRatio20d": round(volume_ratio_proxy, 2),
+        "volumeScore": volume_score,
+        "volumeStatus": "量能放大估算" if volume_ratio_proxy >= 1.8 else "量能待放大",
+        "confirmationScore": confirmation_score,
+        "industryScore": 70 if near_limit else 55,
+        "marketAlignment": 75 if quote.change_percent >= 3 else 60,
+        "rangePositionPercent": round(range_position, 2),
+        "vwapStatus": "站上VWAP估算" if vwap_proxy_ok else "VWAP估算偏弱",
+        "vwapDeviationPercent": 0.6 if vwap_proxy_ok else -0.4,
+        "fiveMinuteStructure": "高低點墊高估算" if range_position >= 60 else "分時結構待確認",
+        "fiveMinuteBreakout": bool(near_limit or range_position >= 78),
+        "fiveMinuteLongSetup": bool(range_position >= 60),
+        "fiveMinuteLongRetest": bool(vwap_proxy_ok and quote.change_percent >= 3),
+        "entryRetestConfirmed": bool(vwap_proxy_ok and range_position >= 65),
+        "threeGateCrossed": bool(near_limit or quote.change_percent >= 4),
+        "largeOrderForce": round(large_order_force, 2),
+        "largeOrderContinuousBuy": large_order_force >= 100,
+        "largeOrderDataAvailable": False,
+        "largeOrderStatus": "全市場量價估算，等待大單明細確認",
+        "spreadPercentage": (
+            (float(quote.best_ask) - float(quote.best_bid)) / price * 100
+            if quote.best_ask is not None and quote.best_bid is not None and price
+            else 0.6
+        ),
+        "quoteIsRealtime": bool(quote.is_realtime),
+        "bidPrices": list(quote.bid_prices),
+        "bidVolumes": list(quote.bid_volumes),
+        "askPrices": list(quote.ask_prices),
+        "askVolumes": list(quote.ask_volumes),
+        "quoteSource": quote.source,
+        "quoteTimestamp": quote.quote_timestamp,
+        "momentumUniverseMember": True,
+    }
+
+
+def _full_market_limit_up_signals(now: datetime) -> list[dict[str, Any]]:
+    global _FULL_MARKET_SIGNAL_CACHE
+    if (
+        _FULL_MARKET_SIGNAL_CACHE is not None
+        and now - _FULL_MARKET_SIGNAL_CACHE[0] <= timedelta(seconds=FULL_MARKET_SIGNAL_CACHE_SECONDS)
+    ):
+        return _cached_rows(_FULL_MARKET_SIGNAL_CACHE[1])
+    stocks = _popular_universe(now)
+    if not stocks:
+        return []
+    requests = [StockQuoteRequest(stock.symbol, stock.name, stock.market) for stock in stocks]
+    quotes = _await_sync(official_market_data_provider.get_quotes(requests, force_refresh=True))
+    by_symbol = {stock.symbol: stock for stock in stocks}
+    signals: list[dict[str, Any]] = []
+    for symbol, quote in quotes.items():
+        stock = by_symbol.get(symbol)
+        if stock is None:
+            continue
+        signal = _quote_to_limit_up_signal(quote, stock.market)
+        if signal is not None:
+            signals.append(signal)
+    ranked = sorted(
+        signals,
+        key=lambda item: (
+            item["changePercent"],
+            -_num(item.get("limitDistancePercent"), 99),
+            item["turnover"],
+            item["largeOrderForce"],
+        ),
+        reverse=True,
+    )
+    _FULL_MARKET_SIGNAL_CACHE = (now, _cached_rows(ranked))
+    return ranked
+
+
 def scan_limit_up_candidates(
     db: Session,
     settings: LimitUpAiSettings,
@@ -354,7 +504,12 @@ def scan_limit_up_candidates(
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     current = now or datetime.now(UTC)
-    raw = day_trading_restrictions.filter_candidates(day_trading_engine.signals())
+    try:
+        raw = _full_market_limit_up_signals(current)
+    except Exception:
+        raw = []
+    if not raw:
+        raw = day_trading_restrictions.filter_candidates(day_trading_engine.signals())
     enriched = enrich_day_trading_large_order_confirmation(
         raw,
         ChipFlowRepository(db),

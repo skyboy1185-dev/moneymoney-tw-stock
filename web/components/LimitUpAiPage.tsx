@@ -145,7 +145,7 @@ function SettingsPanel({ settings, onChange, onSave }: { settings: LimitUpAiSett
   </section>;
 }
 
-export function LimitUpAiPage({ symbol }: { symbol?: string }) {
+export function LimitUpAiPage() {
   const [userId, setUserId] = useState("");
   const [data, setData] = useState<LimitUpDashboard>(() => normalizeLimitUpDashboard({
     dataNotice: "漲停機器人頁面已啟動；等待背景掃描或手動掃描寫入最新候選。",
@@ -323,7 +323,6 @@ export function LimitUpAiPage({ symbol }: { symbol?: string }) {
     </header>
     {error && <div className="error-banner"><AlertTriangle size={16} />{error}{isLoginRequiredMessage(error) && <a href="/login">前往登入</a>}</div>}
     <div className="data-anomaly-banner"><ShieldCheck /><div><strong>模擬交易提醒</strong><span>{data.dataNotice}</span></div></div>
-    <div className="data-anomaly-banner limit-up-top10-location"><Zap /><div><strong>大單 Top10 位置</strong><span>{symbol ? `${symbol} 的多方/空方開盤累計名次，` : ""}請直接展開上方「多方開盤累計」或「空方開盤累計」bar；收合時仍會持續偵測 Top10。</span></div></div>
 
     <section className="rocket-dashboard">
       <article><span>機器人狀態</span><strong>{robotStatusLabel(robotStatus?.status)}</strong><small>{robotStatus?.marketSessionActive ? "盤中每 15 秒自動偵測" : "非盤中，保留最後結果"}</small></article>

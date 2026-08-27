@@ -37,6 +37,10 @@ MONEY = Decimal("0.01")
 TAIPEI = ZoneInfo("Asia/Taipei")
 FORCED_DAY_TRADE_CLOSE_START = time(13, 25)
 STOP_LOSS_BUFFER_PCT = Decimal("0")
+TP1_PARTIAL_MARKER = "TP1_PARTIAL_TAKEN"
+TP1_PARTIAL_EXIT_PCT = Decimal("0.30")
+TRAILING_STOP_R_MULTIPLE = Decimal("0.50")
+BREAKEVEN_LOCK_R_MULTIPLE = Decimal("0.10")
 
 
 def _money(value: Decimal) -> Decimal:
@@ -49,6 +53,59 @@ def _reasons(value: str) -> list[str]:
         return [str(item) for item in parsed] if isinstance(parsed, list) else []
     except (TypeError, ValueError):
         return []
+
+
+def _is_target_hit(trade: AdaptivePaperTrade, price: Decimal, target: Decimal) -> bool:
+    return price <= target if trade.side == "SHORT" else price >= target
+
+
+def _partial_quantity(quantity: int) -> int:
+    partial = int(Decimal(quantity) * TP1_PARTIAL_EXIT_PCT)
+    if partial >= 1000:
+        partial = (partial // 1000) * 1000
+    elif partial >= 100:
+        partial = (partial // 100) * 100
+    return max(0, min(partial, quantity - 100))
+
+
+def _append_exit_marker(trade: AdaptivePaperTrade, marker: str) -> None:
+    reasons = _reasons(trade.exit_reasons_json)
+    if marker not in reasons:
+        reasons.append(marker)
+        trade.exit_reasons_json = json.dumps(reasons, ensure_ascii=False)
+
+
+def _has_exit_marker(trade: AdaptivePaperTrade, marker: str) -> bool:
+    return marker in _reasons(trade.exit_reasons_json)
+
+
+def _raise_trailing_stop_after_tp1(
+    trade: AdaptivePaperTrade,
+    *,
+    price: Decimal,
+    previous_price: Decimal,
+) -> None:
+    if not _has_exit_marker(trade, TP1_PARTIAL_MARKER):
+        return
+    one_r = Decimal(trade.initial_r) if trade.initial_r and trade.initial_r > 0 else abs(Decimal(trade.entry_price) - Decimal(trade.stop_loss_price))
+    if one_r <= 0:
+        return
+    if trade.side == "SHORT":
+        favorable = min(previous_price, price)
+        protected = min(
+            Decimal(trade.stop_loss_price),
+            Decimal(trade.entry_price) - one_r * BREAKEVEN_LOCK_R_MULTIPLE,
+            favorable + one_r * TRAILING_STOP_R_MULTIPLE,
+        )
+        trade.stop_loss_price = _money(protected)
+    else:
+        favorable = max(previous_price, price)
+        protected = max(
+            Decimal(trade.stop_loss_price),
+            Decimal(trade.entry_price) + one_r * BREAKEVEN_LOCK_R_MULTIPLE,
+            favorable - one_r * TRAILING_STOP_R_MULTIPLE,
+        )
+        trade.stop_loss_price = _money(protected)
 
 
 def estimated_trade_result(
@@ -128,6 +185,8 @@ def _exit_reason(
     if local.astimezone(TAIPEI).time().replace(tzinfo=None) >= FORCED_DAY_TRADE_CLOSE_START:
         return "DAY_TRADE_CLOSE"
     if trade.side == "SHORT":
+        if _has_exit_marker(trade, TP1_PARTIAL_MARKER) and price >= trade.stop_loss_price:
+            return "TRAILING_STOP"
         if price >= trade.stop_loss_price * (Decimal("1") - STOP_LOSS_BUFFER_PCT):
             return "STOP_LOSS"
         if price <= trade.target_price_2:
@@ -135,6 +194,8 @@ def _exit_reason(
         if regime in {"BREAKOUT", "RECOVERY"}:
             return "MARKET_RISK"
     else:
+        if _has_exit_marker(trade, TP1_PARTIAL_MARKER) and price <= trade.stop_loss_price:
+            return "TRAILING_STOP"
         if price <= trade.stop_loss_price * (Decimal("1") + STOP_LOSS_BUFFER_PCT):
             return "STOP_LOSS"
         if price >= trade.target_price_2:
@@ -235,6 +296,96 @@ def _record_entry_notification(
     )
 
 
+def _take_partial_profit_at_tp1(
+    db: Session,
+    settings: Any,
+    trade: AdaptivePaperTrade,
+    price: Decimal,
+    at: datetime,
+) -> str | None:
+    if _has_exit_marker(trade, TP1_PARTIAL_MARKER):
+        return None
+    if not _is_target_hit(trade, price, Decimal(trade.target_price_1)):
+        return None
+    if _is_target_hit(trade, price, Decimal(trade.target_price_2)):
+        return None
+    quantity = _partial_quantity(trade.quantity_shares)
+    if quantity <= 0:
+        return None
+    signal_key = f"adaptive-partial:{at.astimezone(TAIPEI).date()}:{trade.stock_code}:{trade.id}:tp1"
+    if db.scalar(select(AdaptiveSignal.id).where(AdaptiveSignal.signal_key == signal_key)) is not None:
+        _append_exit_marker(trade, TP1_PARTIAL_MARKER)
+        return None
+    result = estimated_trade_result(
+        trade.entry_price,
+        price,
+        quantity,
+        trade.side,
+        Decimal(settings.commission_discount),
+    )
+    partial_trade = AdaptivePaperTrade(
+        stock_code=trade.stock_code,
+        stock_name=trade.stock_name,
+        strategy_type=trade.strategy_type,
+        entry_signal_key=f"{trade.entry_signal_key}:tp1:{trade.id}"[:180],
+        exit_signal_key=signal_key,
+        side=trade.side,
+        trade_mode=trade.trade_mode,
+        quantity_shares=quantity,
+        entry_price=trade.entry_price,
+        entry_time=trade.entry_time,
+        entry_reason=trade.entry_reason,
+        stop_loss_price=trade.stop_loss_price,
+        target_price_1=trade.target_price_1,
+        target_price_2=trade.target_price_2,
+        last_price=price,
+        ai_score=trade.ai_score,
+        market_regime=trade.market_regime,
+        sector_status=trade.sector_status,
+        initial_capital=trade.initial_capital,
+        risk_amount=_money(Decimal(trade.risk_amount) * Decimal(quantity) / Decimal(max(1, trade.quantity_shares))),
+        initial_r=trade.initial_r,
+        realized_r=(
+            result["netProfit"] / max(Decimal("0.01"), Decimal(trade.risk_amount) * Decimal(quantity) / Decimal(max(1, trade.quantity_shares)))
+        ),
+        entry_reasons_json=trade.entry_reasons_json,
+        exit_reasons_json=json.dumps(["TAKE_PROFIT_1_PARTIAL"], ensure_ascii=False),
+        status="closed",
+        exit_price=price,
+        exit_time=at,
+        exit_reason="TAKE_PROFIT_1_PARTIAL",
+        gross_profit=result["grossProfit"],
+        trading_cost=result["tradingCost"],
+        net_profit=result["netProfit"],
+        return_percentage=result["returnPercentage"],
+        unrealized_profit=Decimal("0"),
+        created_at=trade.created_at,
+        updated_at=at,
+    )
+    db.add(partial_trade)
+    db.flush()
+    trade.quantity_shares -= quantity
+    remaining_ratio = Decimal(trade.quantity_shares) / Decimal(max(1, trade.quantity_shares + quantity))
+    trade.risk_amount = _money(Decimal(trade.risk_amount) * remaining_ratio)
+    _append_exit_marker(trade, TP1_PARTIAL_MARKER)
+    _release_reserved_capital(settings, partial_trade, result["netProfit"])
+    db.add(AdaptiveSignal(
+        signal_key=signal_key,
+        stock_code=trade.stock_code,
+        stock_name=trade.stock_name,
+        signal_type="exit_triggered",
+        action="TAKE_PROFIT_1_PARTIAL",
+        strategy_type=trade.strategy_type,
+        price=price,
+        health_score=None,
+        reasons_json=json.dumps(["TAKE_PROFIT_1_PARTIAL", f"{SYSTEM_NAME} TP1 partial PnL {result['netProfit']:+,.0f}"], ensure_ascii=False),
+        line_push_status="pending",
+        created_at=at,
+    ))
+    _record_exit_notification(db, partial_trade, price, result, "TAKE_PROFIT_1_PARTIAL", at)
+    return signal_key
+
+
 def update_open_trade_from_market_price(
     db: Session,
     *,
@@ -248,6 +399,7 @@ def update_open_trade_from_market_price(
     if trade is None or trade.status != "open":
         return None
     settings = ensure_super_ai_settings(db, at)
+    previous_price = Decimal(trade.last_price)
     result = estimated_trade_result(
         trade.entry_price,
         price,
@@ -259,9 +411,21 @@ def update_open_trade_from_market_price(
     trade.unrealized_profit = result["netProfit"]
     trade.return_percentage = result["returnPercentage"]
     trade.updated_at = at
+    partial_signal_key = _take_partial_profit_at_tp1(db, settings, trade, price, at)
+    if partial_signal_key is not None:
+        result = estimated_trade_result(
+            trade.entry_price,
+            price,
+            trade.quantity_shares,
+            trade.side,
+            Decimal(settings.commission_discount),
+        )
+        trade.unrealized_profit = result["netProfit"]
+        trade.return_percentage = result["returnPercentage"]
+    _raise_trailing_stop_after_tp1(trade, price=price, previous_price=previous_price)
     reason = _exit_reason(trade, price, regime, candidate, at)
     if reason is None:
-        return None
+        return partial_signal_key
 
     signal_key = f"adaptive-exit:{at.astimezone(TAIPEI).date()}:{trade.stock_code}:{trade.id}"
     trade.status = "closed"
@@ -384,10 +548,10 @@ def update_adaptive_paper_trades(
     entry_signals = {
         signal.signal_key: signal
         for signal in signals
-        if signal.stock_code and signal.price is not None and signal.signal_type in {"entry_confirmed", "new_top5"}
+        if signal.stock_code and signal.price is not None and signal.signal_type == "entry_confirmed"
     }
     recent = db.scalars(select(AdaptiveSignal).where(
-        AdaptiveSignal.signal_type.in_(["entry_confirmed", "new_top5"]),
+        AdaptiveSignal.signal_type == "entry_confirmed",
     ).order_by(AdaptiveSignal.created_at.desc()).limit(100)).all()
     for signal in recent:
         created_at = _stored_signal_created_at(signal)
@@ -401,6 +565,10 @@ def update_adaptive_paper_trades(
             continue
         candidate = candidate_by_symbol.get(signal.stock_code)
         if candidate is None:
+            continue
+        if candidate.candidate_status != "can_enter":
+            continue
+        if regime in {"BREAKOUT", "RECOVERY"} and candidate.strategy_type == "CRASH":
             continue
         existing = db.scalar(select(AdaptivePaperTrade.id).where(
             (AdaptivePaperTrade.entry_signal_key == signal.signal_key)

@@ -400,6 +400,15 @@ def trading_gate(
         failures.append(str(risk["stopReason"] or "risk_stop"))
     if side == "SHORT" and regime in {"BREAKOUT", "RECOVERY"}:
         failures.append("market_strength_blocks_short")
+    if side == "LONG" and regime in {"BREAKOUT", "RECOVERY"}:
+        if candidate.strategy_type != "BREAKOUT":
+            failures.append("strong_market_requires_breakout_strategy")
+        if Decimal(candidate.total_score) < Decimal("70"):
+            failures.append("strong_market_total_score_too_weak")
+        if Decimal(candidate.health_score) < Decimal("65"):
+            failures.append("strong_market_health_score_too_weak")
+        if Decimal(candidate.relative_strength) <= Decimal("0"):
+            failures.append("strong_market_relative_strength_too_weak")
     if len(open_trades) >= settings.max_positions:
         failures.append("max_positions")
     if score < settings.min_ai_score_to_trade:

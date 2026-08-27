@@ -217,7 +217,7 @@ export default function Home() {
         ) : tab === "day-trading" ? (
           <DayTradingDashboard />
         ) : tab === "limit-up-ai" ? (
-          <LimitUpAiPage symbol={stock?.meta.symbol ?? query} />
+          <LimitUpAiPage />
         ) : tab === "pattern-robot" ? (
           <PatternRobotPage userId={userId} onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }} />
         ) : tab === "adaptive-electronic" ? (
