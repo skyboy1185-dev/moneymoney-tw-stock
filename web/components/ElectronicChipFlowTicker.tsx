@@ -335,6 +335,59 @@ function CompactMomentumSummary({
   </div>;
 }
 
+function Top10QuickRows({
+  data,
+  alerts,
+  shortAlerts,
+  expanded,
+  onToggleExpanded,
+  onSelectStock,
+}: {
+  data: ElectronicChipFlowAlertsResponse | null;
+  alerts: ElectronicChipFlowAlert[];
+  shortAlerts: ElectronicChipFlowAlert[];
+  expanded: "long" | "short" | null;
+  onToggleExpanded: (direction: "long" | "short") => void;
+  onSelectStock: (symbol: string) => void;
+}) {
+  const rankingLimit = data?.rankingLimit ?? 10;
+  const rows = [
+    { direction: "long" as const, title: `多方開盤累計大單買入 Top${rankingLimit}`, items: alerts.slice(0, rankingLimit) },
+    { direction: "short" as const, title: `空方開盤累計大單賣出 Top${rankingLimit}`, items: shortAlerts.slice(0, rankingLimit) },
+  ];
+  const forceLots = (alert: ElectronicChipFlowAlert, direction: "long" | "short") => direction === "short"
+    ? alert.sessionNetSellLots ?? alert.recentNetSellLots ?? Math.max(0, -alert.recentNetBuyLots)
+    : alert.sessionNetBuyLots ?? Math.max(0, alert.recentNetBuyLots);
+  return <div className="chip-top10-quick" aria-label="多空開盤累計大單Top10快速列">
+    {rows.map((row) => <div className={`chip-top10-row ${row.direction}`} key={row.direction}>
+      <button
+        type="button"
+        className={`chip-top10-title ${expanded === row.direction ? "active" : ""}`}
+        onClick={() => onToggleExpanded(row.direction)}
+        aria-expanded={expanded === row.direction}
+      >
+        {row.direction === "long" ? <Zap size={12} /> : <TrendingDown size={12} />}
+        <strong>{row.title}</strong>
+        <small>{row.items.length ? `${row.items.length}/${rankingLimit}` : "累計中"}</small>
+      </button>
+      <div className="chip-top10-list">
+        {row.items.length ? row.items.map((alert, index) => <button
+          type="button"
+          className="chip-top10-chip"
+          key={`${row.direction}-${alert.symbol}`}
+          title={`${row.title}｜#${alert.rank ?? index + 1} ${alert.symbol} ${alert.name}｜${formatLots(forceLots(alert, row.direction))}張`}
+          onClick={() => onSelectStock(alert.symbol)}
+        >
+          <i>#{alert.rank ?? index + 1}</i>
+          <b>{alert.symbol}</b>
+          <span>{alert.name}</span>
+          <em>{formatLots(forceLots(alert, row.direction))}張</em>
+        </button>) : <span className="chip-top10-empty">{row.direction === "long" ? "多方Top10累計中" : "空方Top10累計中"}</span>}
+      </div>
+    </div>)}
+  </div>;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 function MomentumHistory({ alert, direction = "long" }: { alert: ElectronicChipFlowAlert; direction?: "long" | "short" }) {
   const points = alert.history.slice(-12);
@@ -1274,6 +1327,7 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
   // single alert (for example 新普) appear back-to-back many times.
   const scrollingAlerts = alerts;
   const longLabel = data?.marketOpen ? `多方開盤累計大單買入 Top${rankingLimit}` : `多方今日累計Top${rankingLimit}`;
+  const toggleExpanded = (direction: "long" | "short") => setExpanded((current) => current === direction ? null : direction);
   const selectStock = (symbol: string) => {
     setExpanded(null);
     if (onSelectStock) {
@@ -1332,11 +1386,11 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
       alerts={alerts}
       shortAlerts={shortAlerts}
       expanded={expanded}
-      onToggleExpanded={(direction) => setExpanded((current) => current === direction ? null : direction)}
+      onToggleExpanded={toggleExpanded}
       onSelectStock={selectStock}
     /> : <>
       <div className="chip-alert-row long-row">
-        <button className="chip-alert-label" type="button" onClick={() => setExpanded((current) => current === "long" ? null : "long")} aria-expanded={expanded === "long"}>
+        <button className="chip-alert-label" type="button" onClick={() => toggleExpanded("long")} aria-expanded={expanded === "long"}>
           {data?.warningCount ? <AlertTriangle size={14} /> : hasAlerts ? <Zap size={14} /> : <Radio size={13} />}
           <strong>{longLabel}</strong><em>{data?.warningCount ? `${data.warningCount} 警示` : `${alerts.length} 檔`}</em>
           {expanded === "long" ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
@@ -1350,7 +1404,7 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
         {data && <small className="chip-alert-coverage">多方Top{rankingLimit} 顯示 {alerts.length}/{rankingLimit}・正式 {data.longCount ?? 0}・Top收合偵測 {data.autoTopTrackingCount ?? 0}</small>}
       </div>
       <div className="chip-alert-row short-row">
-        <button className="chip-alert-label" type="button" onClick={() => setExpanded((current) => current === "short" ? null : "short")} aria-expanded={expanded === "short"}>
+        <button className="chip-alert-label" type="button" onClick={() => toggleExpanded("short")} aria-expanded={expanded === "short"}>
           {hasShortAlerts ? <TrendingDown size={14} /> : <Radio size={13} />}
           <strong>{data?.marketOpen ? `空方開盤累計大單賣出 Top${rankingLimit}` : `空方今日累計Top${rankingLimit}`}</strong><em>{hasShortAlerts ? `${shortAlerts.length} 檔` : "空方"}</em>
           {expanded === "short" ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
@@ -1364,6 +1418,14 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
         {data && <small className="chip-alert-coverage">空方Top{rankingLimit} 顯示 {shortAlerts.length}/{rankingLimit}・正式 {data.shortCount ?? 0}・持續加空 {data.shortStrengtheningCount ?? 0}</small>}
       </div>
     </>}
+    <Top10QuickRows
+      data={data}
+      alerts={alerts}
+      shortAlerts={shortAlerts}
+      expanded={expanded}
+      onToggleExpanded={toggleExpanded}
+      onSelectStock={selectStock}
+    />
     {expanded && data && <MomentumPanel
       data={data}
       alerts={expandedAlerts}
