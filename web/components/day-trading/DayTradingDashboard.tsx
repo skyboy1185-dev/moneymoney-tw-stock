@@ -40,15 +40,49 @@ function currentTaipeiMonth() {
   return `${year}-${month}`;
 }
 
-const displayNumber = (value: number, digits = 2) => value.toLocaleString("zh-TW", {
-  minimumFractionDigits: digits, maximumFractionDigits: digits,
-});
+const displayNumber = (value: number | null | undefined, digits = 2) => typeof value === "number" && Number.isFinite(value)
+  ? value.toLocaleString("zh-TW", { minimumFractionDigits: digits, maximumFractionDigits: digits })
+  : "—";
 const displayLotsAndShares = (lots?: number) => lots != null && Number.isFinite(lots)
   ? `${lots.toLocaleString("zh-TW", { maximumFractionDigits: 3 })} 張（${Math.round(lots * 1_000).toLocaleString("zh-TW")} 股）`
   : "張數資料不足";
-const displayTime = (value: string) => new Date(value).toLocaleString("zh-TW", {
-  hour12: false, timeZone: "Asia/Taipei",
-});
+const displayTime = (value?: string | null) => {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "—";
+  return parsed.toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" });
+};
+
+function failureMessage(section: string, reason: unknown): string {
+  const detail = reason instanceof Error ? reason.message : String(reason || "未知錯誤");
+  return `${section}：${detail}`;
+}
+
+function fulfilledValue<T>(
+  result: PromiseSettledResult<T>,
+  section: string,
+  failures: string[],
+): T | null {
+  if (result.status === "fulfilled") return result.value;
+  failures.push(failureMessage(section, result.reason));
+  return null;
+}
+
+function itemsFrom<T>(payload: { items?: unknown[] } | null): T[] {
+  return Array.isArray(payload?.items) ? payload.items as T[] : [];
+}
+
+function uniqueById<T extends { id: number }>(items: T[]): T[] {
+  return items.filter((item, index, rows) => rows.findIndex((candidate) => candidate.id === item.id) === index);
+}
+
+function automaticPosition(item: DayTradingPosition): DayTradingPosition {
+  return { ...item, automaticTracking: true, automationStrategy: "fixed_2_lots", automationStrategyLabel: "原版固定 2 張" };
+}
+
+function automaticAlert(item: DayTradingAlert): DayTradingAlert {
+  return { ...item, automaticTracking: true, automationStrategy: "fixed_2_lots", automationStrategyLabel: "原版固定 2 張" };
+}
 
 type StrategyAllocation = NonNullable<DayTradingSignal["strategyAllocations"]>[string];
 
@@ -90,8 +124,23 @@ export function DayTradingDashboard() {
   const lineToastTimers = useRef<number[]>([]);
 
   const refresh = useCallback(async (id: string, prefetchedRegime?: unknown) => {
-    const [regimeData, signalData, rankingData, replayData, todaySignalData, positionData, alertData, performancePositionData, automationAlertData, tradeData, performanceData] = await Promise.all([
-      prefetchedRegime ?? dayTradingClient.regime(id), dayTradingClient.signals(id), dayTradingClient.rankings(id),
+    const failures: string[] = [];
+    const [
+      regimeResult,
+      signalResult,
+      rankingResult,
+      replayResult,
+      todaySignalResult,
+      positionResult,
+      alertResult,
+      performancePositionResult,
+      automationAlertResult,
+      tradeResult,
+      performanceResult,
+    ] = await Promise.allSettled([
+      Promise.resolve(prefetchedRegime ?? dayTradingClient.regime(id)),
+      dayTradingClient.signals(id),
+      dayTradingClient.rankings(id),
       dayTradingClient.candidateReplayToday(id),
       dayTradingClient.todaySignals(id),
       dayTradingClient.positions(id),
@@ -100,30 +149,56 @@ export function DayTradingDashboard() {
       dayTradingClient.trades(AUTOMATION_PERFORMANCE_USER_ID, performanceMonth),
       dayTradingClient.performance(AUTOMATION_PERFORMANCE_USER_ID, performanceMonth),
     ]);
-    const automaticPositions = (performancePositionData.items as DayTradingPosition[])
-      .map((item) => ({ ...item, automaticTracking: true, automationStrategy: "fixed_2_lots", automationStrategyLabel: "原版固定 2 張" }));
-    const manualPositions = (positionData.items as DayTradingPosition[])
-      .map((item) => ({ ...item, automaticTracking: false }));
-    const combinedPositions = [...automaticPositions, ...manualPositions]
-      .filter((item, index, rows) => rows.findIndex((candidate) => candidate.id === item.id) === index);
-    const automaticAlerts = (automationAlertData.items as DayTradingAlert[])
-      .map((item) => ({ ...item, automaticTracking: true, automationStrategy: "fixed_2_lots", automationStrategyLabel: "原版固定 2 張" }));
-    const manualAlerts = (alertData.items as DayTradingAlert[])
-      .map((item) => ({ ...item, automaticTracking: false }));
-    setTodaySignals(todaySignalData.items as DayTradingSignal[]);
-    setCandidateReplay(replayData.items as DayTradingCandidateReplay[]);
-    setPerformancePositions(automaticPositions);
-    setInitial({
-      regime: regimeData as MarketRegime,
-      signals: signalData.items as DayTradingSignal[],
-      candidates: rankingData.items as DayTradingSignal[],
-      positions: combinedPositions,
-      alerts: [...automaticAlerts, ...manualAlerts]
-        .filter((item, index, rows) => rows.findIndex((candidate) => candidate.id === item.id) === index)
-        .sort((left, right) => right.id - left.id),
-      trades: tradeData.items as DayTradingTrade[],
-      performance: performanceData as DayTradingPerformance,
-    });
+    const regimeData = fulfilledValue(regimeResult, "市場狀態", failures);
+    const signalData = fulfilledValue(signalResult, "正式訊號", failures) as { items?: unknown[] } | null;
+    const rankingData = fulfilledValue(rankingResult, "候選排名", failures) as { items?: unknown[] } | null;
+    const replayData = fulfilledValue(replayResult, "今日回推", failures) as { items?: unknown[] } | null;
+    const todaySignalData = fulfilledValue(todaySignalResult, "今日正式訊號", failures) as { items?: unknown[] } | null;
+    const positionData = fulfilledValue(positionResult, "個人持倉", failures) as { items?: unknown[] } | null;
+    const alertData = fulfilledValue(alertResult, "個人通知", failures) as { items?: unknown[] } | null;
+    const performancePositionData = fulfilledValue(performancePositionResult, "機器人持倉", failures) as { items?: unknown[] } | null;
+    const automationAlertData = fulfilledValue(automationAlertResult, "機器人通知", failures) as { items?: unknown[] } | null;
+    const tradeData = fulfilledValue(tradeResult, "成交紀錄", failures) as { items?: unknown[] } | null;
+    const performanceData = fulfilledValue(performanceResult, "績效", failures);
+    const current = useDayTradingStore.getState();
+    const nextInitial: Partial<{
+      regime: MarketRegime;
+      signals: DayTradingSignal[];
+      candidates: DayTradingSignal[];
+      positions: DayTradingPosition[];
+      alerts: DayTradingAlert[];
+      trades: DayTradingTrade[];
+      performance: DayTradingPerformance;
+    }> = {};
+
+    if (regimeData) nextInitial.regime = regimeData as MarketRegime;
+    if (signalData) nextInitial.signals = itemsFrom<DayTradingSignal>(signalData);
+    if (rankingData) nextInitial.candidates = itemsFrom<DayTradingSignal>(rankingData);
+    if (replayData) setCandidateReplay(itemsFrom<DayTradingCandidateReplay>(replayData));
+    if (todaySignalData) setTodaySignals(itemsFrom<DayTradingSignal>(todaySignalData));
+
+    const automaticPositions = performancePositionData
+      ? itemsFrom<DayTradingPosition>(performancePositionData).map(automaticPosition)
+      : current.positions.filter((item) => item.automaticTracking);
+    const manualPositions = positionData
+      ? itemsFrom<DayTradingPosition>(positionData).map((item) => ({ ...item, automaticTracking: false }))
+      : current.positions.filter((item) => !item.automaticTracking);
+    if (performancePositionData) setPerformancePositions(automaticPositions);
+    if (positionData || performancePositionData) nextInitial.positions = uniqueById([...automaticPositions, ...manualPositions]);
+
+    const automaticAlerts = automationAlertData
+      ? itemsFrom<DayTradingAlert>(automationAlertData).map(automaticAlert)
+      : current.alerts.filter((item) => item.automaticTracking);
+    const manualAlerts = alertData
+      ? itemsFrom<DayTradingAlert>(alertData).map((item) => ({ ...item, automaticTracking: false }))
+      : current.alerts.filter((item) => !item.automaticTracking);
+    if (alertData || automationAlertData) {
+      nextInitial.alerts = uniqueById([...automaticAlerts, ...manualAlerts]).sort((left, right) => right.id - left.id);
+    }
+    if (tradeData) nextInitial.trades = itemsFrom<DayTradingTrade>(tradeData);
+    if (performanceData) nextInitial.performance = performanceData as DayTradingPerformance;
+    setInitial(nextInitial);
+    setError(failures.length ? `部分當沖資料暫時無法取得：${failures.slice(0, 3).join("；")}` : "");
   }, [performanceMonth, setInitial]);
 
   const initialize = useCallback(async (id: string) => {
@@ -204,7 +279,17 @@ export function DayTradingDashboard() {
 
   const loadPortfolio = useCallback(async () => {
     if (!userId) return;
-    const [positionData, alertData, replayData, todaySignalData, performancePositionData, automationAlertData, tradeData, performanceData] = await Promise.all([
+    const failures: string[] = [];
+    const [
+      positionResult,
+      alertResult,
+      replayResult,
+      todaySignalResult,
+      performancePositionResult,
+      automationAlertResult,
+      tradeResult,
+      performanceResult,
+    ] = await Promise.allSettled([
       dayTradingClient.positions(userId), dayTradingClient.alerts(userId),
       dayTradingClient.candidateReplayToday(userId),
       dayTradingClient.todaySignals(userId),
@@ -213,26 +298,47 @@ export function DayTradingDashboard() {
       dayTradingClient.trades(AUTOMATION_PERFORMANCE_USER_ID, performanceMonth),
       dayTradingClient.performance(AUTOMATION_PERFORMANCE_USER_ID, performanceMonth),
     ]);
-    const automaticPositions = (performancePositionData.items as DayTradingPosition[])
-      .map((item) => ({ ...item, automaticTracking: true, automationStrategy: "fixed_2_lots", automationStrategyLabel: "原版固定 2 張" }));
-    const manualPositions = (positionData.items as DayTradingPosition[])
-      .map((item) => ({ ...item, automaticTracking: false }));
-    const automaticAlerts = (automationAlertData.items as DayTradingAlert[])
-      .map((item) => ({ ...item, automaticTracking: true, automationStrategy: "fixed_2_lots", automationStrategyLabel: "原版固定 2 張" }));
-    const manualAlerts = (alertData.items as DayTradingAlert[])
-      .map((item) => ({ ...item, automaticTracking: false }));
-    setTodaySignals(todaySignalData.items as DayTradingSignal[]);
-    setCandidateReplay(replayData.items as DayTradingCandidateReplay[]);
-    setPerformancePositions(automaticPositions);
-    setInitial({
-      positions: [...automaticPositions, ...manualPositions]
-        .filter((item, index, rows) => rows.findIndex((candidate) => candidate.id === item.id) === index),
-      alerts: [...automaticAlerts, ...manualAlerts]
-        .filter((item, index, rows) => rows.findIndex((candidate) => candidate.id === item.id) === index)
-        .sort((left, right) => right.id - left.id),
-      trades: tradeData.items as DayTradingTrade[],
-      performance: performanceData as DayTradingPerformance,
-    });
+    const positionData = fulfilledValue(positionResult, "個人持倉", failures) as { items?: unknown[] } | null;
+    const alertData = fulfilledValue(alertResult, "個人通知", failures) as { items?: unknown[] } | null;
+    const replayData = fulfilledValue(replayResult, "今日回推", failures) as { items?: unknown[] } | null;
+    const todaySignalData = fulfilledValue(todaySignalResult, "今日正式訊號", failures) as { items?: unknown[] } | null;
+    const performancePositionData = fulfilledValue(performancePositionResult, "機器人持倉", failures) as { items?: unknown[] } | null;
+    const automationAlertData = fulfilledValue(automationAlertResult, "機器人通知", failures) as { items?: unknown[] } | null;
+    const tradeData = fulfilledValue(tradeResult, "成交紀錄", failures) as { items?: unknown[] } | null;
+    const performanceData = fulfilledValue(performanceResult, "績效", failures);
+    const current = useDayTradingStore.getState();
+    const nextInitial: Partial<{
+      positions: DayTradingPosition[];
+      alerts: DayTradingAlert[];
+      trades: DayTradingTrade[];
+      performance: DayTradingPerformance;
+    }> = {};
+
+    if (replayData) setCandidateReplay(itemsFrom<DayTradingCandidateReplay>(replayData));
+    if (todaySignalData) setTodaySignals(itemsFrom<DayTradingSignal>(todaySignalData));
+
+    const automaticPositions = performancePositionData
+      ? itemsFrom<DayTradingPosition>(performancePositionData).map(automaticPosition)
+      : current.positions.filter((item) => item.automaticTracking);
+    const manualPositions = positionData
+      ? itemsFrom<DayTradingPosition>(positionData).map((item) => ({ ...item, automaticTracking: false }))
+      : current.positions.filter((item) => !item.automaticTracking);
+    if (performancePositionData) setPerformancePositions(automaticPositions);
+    if (positionData || performancePositionData) nextInitial.positions = uniqueById([...automaticPositions, ...manualPositions]);
+
+    const automaticAlerts = automationAlertData
+      ? itemsFrom<DayTradingAlert>(automationAlertData).map(automaticAlert)
+      : current.alerts.filter((item) => item.automaticTracking);
+    const manualAlerts = alertData
+      ? itemsFrom<DayTradingAlert>(alertData).map((item) => ({ ...item, automaticTracking: false }))
+      : current.alerts.filter((item) => !item.automaticTracking);
+    if (alertData || automationAlertData) {
+      nextInitial.alerts = uniqueById([...automaticAlerts, ...manualAlerts]).sort((left, right) => right.id - left.id);
+    }
+    if (tradeData) nextInitial.trades = itemsFrom<DayTradingTrade>(tradeData);
+    if (performanceData) nextInitial.performance = performanceData as DayTradingPerformance;
+    setInitial(nextInitial);
+    setError(failures.length ? `部分當沖資料暫時無法取得：${failures.slice(0, 3).join("；")}` : "");
   }, [performanceMonth, setInitial, userId]);
 
   useEffect(() => {
