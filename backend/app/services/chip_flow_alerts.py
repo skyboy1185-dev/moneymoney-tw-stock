@@ -696,6 +696,126 @@ def analyze_large_order_short_momentum(
     }
 
 
+def analyze_large_order_ranking(
+    stock: ThemeStock,
+    snapshots: Sequence[ChipFlowAlertSnapshot],
+    rules: ChipFlowAlertRules,
+    *,
+    direction: str,
+    as_of: datetime | None = None,
+) -> dict[str, object] | None:
+    """Rank current large-order pressure even before it becomes a strict alert."""
+    if len(snapshots) < 3:
+        return None
+    ordered = sorted(snapshots, key=lambda item: _aware(item.snapshot_time))
+    latest_time = _aware(ordered[-1].snapshot_time)
+    if as_of is not None and _aware(as_of) - latest_time > timedelta(minutes=rules.max_stale_minutes):
+        return None
+    series = _metrics_series(ordered, rules)
+    if not series:
+        return None
+    latest = series[-1]
+    previous = series[-2] if len(series) > 1 else latest
+    short_side = direction == "short"
+    force_lots = (
+        float(latest["recentNetSellLots"])
+        if short_side else max(0.0, float(latest["recentNetBuyLots"]))
+    )
+    if force_lots <= 0:
+        return None
+    gross_side_lots = (
+        float(latest["recentSellLots"])
+        if short_side else float(latest["recentBuyLots"])
+    )
+
+    qualifies_field = "shortQualifies" if short_side else "qualifies"
+    force_field = "recentNetSellLots" if short_side else "recentNetBuyLots"
+    step_field = "negativeSteps" if short_side else "positiveSteps"
+    ratio_field = "sellBuyRatio" if short_side else "buySellRatio"
+    current_qualifies = bool(latest[qualifies_field])
+    qualifying = [item for item in series if bool(item[qualifies_field])]
+    force_change = round(force_lots - max(0.0, float(previous[force_field])), 2)
+    steps = int(latest[step_field])
+    ratio = float(latest[ratio_field])
+    offsetting = bool(latest["largeOrderOffsetting"])
+    reinforced = current_qualifies and force_change >= rules.min_momentum_change_lots
+    simultaneous = (
+        float(latest["recentNetBuyLots"]) < 0 and float(latest["recentSmallNetBuyLots"]) < 0
+        if short_side else bool(latest["simultaneousIncrease"])
+    )
+
+    if offsetting:
+        trend, trend_label, alert_level = "weakening", "多空抵銷", "warning"
+    elif current_qualifies and reinforced:
+        trend, trend_label, alert_level = "strengthening", ("持續加空" if short_side else "持續轉強"), ("critical" if short_side else "positive")
+    elif current_qualifies:
+        trend, trend_label, alert_level = "sustained", ("空方達標" if short_side else "正式大單訊號"), ("critical" if short_side else "positive")
+    elif force_change >= rules.min_momentum_change_lots:
+        trend, trend_label, alert_level = "starting", ("賣壓觀察" if short_side else "買盤觀察"), "info"
+    else:
+        trend, trend_label, alert_level = "sustained", "觀察中", "info"
+
+    side_text = "賣" if short_side else "買"
+    message = (
+        f"排名觀察：近 {rules.window_minutes} 分鐘大單{side_text} {gross_side_lots:g} 張、"
+        f"{'淨賣' if short_side else '淨買'} {force_lots:g} 張、"
+        f"{'賣買比' if short_side else '買賣比'} {ratio:g}x、連續 {steps} 段。"
+    )
+    if current_qualifies:
+        message += " 已達正式大單訊號條件。"
+    else:
+        message += " 尚未達正式門檻，先列入Top10觀察。"
+
+    alert = _public_alert(stock, latest)
+    alert.update({
+        "direction": "short" if short_side else "long",
+        "recentNetSellLots": latest["recentNetSellLots"],
+        "sellBuyRatio": latest["sellBuyRatio"],
+        "negativeSteps": latest["negativeSteps"],
+        "occurrenceCount": len(qualifying),
+        "firstDetectedAt": (
+            cast(datetime, qualifying[0]["snapshotTime"]).isoformat()
+            if qualifying else cast(datetime, latest["snapshotTime"]).isoformat()
+        ),
+        "cycleStartedAt": cast(datetime, latest["snapshotTime"]).isoformat(),
+        "lastDetectedAt": (
+            cast(datetime, qualifying[-1]["snapshotTime"]).isoformat()
+            if qualifying else cast(datetime, latest["snapshotTime"]).isoformat()
+        ),
+        "peakRecentNetBuyLots": (
+            round(-max(float(item["recentNetSellLots"]) for item in series), 2)
+            if short_side else round(max(float(item["recentNetBuyLots"]) for item in series), 2)
+        ),
+        "momentumChangeLots": round(-force_change if short_side else force_change, 2),
+        "momentumChangePercent": (
+            round(force_change / max(0.01, abs(float(previous[force_field]))) * 100, 1)
+            if previous is not latest else 0.0
+        ),
+        "trend": trend,
+        "trendLabel": trend_label,
+        "trendStreak": steps,
+        "alertLevel": alert_level,
+        "isWarning": offsetting,
+        "reinforced": reinforced,
+        "simultaneousIncrease": simultaneous,
+        "currentQualifies": current_qualifies,
+        "message": message,
+        "history": [{
+            "time": cast(datetime, item["snapshotTime"]).strftime("%H:%M"),
+            "recentNetBuyLots": float(item["recentNetBuyLots"]),
+            "recentSmallNetBuyLots": float(item["recentSmallNetBuyLots"]),
+            "combinedNetBuyLots": float(item["combinedNetBuyLots"]),
+            "changeLots": float(item["recentNetSellLots"]) if short_side else float(item["recentNetBuyLots"]),
+            "qualified": bool(item[qualifies_field]),
+            "simultaneousIncrease": (
+                float(item["recentNetBuyLots"]) < 0 and float(item["recentSmallNetBuyLots"]) < 0
+                if short_side else bool(item["simultaneousIncrease"])
+            ),
+        } for item in series[-20:]],
+    })
+    return alert
+
+
 def enrich_day_trading_large_order_confirmation(
     candidates: list[dict[str, Any]],
     repository: ChipFlowRepository,
@@ -1487,6 +1607,8 @@ class ElectronicChipFlowAlertMonitor:
         self._payload_cache_misses += 1
         alerts = []
         short_alerts = []
+        long_rankings = []
+        short_rankings = []
         tracked_alerts = []
         tracked_short_alerts = []
         market_pulse: dict[str, object] = {
@@ -1534,6 +1656,15 @@ class ElectronicChipFlowAlertMonitor:
                 else:
                     if stock.symbol not in all_pinned_stocks:
                         self._hot_symbols.discard(stock.symbol)
+                long_ranking = analyze_large_order_ranking(
+                    stock,
+                    cast(Sequence[ChipFlowAlertSnapshot], rows),
+                    self.rules,
+                    direction="long",
+                    as_of=current,
+                )
+                if long_ranking is not None:
+                    long_rankings.append(long_ranking)
                 short_alert = analyze_large_order_short_momentum(
                     stock,
                     cast(Sequence[ChipFlowAlertSnapshot], rows),
@@ -1543,6 +1674,15 @@ class ElectronicChipFlowAlertMonitor:
                 if short_alert is not None:
                     short_alerts.append(short_alert)
                     self._hot_symbols.add(stock.symbol)
+                short_ranking = analyze_large_order_ranking(
+                    stock,
+                    cast(Sequence[ChipFlowAlertSnapshot], rows),
+                    self.rules,
+                    direction="short",
+                    as_of=current,
+                )
+                if short_ranking is not None:
+                    short_rankings.append(short_ranking)
                 if stock.symbol in client_pinned_stocks:
                     tracked = analyze_large_order_momentum(
                         stock,
@@ -1564,6 +1704,8 @@ class ElectronicChipFlowAlertMonitor:
                         tracked_short_alerts.append(tracked_short)
         alerts = _rank_momentum_alerts(alerts, "long")
         short_alerts = _rank_momentum_alerts(short_alerts, "short")
+        long_rankings = _rank_momentum_alerts(long_rankings, "long")
+        short_rankings = _rank_momentum_alerts(short_rankings, "short")
         long_rank_by_symbol = {str(item["symbol"]): item for item in alerts}
         short_rank_by_symbol = {str(item["symbol"]): item for item in short_alerts}
 
@@ -1584,9 +1726,11 @@ class ElectronicChipFlowAlertMonitor:
         ]
         top_alerts = alerts[:MOMENTUM_RANK_LIMIT]
         top_short_alerts = short_alerts[:MOMENTUM_RANK_LIMIT]
+        top_long_rankings = long_rankings[:MOMENTUM_RANK_LIMIT]
+        top_short_rankings = short_rankings[:MOMENTUM_RANK_LIMIT]
         next_auto_top_tracking_symbols = {
             str(item["symbol"])
-            for item in (*top_alerts, *top_short_alerts)
+            for item in (*top_long_rankings, *top_short_rankings)
         }
         if market_open:
             self._auto_top_tracking_symbols = (
@@ -1609,6 +1753,8 @@ class ElectronicChipFlowAlertMonitor:
 
         top_alerts = enrich_alerts(top_alerts)
         top_short_alerts = enrich_alerts(top_short_alerts)
+        top_long_rankings = enrich_alerts(top_long_rankings)
+        top_short_rankings = enrich_alerts(top_short_rankings)
         tracked_alerts = enrich_alerts(tracked_alerts)
         tracked_short_alerts = enrich_alerts(tracked_short_alerts)
         scanned_count = len(self._scanned_symbols & eligible_symbols)
@@ -1674,6 +1820,7 @@ class ElectronicChipFlowAlertMonitor:
             "expandedTrackingCount": len(client_tracking_stocks),
             "rankingLimit": MOMENTUM_RANK_LIMIT,
             "longCount": len(alerts),
+            "longRankingCount": len(long_rankings),
             "autoTopTrackingCount": len(self._auto_top_tracking_symbols),
             "extraPinnedTrackingLimit": EXTRA_PINNED_TRACKING_LIMIT,
             "extraPinnedTrackingCount": len(client_extra_pinned_stocks),
@@ -1683,10 +1830,13 @@ class ElectronicChipFlowAlertMonitor:
             "jointIncreaseCount": sum(bool(item["simultaneousIncrease"]) for item in alerts),
             "marketPulse": market_pulse,
             "alerts": top_alerts,
+            "longRankings": top_long_rankings,
             "trackedAlerts": tracked_alerts,
             "shortCount": len(short_alerts),
+            "shortRankingCount": len(short_rankings),
             "shortStrengtheningCount": sum(bool(item["reinforced"]) for item in short_alerts),
             "shortAlerts": top_short_alerts,
+            "shortRankings": top_short_rankings,
             "trackedShortAlerts": tracked_short_alerts,
             "lastError": self._last_error,
             "notice": (

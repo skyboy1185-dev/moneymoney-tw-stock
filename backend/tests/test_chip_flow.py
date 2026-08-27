@@ -730,6 +730,59 @@ def test_payload_ranks_long_momentum_top_ten_and_tracks_it_when_collapsed() -> N
     assert set(monitor.high_frequency_symbols_snapshot(now)) == set(ranked_symbols)
 
 
+def test_payload_keeps_long_top_ten_rankings_when_no_strict_alerts() -> None:
+    stocks = tuple(
+        ThemeStock(str(4000 + index), f"Stock {index}", "上市", "AI", ("AI",))
+        for index in range(12)
+    )
+
+    def rows(force_lots: int) -> list[SimpleNamespace]:
+        return [
+            alert_snapshot(0, buy_shares=20_000, sell_shares=20_000),
+            alert_snapshot(
+                2,
+                buy_shares=20_000 + force_lots * 500,
+                sell_shares=20_000 + force_lots * 470,
+            ),
+            alert_snapshot(
+                5,
+                buy_shares=20_000 + force_lots * 1_000,
+                sell_shares=20_000 + force_lots * 940,
+            ),
+        ]
+
+    class ServiceStub:
+        provider = SimpleNamespace(
+            capabilities=SimpleNamespace(available=True, source="test-stream"),
+        )
+
+        def alert_snapshots_snapshot(
+            self,
+            stock_ids: list[str],
+            trade_date: date,
+        ) -> dict[str, list[SimpleNamespace]]:
+            return {
+                stock_id: rows(20 + int(stock_id) - 4000)
+                for stock_id in stock_ids
+            }
+
+    monitor = ElectronicChipFlowAlertMonitor(service=ServiceStub())  # type: ignore[arg-type]
+    monitor._stocks = stocks
+    now = datetime(2026, 7, 29, 10, 6, tzinfo=TAIPEI)
+
+    payload = monitor.payload(now=now, client_id="browser-one")
+    ranked_symbols = [alert["symbol"] for alert in payload["longRankings"]]
+
+    assert payload["alerts"] == []
+    assert payload["longCount"] == 0
+    assert len(ranked_symbols) == MOMENTUM_RANK_LIMIT
+    assert payload["longRankingCount"] == 12
+    assert [alert["rank"] for alert in payload["longRankings"]] == list(range(1, 11))
+    assert ranked_symbols == [str(symbol) for symbol in range(4011, 4001, -1)]
+    assert all(alert["currentQualifies"] is False for alert in payload["longRankings"])
+    assert set(monitor.high_frequency_symbols_snapshot(now)) == set(ranked_symbols)
+
+
 def test_payload_ranks_short_momentum_top_ten() -> None:
     stocks = tuple(
         ThemeStock(str(4100 + index), f"Short {index}", "銝?", "AI", ("AI",))
@@ -777,6 +830,58 @@ def test_payload_ranks_short_momentum_top_ten() -> None:
     assert payload["shortCount"] == 12
     assert [alert["rank"] for alert in payload["shortAlerts"]] == list(range(1, 11))
     assert ranked_symbols == [str(symbol) for symbol in range(4111, 4101, -1)]
+
+
+def test_payload_keeps_short_top_ten_rankings_when_no_strict_alerts() -> None:
+    stocks = tuple(
+        ThemeStock(str(4100 + index), f"Short {index}", "上市", "AI", ("AI",))
+        for index in range(12)
+    )
+
+    def rows(force_lots: int) -> list[SimpleNamespace]:
+        return [
+            alert_snapshot(0, buy_shares=20_000, sell_shares=20_000),
+            alert_snapshot(
+                2,
+                buy_shares=20_000 + force_lots * 470,
+                sell_shares=20_000 + force_lots * 500,
+            ),
+            alert_snapshot(
+                5,
+                buy_shares=20_000 + force_lots * 940,
+                sell_shares=20_000 + force_lots * 1_000,
+            ),
+        ]
+
+    class ServiceStub:
+        provider = SimpleNamespace(
+            capabilities=SimpleNamespace(available=True, source="test-stream"),
+        )
+
+        def alert_snapshots_snapshot(
+            self,
+            stock_ids: list[str],
+            trade_date: date,
+        ) -> dict[str, list[SimpleNamespace]]:
+            return {
+                stock_id: rows(20 + int(stock_id) - 4100)
+                for stock_id in stock_ids
+            }
+
+    monitor = ElectronicChipFlowAlertMonitor(service=ServiceStub())  # type: ignore[arg-type]
+    monitor._stocks = stocks
+    now = datetime(2026, 7, 29, 10, 6, tzinfo=TAIPEI)
+
+    payload = monitor.payload(now=now, client_id="browser-one")
+    ranked_symbols = [alert["symbol"] for alert in payload["shortRankings"]]
+
+    assert payload["shortAlerts"] == []
+    assert payload["shortCount"] == 0
+    assert len(ranked_symbols) == MOMENTUM_RANK_LIMIT
+    assert payload["shortRankingCount"] == 12
+    assert [alert["rank"] for alert in payload["shortRankings"]] == list(range(1, 11))
+    assert ranked_symbols == [str(symbol) for symbol in range(4111, 4101, -1)]
+    assert all(alert["currentQualifies"] is False for alert in payload["shortRankings"])
 
 
 def test_pins_add_ten_extra_high_frequency_symbols_above_auto_top_ten() -> None:

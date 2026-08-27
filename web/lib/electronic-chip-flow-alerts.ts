@@ -161,6 +161,7 @@ export interface ElectronicChipFlowAlertsResponse {
   expandedTrackingCount?: number;
   rankingLimit?: number;
   longCount?: number;
+  longRankingCount?: number;
   autoTopTrackingCount?: number;
   extraPinnedTrackingLimit?: number;
   extraPinnedTrackingCount?: number;
@@ -170,10 +171,13 @@ export interface ElectronicChipFlowAlertsResponse {
   jointIncreaseCount: number;
   marketPulse?: ElectronicChipFlowMarketPulse;
   alerts: ElectronicChipFlowAlert[];
+  longRankings?: ElectronicChipFlowAlert[];
   trackedAlerts: ElectronicChipFlowAlert[];
   shortCount: number;
+  shortRankingCount?: number;
   shortStrengtheningCount: number;
   shortAlerts: ElectronicChipFlowAlert[];
+  shortRankings?: ElectronicChipFlowAlert[];
   trackedShortAlerts: ElectronicChipFlowAlert[];
   lastError: string | null;
   notice: string;

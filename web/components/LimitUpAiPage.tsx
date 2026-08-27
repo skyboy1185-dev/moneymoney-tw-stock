@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, AlertTriangle, Bell, BellRing, CheckCheck, CircleDollarSign, Flame, Gauge, RefreshCw, Settings, ShieldCheck, Target, Volume2, VolumeX, X, Zap } from "lucide-react";
 import type { ElectronicChipFlowAlert, ElectronicChipFlowAlertsResponse } from "@/lib/electronic-chip-flow-alerts";
+import { selectLargeOrderRankings } from "@/lib/electronic-chip-flow-rankings";
 import { finiteNumber, normalizeLargeOrderResponse, normalizeLimitUpDashboard, normalizeLimitUpReplay, normalizeNotificationPayload } from "@/lib/limit-up-ai-normalize";
 import type { LimitUpAiNotification, LimitUpAiPerformanceBucket, LimitUpAiSettings, LimitUpCandidate, LimitUpDashboard, LimitUpPosition, LimitUpReplay, LimitUpTrade } from "@/lib/limit-up-ai-types";
 import { limitUpAiClient } from "@/services/limit-up-ai-client";
@@ -110,6 +111,7 @@ function LargeOrderRankingTable({
       const steps = direction === "long" ? item.positiveSteps : item.negativeSteps ?? 0;
       const ratio = direction === "long" ? item.buySellRatio : item.sellBuyRatio ?? 0;
       const matched = candidateSymbols.has(item.symbol);
+      const status = item.currentQualifies ? "正式大單訊號" : matched ? "已進漲停AI候選" : "觀察中";
       return <tr key={`${direction}-${item.symbol}`} className={rank <= 3 ? "top-rank" : ""}>
         <td><span className="chip-alert-rank">#{rank}</span></td>
         <td><button className="limit-up-stock-link" onClick={() => onSelectStock(item.symbol)}><strong>{item.symbol} {item.name}</strong><small>{item.market}・{item.industry}</small></button></td>
@@ -118,7 +120,7 @@ function LargeOrderRankingTable({
         <td><strong>{ratio ? ratio.toFixed(2) : "—"}</strong><small>門檻 {item.effectiveNetThresholdLots ? lots(item.effectiveNetThresholdLots) : "估算中"}</small></td>
         <td>{item.trendLabel}<small>{item.message}</small></td>
         <td>{item.dataStateLabel ?? "即時"}<small>{item.lastLargeOrderAt ? time(item.lastLargeOrderAt) : item.time}</small></td>
-        <td><span className={`rocket-status ${matched ? "can_enter" : "waiting"}`}>{matched ? "已進漲停AI候選" : "大單強，待漲停條件"}</span></td>
+        <td><span className={`rocket-status ${item.currentQualifies || matched ? "can_enter" : "waiting"}`}>{status}</span></td>
       </tr>;
     })}</tbody></table></div> : <div className="rocket-empty compact">目前沒有 {direction === "long" ? "多方大單買入" : "空方大單賣出"} Top10 資料。</div>}
   </section>;
@@ -136,8 +138,8 @@ function LargeOrderTop10Panel({
   onSelectStock: (symbol: string) => void;
 }) {
   const rankingLimit = data?.rankingLimit ?? 10;
-  const longAlerts = Array.isArray(data?.alerts) ? data.alerts : [];
-  const shortAlerts = Array.isArray(data?.shortAlerts) ? data.shortAlerts : [];
+  const longAlerts = selectLargeOrderRankings(data, "long");
+  const shortAlerts = selectLargeOrderRankings(data, "short");
   const longRank = currentSymbol ? longAlerts.find((item) => item.symbol === currentSymbol) : undefined;
   const shortRank = currentSymbol ? shortAlerts.find((item) => item.symbol === currentSymbol) : undefined;
   const longRankNumber = longRank ? longRank.rank ?? longAlerts.indexOf(longRank) + 1 : null;

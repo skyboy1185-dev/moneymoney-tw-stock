@@ -17,6 +17,7 @@ import type { MarketIndexDefenseResponse } from "@/lib/market-index-defense";
 import { evaluateThreeGateLevels } from "@/lib/three-gate-price";
 import { detectGroupResonances } from "@/lib/group-resonance";
 import { evaluateLargeOrderOutcomes } from "@/lib/large-order-outcome";
+import { selectLargeOrderRankings } from "@/lib/electronic-chip-flow-rankings";
 import { buildTaiwanIndexKeyLevels, formatIndexLevel } from "@/lib/taiwan-index-key-levels";
 
 interface ElectronicChipFlowTickerProps {
@@ -910,9 +911,13 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
           warningCount: 0,
           strengtheningCount: 0,
           jointIncreaseCount: 0,
+          longRankingCount: 0,
+          longRankings: [],
           shortCount: 0,
+          shortRankingCount: 0,
           shortStrengtheningCount: 0,
           shortAlerts: [],
+          shortRankings: [],
           trackedShortAlerts: [],
         };
         if (!rawPayload.marketOpen) {
@@ -923,7 +928,7 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
           urgentSignatures.current.clear();
         }
         const nextTickerAlerts = Array.from(
-          new Map(payload.alerts.map((alert) => [alert.symbol, alert])).values(),
+          new Map(selectLargeOrderRankings(payload, "long").map((alert) => [alert.symbol, alert])).values(),
         );
         // Counts and raw BAR values remain live in the expanded panel. The
         // marquee changes only when a stock enters/leaves or its trend state
@@ -946,7 +951,7 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
         }
         const nextUrgentSignatures = new Map<string, string>();
         const freshToasts: MomentumToast[] = [];
-        nextTickerAlerts.forEach((alert) => {
+        payload.alerts.forEach((alert) => {
           if (!alert.isWarning && !alert.reinforced && !alert.simultaneousIncrease && !alert.currentQualifies && alert.alertLevel !== "critical") return;
           const kind = alert.isWarning || alert.alertLevel === "critical"
             ? "warning"
@@ -1015,13 +1020,13 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
   }, []);
 
   const alerts = tickerAlerts;
-  const shortAlerts = data?.shortAlerts ?? [];
+  const shortAlerts = selectLargeOrderRankings(data, "short");
   const disposedSymbols = new Set(data?.disposedExcludedSymbols ?? []);
   const pinnedSet = new Set(pinnedSymbols);
   const rankingLimit = data?.rankingLimit ?? 10;
   const autoTopSymbols = new Set([
-    ...(data?.alerts ?? []).map((alert) => alert.symbol),
-    ...(data?.shortAlerts ?? []).map((alert) => alert.symbol),
+    ...selectLargeOrderRankings(data, "long").map((alert) => alert.symbol),
+    ...selectLargeOrderRankings(data, "short").map((alert) => alert.symbol),
   ]);
   const extraPinnedTrackingSymbols = new Set(
     pinnedSymbols
@@ -1040,7 +1045,7 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
     return left.symbol.localeCompare(right.symbol);
   };
   const trackedPanelAlerts = data?.trackedAlerts ?? [];
-  const liveLongPanelAlerts = data?.alerts ?? [];
+  const liveLongPanelAlerts = selectLargeOrderRankings(data, "long");
   const liveLongPanelSymbols = new Set([
     ...liveLongPanelAlerts.map((alert) => alert.symbol),
     ...trackedPanelAlerts.map((alert) => alert.symbol),
@@ -1049,7 +1054,7 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
     new Map([...liveLongPanelAlerts, ...trackedPanelAlerts].map((alert) => [alert.symbol, alert])).values(),
   );
   const trackedPanelSymbols = new Set(trackedPanelAlerts.map((alert) => alert.symbol));
-  const alertPanelSymbols = new Set((data?.alerts ?? []).map((alert) => alert.symbol));
+  const alertPanelSymbols = new Set(selectLargeOrderRankings(data, "long").map((alert) => alert.symbol));
   const panelAlerts = [
     ...livePanelAlerts.map((alert) => [alert.symbol, alert] as const),
     ...pinnedAlertSnapshots
@@ -1057,7 +1062,7 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
       .map((alert) => [alert.symbol, alert] as const),
   ].map(([, alert]) => alert).sort(sortRankedThenPinned);
   const trackedShortPanelAlerts = data?.trackedShortAlerts ?? [];
-  const liveShortRankedAlerts = data?.shortAlerts ?? [];
+  const liveShortRankedAlerts = selectLargeOrderRankings(data, "short");
   const liveShortPanelSymbols = new Set([
     ...liveShortRankedAlerts.map((alert) => alert.symbol),
     ...trackedShortPanelAlerts.map((alert) => alert.symbol),
