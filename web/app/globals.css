@@ -161,6 +161,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .chip-alert-group.short-group em { color: #9bcfff; background: rgba(55,132,207,.15); border-color: rgba(86,161,231,.24); }
 .chip-alert-coverage { color: #718198; font-size: 11px; font-variant-numeric: tabular-nums; }
 .chip-momentum-panel { position: absolute; top: 132px; left: max(8px, calc((100vw - 1720px) / 2)); right: max(8px, calc((100vw - 1720px) / 2)); max-height: min(calc(100vh - 144px), 790px); display: flex; flex-direction: column; overflow: hidden; color: #dce7f5; background: rgba(8,17,30,.99); border: 1px solid #4c3d62; border-top: 0; border-radius: 0 0 16px 16px; box-shadow: 0 28px 72px rgba(0,0,0,.58); backdrop-filter: blur(22px); }
+.chip-alert-ticker.layout-compact .chip-momentum-panel { top: 96px; }
 .chip-momentum-panel.short-side { border-color: #31587c; }
 .chip-momentum-panel.short-side > header { background: linear-gradient(90deg, rgba(30,76,116,.28), rgba(25,48,82,.16), transparent); }
 .chip-momentum-panel.short-side > header strong svg { color: #69b7ff; }
@@ -1259,6 +1260,8 @@ footer span { color: #566177; }
 .data-anomaly-banner { padding: 15px 18px; display: flex; align-items: center; gap: 12px; color: #dec2ff; background: linear-gradient(90deg, rgba(139,62,181,.22), rgba(92,28,51,.2)); border: 1px solid rgba(173,96,221,.4); border-radius: 10px; }
 .data-anomaly-banner strong, .data-anomaly-banner span { display: block; }
 .data-anomaly-banner span { margin-top: 3px; color: #a995b6; font-size: 10px; }
+.limit-up-top10-location { color: #ffe0a3; background: linear-gradient(90deg, rgba(156,93,19,.18), rgba(35,49,77,.28)); border-color: rgba(255,196,92,.34); }
+.limit-up-top10-location span { color: #cbb991; }
 .automation-banner { min-height: 72px; padding: 13px 16px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 12px; color: #f0cb69; background: linear-gradient(90deg, rgba(241,199,91,.12), rgba(27,37,57,.6)); border: 1px solid rgba(241,199,91,.27); border-radius: 10px; }
 .automation-banner > svg { width: 22px; height: 22px; }
 .automation-banner strong, .automation-banner span { display: block; }

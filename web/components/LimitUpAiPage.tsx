@@ -2,9 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, AlertTriangle, Bell, BellRing, CheckCheck, CircleDollarSign, Flame, Gauge, RefreshCw, Settings, ShieldCheck, Target, Volume2, VolumeX, X, Zap } from "lucide-react";
-import type { ElectronicChipFlowAlert, ElectronicChipFlowAlertsResponse } from "@/lib/electronic-chip-flow-alerts";
-import { selectLargeOrderRankings } from "@/lib/electronic-chip-flow-rankings";
-import { finiteNumber, normalizeLargeOrderResponse, normalizeLimitUpAiStatus, normalizeLimitUpDashboard, normalizeLimitUpReplay, normalizeNotificationPayload } from "@/lib/limit-up-ai-normalize";
+import { finiteNumber, normalizeLimitUpAiStatus, normalizeLimitUpDashboard, normalizeLimitUpReplay, normalizeNotificationPayload } from "@/lib/limit-up-ai-normalize";
 import type { LimitUpAiNotification, LimitUpAiPerformanceBucket, LimitUpAiSettings, LimitUpAiStatus, LimitUpCandidate, LimitUpDashboard, LimitUpPosition, LimitUpReplay, LimitUpTrade } from "@/lib/limit-up-ai-types";
 import { LimitUpAiClientError, limitUpAiClient } from "@/services/limit-up-ai-client";
 
@@ -24,10 +22,6 @@ function percent(value: number | null | undefined): string {
 
 function price(value: number | null | undefined): string {
   return finiteNumber(value).toLocaleString("zh-TW", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
-function lots(value: number | null | undefined): string {
-  return `${finiteNumber(value).toLocaleString("zh-TW", { maximumFractionDigits: 1 })} 張`;
 }
 
 function time(value: string): string {
@@ -54,18 +48,6 @@ function actionLabel(action: string): string {
     WARNING: "警告",
   };
   return labels[action] ?? action;
-}
-
-function chipFlowStatusLabel(status?: string): string {
-  const labels: Record<string, string> = {
-    realtime: "即時排名",
-    scanning: "掃描中",
-    warming: "暖機中",
-    closed: "休市",
-    unavailable: "資料暫缺",
-    disconnected: "連線中斷",
-  };
-  return labels[status ?? ""] ?? "等待資料";
 }
 
 function robotStatusLabel(status?: string): string {
@@ -100,102 +82,6 @@ function CandidateTable({ title, subtitle, items, compact = false }: { title: st
       const blocker = item.failures[0] ?? item.warnings[0] ?? item.reasons[0] ?? "條件正常";
       return <tr key={`${item.snapshotAt}-${item.id}`}><td>#{item.rank}</td><td><strong>{item.symbol} {item.stockName}</strong><small>{item.market}</small></td><td><b>{price(item.price)}</b><small className={item.limitDistancePercent <= 3 ? "profit" : ""}>距漲停 {item.limitDistancePercent.toFixed(2)}%</small></td><td><strong className="rocket-score">{item.score.toFixed(1)}</strong><small>{item.categoryLabel}</small></td><td>{item.setupLabel}<small>{item.actionable ? "正式可進場" : "等待確認"}</small></td><td>{item.estimatedVolumeRatio20d.toFixed(2)}X<small>大單力道 {item.largeOrderForce.toFixed(0)}</small></td><td>{item.vwapStatus ?? "無資料"}<small>{item.fiveMinuteStructure ?? "等待分時"}</small></td><td><span className={`rocket-status ${item.actionable ? "can_enter" : item.category === "attack" ? "strong_breakout" : "waiting"}`}>{item.actionable ? "正式買進" : item.categoryLabel}</span>{!compact && <small>{blocker}</small>}</td></tr>;
     })}</tbody></table></div> : <div className="rocket-empty compact">目前沒有符合條件的標的。</div>}
-  </section>;
-}
-
-function LargeOrderRankingTable({
-  title,
-  subtitle,
-  direction,
-  items,
-  candidateSymbols,
-  onSelectStock,
-}: {
-  title: string;
-  subtitle: string;
-  direction: "long" | "short";
-  items: ElectronicChipFlowAlert[];
-  candidateSymbols: Set<string>;
-  onSelectStock: (symbol: string) => void;
-}) {
-  return <section className={`rocket-panel limit-up-large-order-table ${direction}`}>
-    <div className="rocket-title">
-      {direction === "long" ? <Zap size={17} /> : <Activity size={17} />}
-      <div><h2>{title}</h2><p>{subtitle}</p></div>
-      <b>Top {Math.min(items.length, 10)}</b>
-    </div>
-    {items.length ? <div className="rocket-table-wrap"><table><thead><tr><th>排名</th><th>股票</th><th>{direction === "long" ? "開盤累計淨買" : "開盤累計淨賣"}</th><th>連續次數</th><th>{direction === "long" ? "累計買賣比" : "累計賣買比"}</th><th>趨勢</th><th>資料</th><th>漲停AI</th></tr></thead><tbody>{items.slice(0, 10).map((item, index) => {
-      const rank = item.rank ?? index + 1;
-      const netLots = direction === "long"
-        ? Math.max(0, item.sessionNetBuyLots ?? item.recentNetBuyLots)
-        : Math.max(0, item.sessionNetSellLots ?? item.recentNetSellLots ?? -item.recentNetBuyLots);
-      const steps = direction === "long" ? item.positiveSteps : item.negativeSteps ?? 0;
-      const ratio = direction === "long" ? item.sessionBuySellRatio ?? item.buySellRatio : item.sessionSellBuyRatio ?? item.sellBuyRatio ?? 0;
-      const matched = candidateSymbols.has(item.symbol);
-      const status = item.currentQualifies ? "正式大單訊號" : matched ? "已進漲停AI候選" : item.trendLabel || "觀察中";
-      return <tr key={`${direction}-${item.symbol}`} className={rank <= 3 ? "top-rank" : ""}>
-        <td><span className="chip-alert-rank">#{rank}</span></td>
-        <td><button className="limit-up-stock-link" onClick={() => onSelectStock(item.symbol)}><strong>{item.symbol} {item.name}</strong><small>{item.market}・{item.industry}</small></button></td>
-        <td><b className={direction === "long" ? "profit" : "loss"}>{lots(netLots)}</b><small>日大單買 {lots(item.sessionLargeBuyLots ?? item.dayLargeBuyLots)} / 賣 {lots(item.sessionLargeSellLots ?? item.dayLargeSellLots)}</small></td>
-        <td><strong>{steps}</strong><small>{item.currentQualifies ? "目前仍符合" : "等待下一筆確認"}</small></td>
-        <td><strong>{ratio ? ratio.toFixed(2) : "—"}</strong><small>門檻 {item.effectiveNetThresholdLots ? lots(item.effectiveNetThresholdLots) : "估算中"}</small></td>
-        <td>{item.trendLabel}<small>{item.message}</small></td>
-        <td>{item.dataStateLabel ?? "即時"}<small>{item.lastLargeOrderAt ? time(item.lastLargeOrderAt) : item.time}</small></td>
-        <td><span className={`rocket-status ${item.currentQualifies || matched ? "can_enter" : "waiting"}`}>{status}</span></td>
-      </tr>;
-    })}</tbody></table></div> : <div className="rocket-empty compact">目前沒有 {direction === "long" ? "多方大單買入" : "空方大單賣出"} Top10 資料。</div>}
-  </section>;
-}
-
-function LargeOrderTop10Panel({
-  data,
-  currentSymbol,
-  candidateSymbols,
-  onSelectStock,
-}: {
-  data: ElectronicChipFlowAlertsResponse | null;
-  currentSymbol?: string;
-  candidateSymbols: Set<string>;
-  onSelectStock: (symbol: string) => void;
-}) {
-  const rankingLimit = data?.rankingLimit ?? 10;
-  const longAlerts = selectLargeOrderRankings(data, "long");
-  const shortAlerts = selectLargeOrderRankings(data, "short");
-  const longRank = currentSymbol ? longAlerts.find((item) => item.symbol === currentSymbol) : undefined;
-  const shortRank = currentSymbol ? shortAlerts.find((item) => item.symbol === currentSymbol) : undefined;
-  const longRankNumber = longRank ? longRank.rank ?? longAlerts.indexOf(longRank) + 1 : null;
-  const shortRankNumber = shortRank ? shortRank.rank ?? shortAlerts.indexOf(shortRank) + 1 : null;
-  return <section className="limit-up-large-order-ranking">
-    <header className="rocket-panel limit-up-large-order-header">
-      <div><span>這裡就是大單動能前10排名</span><h2>連續大單動能 Top{rankingLimit}</h2><p>同一套即時大單排名：多方看連續大單買入，空方看連續大單賣出；漲停 AI 會另外標示是否已通過完整條件。</p></div>
-      <strong>{chipFlowStatusLabel(data?.status)}</strong>
-    </header>
-    {currentSymbol && <article className="rocket-panel limit-up-current-rank-card">
-      <span>目前查詢股票</span>
-      <strong>{currentSymbol}</strong>
-      {longRank ? <p className="profit">目前多方開盤累計大單買入第 {longRankNumber} 名，累計淨買 {lots(Math.max(0, longRank.sessionNetBuyLots ?? longRank.recentNetBuyLots))}。</p>
-        : shortRank ? <p className="loss">目前空方開盤累計大單賣出第 {shortRankNumber} 名，累計淨賣 {lots(Math.max(0, shortRank.sessionNetSellLots ?? shortRank.recentNetSellLots ?? -shortRank.recentNetBuyLots))}。</p>
-          : <p>目前不在大單動能 Top{rankingLimit}；代表不是當下前 10 強的連續大單方向標的。</p>}
-    </article>}
-    {data?.notice && <div className="data-anomaly-banner"><ShieldCheck /><div><strong>大單資料狀態</strong><span>{data.notice}</span></div></div>}
-    <div className="limit-up-large-order-grid">
-      <LargeOrderRankingTable
-        title={`多方開盤累計大單買入 Top${rankingLimit}`}
-        subtitle="從 09:00 開盤累計大單淨買排名；未達正式訊號會標示觀察或抵銷。"
-        direction="long"
-        items={longAlerts}
-        candidateSymbols={candidateSymbols}
-        onSelectStock={onSelectStock}
-      />
-      <LargeOrderRankingTable
-        title={`空方開盤累計大單賣出 Top${rankingLimit}`}
-        subtitle="從 09:00 開盤累計大單淨賣排名；未達正式訊號會標示觀察或抵銷。"
-        direction="short"
-        items={shortAlerts}
-        candidateSymbols={candidateSymbols}
-        onSelectStock={onSelectStock}
-      />
-    </div>
   </section>;
 }
 
@@ -264,7 +150,6 @@ export function LimitUpAiPage({ symbol }: { symbol?: string }) {
   const [data, setData] = useState<LimitUpDashboard>(() => normalizeLimitUpDashboard({
     dataNotice: "漲停機器人頁面已啟動；等待背景掃描或手動掃描寫入最新候選。",
   }));
-  const [largeOrderData, setLargeOrderData] = useState<ElectronicChipFlowAlertsResponse | null>(null);
   const [replay, setReplay] = useState<LimitUpReplay | null>(null);
   const [robotStatus, setRobotStatus] = useState<LimitUpAiStatus | null>(null);
   const [settingsDraft, setSettingsDraft] = useState<LimitUpAiSettings | null>(null);
@@ -306,19 +191,11 @@ export function LimitUpAiPage({ symbol }: { symbol?: string }) {
     if (!quiet) setLoading(true);
     const failures: string[] = [];
     try {
-      const largeOrderRequest = fetch("/api/chip-flow/electronic-alerts?clientId=limit-up-ai-page", { cache: "no-store" })
-        .then(async (response) => {
-          const payload = await response.json().catch(() => ({}));
-          if (!response.ok) return normalizeLargeOrderResponse({ ...payload, status: "disconnected" });
-          return normalizeLargeOrderResponse(payload);
-        })
-        .catch(() => normalizeLargeOrderResponse({ status: "disconnected", error: "大單資料暫時無法取得。" }));
-      const [statusResult, dashboardResult, replayResult, notificationResult, largeOrderResult] = await Promise.allSettled([
+      const [statusResult, dashboardResult, replayResult, notificationResult] = await Promise.allSettled([
         limitUpAiClient.status(userId),
         limitUpAiClient.dashboard(userId),
         limitUpAiClient.replayToday(userId),
         limitUpAiClient.notifications(userId, messageFilter),
-        largeOrderRequest,
       ]);
 
       let soundEnabled = true;
@@ -371,11 +248,6 @@ export function LimitUpAiPage({ symbol }: { symbol?: string }) {
         failures.push("買賣通知暫時無法取得");
       }
 
-      if (largeOrderResult.status === "fulfilled") {
-        setLargeOrderData(largeOrderResult.value);
-      } else {
-        setLargeOrderData(normalizeLargeOrderResponse({ status: "disconnected", error: "大單資料暫時無法取得。" }));
-      }
       setError(failures[0] ?? "");
     } finally {
       setLoading(false);
@@ -431,14 +303,6 @@ export function LimitUpAiPage({ symbol }: { symbol?: string }) {
   };
 
   const visibleMessages = useMemo(() => messages, [messages]);
-  const candidateSymbols = useMemo(() => new Set([
-    ...data.candidates.map((item) => item.symbol),
-    ...data.nearEntries.map((item) => item.symbol),
-    ...data.limitMonitors.map((item) => item.symbol),
-  ]), [data]);
-  const selectStock = (symbol: string) => {
-    window.location.assign(`/?symbol=${encodeURIComponent(symbol)}&view=analysis`);
-  };
 
   return <div className="rocket-page limit-up-ai-page">
     <div className="limit-up-toast-stack">{toasts.map((item) => <article key={item.id} className={`limit-up-toast ${item.type.toLowerCase()}`}>
@@ -459,8 +323,7 @@ export function LimitUpAiPage({ symbol }: { symbol?: string }) {
     </header>
     {error && <div className="error-banner"><AlertTriangle size={16} />{error}{isLoginRequiredMessage(error) && <a href="/login">前往登入</a>}</div>}
     <div className="data-anomaly-banner"><ShieldCheck /><div><strong>模擬交易提醒</strong><span>{data.dataNotice}</span></div></div>
-
-    <LargeOrderTop10Panel data={largeOrderData} currentSymbol={symbol} candidateSymbols={candidateSymbols} onSelectStock={selectStock} />
+    <div className="data-anomaly-banner limit-up-top10-location"><Zap /><div><strong>大單 Top10 位置</strong><span>{symbol ? `${symbol} 的多方/空方開盤累計名次，` : ""}請直接展開上方「多方開盤累計」或「空方開盤累計」bar；收合時仍會持續偵測 Top10。</span></div></div>
 
     <section className="rocket-dashboard">
       <article><span>機器人狀態</span><strong>{robotStatusLabel(robotStatus?.status)}</strong><small>{robotStatus?.marketSessionActive ? "盤中每 15 秒自動偵測" : "非盤中，保留最後結果"}</small></article>

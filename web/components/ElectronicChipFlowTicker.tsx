@@ -618,8 +618,8 @@ function MomentumPanel({
   return <aside className={`chip-momentum-panel ${isShort ? "short-side" : "long-side"}`} aria-label={isShort ? "空方大單動能雷達" : "多方大單動能雷達"}>
     <header>
       <div>
-        <strong>{isShort ? <TrendingDown size={14} /> : <Zap size={14} />}{isShort ? `空方連續大單賣出 Top${rankingLimit}` : `多方連續大單買入 Top${rankingLimit}`}</strong>
-        <span>目前顯示 {rankedAlerts.length}/{rankingLimit}；優先看開盤累計排名、強度、累計{sideLabel}、{ratioLabel}與是否續強。</span>
+        <strong>{isShort ? <TrendingDown size={14} /> : <Zap size={14} />}{isShort ? `空方開盤累計大單賣出 Top${rankingLimit}` : `多方開盤累計大單買入 Top${rankingLimit}`}</strong>
+        <span>這裡就是{isShort ? "空方累計" : "多方累計"} bar 的展開排名；第 1～{rankingLimit} 名依開盤累計大單、強度、累計{sideLabel}、{ratioLabel}與是否續強排序。</span>
       </div>
       <div className="chip-momentum-summary">
         <span className={isShort ? "short" : "positive"}>{isShort ? <TrendingDown size={12} /> : <TrendingUp size={12} />}{isShort ? `空方Top${rankingLimit} ${rankedAlerts.length}/${rankingLimit}` : `多方Top${rankingLimit} ${rankedAlerts.length}/${rankingLimit}`}</span>
@@ -628,7 +628,7 @@ function MomentumPanel({
         {groupResonances.length > 0 && <span className="group-warning"><AlertTriangle size={12} />族群共振 {groupResonances.length} 組・強烈注意</span>}
         {pinnedSymbols.size > 0 && <span className="pinned"><Pin size={12} />已釘選 {pinnedSymbols.size}</span>}
         {(data.extraPinnedTrackingCount ?? 0) > 0 && <span className="pinned"><Pin size={12} />釘選加碼 {data.extraPinnedTrackingCount}/{data.extraPinnedTrackingLimit ?? 10}</span>}
-        <small>Top收合持續偵測 {data.autoTopTrackingCount ?? 0}・釘選加碼 {data.extraPinnedTrackingCount ?? 0}/{data.extraPinnedTrackingLimit ?? 10}・監控池 {data.candidateCount}/{data.candidateTarget ?? data.candidateCount}</small>
+        <small>收合仍持續偵測Top{rankingLimit}・釘選加碼 {data.extraPinnedTrackingCount ?? 0}/{data.extraPinnedTrackingLimit ?? 10}・監控池 {data.candidateCount}/{data.candidateTarget ?? data.candidateCount}</small>
       </div>
       <button type="button" onClick={onClose} aria-label="關閉大單動能雷達"><X size={15} /></button>
     </header>
@@ -703,7 +703,7 @@ function MomentumPanel({
               }}
             ><Pin size={12} /></button>
           </div>
-          <p>{alert.message}</p>
+          <p>{isShort ? "空方開盤累計大單賣出" : "多方開盤累計大單買入"}第 {alert.rank ?? "?"} 名｜{alert.message}</p>
         </article>;
       }) : <div className="chip-momentum-empty">{isShort ? `目前尚無符合空方Top${rankingLimit}條件的標的；系統持續輪巡中。` : `目前尚無符合多方Top${rankingLimit}條件的標的；系統持續輪巡中。`}</div>}
       {pinnedTrackingAlerts.length > 0 && <section className="chip-pinned-followup" aria-label="釘選加碼追蹤">
