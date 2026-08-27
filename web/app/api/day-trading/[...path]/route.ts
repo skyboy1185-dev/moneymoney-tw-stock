@@ -20,6 +20,7 @@ type CachedProxyResponse = {
   body: ArrayBuffer;
   contentType: string;
   expiresAt: number;
+  staleUntil: number;
   status: number;
 };
 
@@ -47,7 +48,7 @@ function proxyAbortSignal(request: NextRequest): { signal: AbortSignal; cleanup:
 }
 
 function readCacheTtlMs(pathKey: string): number {
-  if (pathKey === "rankings") return 5_000;
+  if (pathKey === "rankings" || pathKey === "signals") return 10_000;
   return 2_000;
 }
 
@@ -74,12 +75,14 @@ async function fetchBuffered(
     body: await response.arrayBuffer(),
     contentType: response.headers.get("content-type") ?? "application/json",
     expiresAt: 0,
+    staleUntil: 0,
     status: response.status,
   };
 }
 
 async function proxy(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
   const { path } = await context.params;
+  const pathKey = path.join("/");
   const headers = new Headers();
   const userId = request.headers.get("x-user-id");
   if (userId) headers.set("x-user-id", userId);
@@ -88,6 +91,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
   const isBodyMethod = !["GET", "HEAD"].includes(request.method);
   const isStream = path.at(-1) === "stream";
   const proxySignal = isStream ? null : proxyAbortSignal(request);
+  let cacheKey: string | null = null;
   try {
     const requestBody = isBodyMethod ? await request.text() : undefined;
     if (isStream) {
@@ -108,9 +112,8 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
         },
       });
     }
-    const pathKey = path.join("/");
     if (request.method === "GET" && CACHEABLE_GET_PATHS.has(pathKey)) {
-      const cacheKey = readCacheKey(request, pathKey, userId);
+      cacheKey = readCacheKey(request, pathKey, userId);
       const cached = readCache.get(cacheKey);
       if (cached && cached.expiresAt > Date.now()) {
         return new NextResponse(cached.body.slice(0), {
@@ -131,7 +134,9 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
       try {
         const fresh = await promise;
         if (fresh.status < 500) {
-          fresh.expiresAt = Date.now() + readCacheTtlMs(pathKey);
+          const now = Date.now();
+          fresh.expiresAt = now + readCacheTtlMs(pathKey);
+          fresh.staleUntil = now + 60_000;
           readCache.set(cacheKey, fresh);
           if (readCache.size > 128) readCache.clear();
         }
@@ -149,6 +154,13 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
       headers: { "Content-Type": fresh.contentType },
     });
   } catch (error) {
+    const stale = cacheKey ? readCache.get(cacheKey) : undefined;
+    if (stale && stale.staleUntil > Date.now()) {
+      return new NextResponse(stale.body.slice(0), {
+        status: stale.status,
+        headers: { "Content-Type": stale.contentType, "X-Day-Trading-Proxy-Cache": "stale" },
+      });
+    }
     return NextResponse.json({
       error: "當沖後端暫時無法連線，核心狀態會在恢復後自動更新。",
       detail: error instanceof Error ? error.message : undefined,

@@ -45,6 +45,8 @@ from .three_gate_price import official_three_gate_price_provider
 
 logger = logging.getLogger(__name__)
 QUOTE_HISTORY_CACHE_KEY = "day-trading-official-quote-history"
+AUTOMATION_SELECTION_CACHE_KEY = "automation-selection"
+AUTOMATION_RANKED_CANDIDATES_CACHE_KEY = "automation-ranked-candidates"
 BASELINE_QUOTE_REFRESH_SECONDS = 30
 PRIORITY_QUOTE_REFRESH_SECONDS = 5
 ACTIVE_QUOTE_PHASES = frozenset({
@@ -411,6 +413,22 @@ class DayTradingAutomationSupervisor:
                     session,
                     now=now,
                 )
+                selection_cache = {
+                    "recommended": self._recommendations,
+                    "candidates": _ranked_candidates,
+                    "totalRecommended": len(self._recommendations),
+                    "maximumRecommendations": config.maximum_recommendations,
+                    "summary": (
+                        f"已選出 {len(self._recommendations)} 檔當沖機會"
+                        if self._recommendations
+                        else "目前沒有符合風控條件的股票，持續掃描中"
+                    ),
+                    "session": session,
+                    "regime": {**regime, **strategy},
+                    "tradingDate": trading_date,
+                    "updatedAt": now.isoformat(),
+                    "source": "automation_cache",
+                }
                 self._last_candidate_snapshot_count = 0
                 if _ranked_candidates:
                     try:
@@ -426,6 +444,20 @@ class DayTradingAutomationSupervisor:
                         logger.exception("Failed to persist day-trading candidate snapshots")
                 self._last_scan_at = now
                 day_trading_cache.put("automation-recommendations", self._recommendations, ttl=86_400)
+                day_trading_cache.put(AUTOMATION_SELECTION_CACHE_KEY, selection_cache, ttl=45)
+                day_trading_cache.put(
+                    AUTOMATION_RANKED_CANDIDATES_CACHE_KEY,
+                    {
+                        "items": _ranked_candidates,
+                        "recommendedTotal": len(self._recommendations),
+                        "maximumRecommendations": config.maximum_recommendations,
+                        "summary": selection_cache["summary"],
+                        "tradingDate": trading_date,
+                        "updatedAt": now.isoformat(),
+                        "source": "automation_cache",
+                    },
+                    ttl=45,
+                )
                 if session["formalSignalsAllowed"]:
                     self._today_signal_ids.update(str(item["id"]) for item in self._recommendations)
             elif session["phase"] not in {"warmup", "scanning", "long_only"} or not session["formalSignalsAllowed"]:

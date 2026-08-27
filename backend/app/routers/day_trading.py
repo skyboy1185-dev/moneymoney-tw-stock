@@ -45,7 +45,11 @@ from ..services.day_trading_strategies import (
     strategy_context,
     strategy_eligible_signals,
 )
-from ..services.day_trading_automation import day_trading_automation
+from ..services.day_trading_automation import (
+    AUTOMATION_RANKED_CANDIDATES_CACHE_KEY,
+    AUTOMATION_SELECTION_CACHE_KEY,
+    day_trading_automation,
+)
 from ..services.automated_position_tracker import (
     AUTOMATION_PERFORMANCE_START,
     AUTOMATION_QUANTITY_LOTS,
@@ -571,6 +575,88 @@ def _safe_selection(
         return _selection_fallback(reason, now=now, stream_healthy=stream_healthy)
 
 
+def _same_trading_date(payload: dict[str, Any]) -> bool:
+    trading_date, _, _ = _daily_period()
+    return str(payload.get("tradingDate") or "") == trading_date
+
+
+def _payload_list(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, list):
+        return []
+    return [item for item in payload if isinstance(item, dict)]
+
+
+def _open_signal_ids(db: Session, user_id: str) -> set[str]:
+    return {
+        str(value)
+        for value in db.scalars(select(DayTradingPosition.signal_id).where(
+            DayTradingPosition.user_id == user_id,
+            DayTradingPosition.status == "open",
+            DayTradingPosition.signal_id.is_not(None),
+        )).all()
+        if value
+    }
+
+
+def _automation_cached_selection(db: Session, user_id: str) -> dict[str, Any] | None:
+    payload = day_trading_cache.get(AUTOMATION_SELECTION_CACHE_KEY)
+    if not isinstance(payload, dict) or not _same_trading_date(payload):
+        return None
+    session = payload.get("session")
+    regime = payload.get("regime")
+    if not isinstance(session, dict) or not isinstance(regime, dict):
+        return None
+    open_ids = _open_signal_ids(db, user_id)
+    recommended = [
+        item
+        for item in _payload_list(payload.get("recommended"))
+        if str(item.get("id") or "") not in open_ids
+    ]
+    candidates = _payload_list(payload.get("candidates"))
+    return {
+        "recommended": recommended,
+        "candidates": candidates,
+        "totalRecommended": len(recommended),
+        "maximumRecommendations": int(payload.get("maximumRecommendations") or 10),
+        "session": session,
+        "infrastructure": {
+            "quoteSource": (
+                "healthy" if regime.get("dataStatus") == "normal"
+                else "closed" if regime.get("dataStatus") == "closed"
+                else "error"
+            ),
+            "redis": day_trading_cache.status,
+            "database": "healthy",
+            "stream": "healthy",
+        },
+        "summary": str(payload.get("summary") or "目前沒有符合風控條件的股票，持續掃描中"),
+        "regime": regime,
+        "selectionSource": str(payload.get("source") or "automation_cache"),
+        "updatedAt": payload.get("updatedAt"),
+    }
+
+
+def _automation_cached_rankings(direction: str) -> dict[str, Any] | None:
+    payload = day_trading_cache.get(AUTOMATION_RANKED_CANDIDATES_CACHE_KEY)
+    if not isinstance(payload, dict) or not _same_trading_date(payload):
+        return None
+    rows = _payload_list(payload.get("items"))
+    if direction != "all":
+        rows = [item for item in rows if item.get("direction") == direction]
+    return {
+        "items": [{**item, "rank": index + 1} for index, item in enumerate(rows)],
+        "total": len(rows),
+        "recommendedTotal": int(payload.get("recommendedTotal") or 0),
+        "maximumRecommendations": int(payload.get("maximumRecommendations") or 10),
+        "summary": str(payload.get("summary") or "目前沒有符合風控條件的股票，持續掃描中"),
+        "degraded": False,
+        "fallbackReason": None,
+        "fallbackAt": None,
+        "rankingSource": str(payload.get("source") or "automation_cache"),
+        "updatedAt": payload.get("updatedAt"),
+    }
+
+
 def _market_regime_payload(selection: dict[str, Any]) -> dict[str, Any]:
     degraded = bool(selection.get("degraded") or selection["regime"].get("degraded"))
     return {
@@ -671,7 +757,7 @@ def get_market_regime(
     user_id: str = Depends(_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    selection = _safe_selection(db, user_id)
+    selection = _automation_cached_selection(db, user_id) or _safe_selection(db, user_id)
     payload = _market_regime_payload(selection)
     day_trading_cache.put("market-regime", payload)
     return payload
@@ -682,7 +768,7 @@ def get_signals(
     user_id: str = Depends(_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    selection = _safe_selection(db, user_id)
+    selection = _automation_cached_selection(db, user_id) or _safe_selection(db, user_id)
     signals = selection["recommended"]
     day_trading_cache.put(f"signals:{user_id}", selection)
     return {
@@ -695,7 +781,8 @@ def get_signals(
         "degraded": bool(selection.get("degraded") or selection["regime"].get("degraded")),
         "fallbackReason": selection.get("fallbackReason") or selection["regime"].get("fallbackReason"),
         "fallbackAt": selection.get("fallbackAt") or selection["regime"].get("fallbackAt"),
-        "updatedAt": datetime.now(UTC).isoformat(),
+        "selectionSource": selection.get("selectionSource", "live_fallback"),
+        "updatedAt": selection.get("updatedAt") or datetime.now(UTC).isoformat(),
     }
 
 
@@ -838,6 +925,9 @@ def get_rankings(
     user_id: str = Depends(_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    cached = _automation_cached_rankings(direction)
+    if cached is not None:
+        return cached
     selection = _safe_selection(db, user_id, force_candidate_ranking=True)
     rows = selection["candidates"]
     if direction != "all":
@@ -850,6 +940,8 @@ def get_rankings(
         "degraded": bool(selection.get("degraded") or selection["regime"].get("degraded")),
         "fallbackReason": selection.get("fallbackReason") or selection["regime"].get("fallbackReason"),
         "fallbackAt": selection.get("fallbackAt") or selection["regime"].get("fallbackAt"),
+        "rankingSource": "live_fallback",
+        "updatedAt": datetime.now(UTC).isoformat(),
     }
 
 
