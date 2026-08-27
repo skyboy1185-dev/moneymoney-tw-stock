@@ -105,6 +105,33 @@ class DayTradingRecommendationHistory(Base):
     recommended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class DayTradingCandidateSnapshot(Base):
+    __tablename__ = "day_trading_candidate_snapshots"
+    __table_args__ = (
+        UniqueConstraint("signal_id", "snapshot_at", name="uq_day_candidate_snapshot_signal_time"),
+        Index("ix_day_candidate_snapshots_date_time", "trading_date", "snapshot_at"),
+        Index("ix_day_candidate_snapshots_symbol_time", "symbol", "snapshot_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    signal_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    trading_date: Mapped[date] = mapped_column(Date, nullable=False)
+    snapshot_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(12), nullable=False)
+    stock_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    market: Mapped[str] = mapped_column(String(20), nullable=False)
+    direction: Mapped[str] = mapped_column(String(12), nullable=False)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_official_recommendation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    confidence_score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    health_score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    confirmation_score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    large_order_force: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    risk_reward_ratio: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    liquidity_score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class DayTradingPosition(Base):
     __tablename__ = "day_trading_positions"
     __table_args__ = (Index("ix_day_positions_user_status", "user_id", "status"),)
@@ -1375,6 +1402,141 @@ class RocketNotification(Base):
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     is_read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class LimitUpAiSettings(Base):
+    __tablename__ = "limit_up_ai_settings"
+    __table_args__ = (UniqueConstraint("user_id", name="uq_limit_up_ai_settings_user"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    capital: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("3000000"))
+    min_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False, default=Decimal("20"))
+    max_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False, default=Decimal("500"))
+    min_average_turnover_20d: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("100000000"))
+    min_volume_ratio_20d: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False, default=Decimal("1.8"))
+    first_position_pct: Mapped[Decimal] = mapped_column(Numeric(7, 4), nullable=False, default=Decimal("0.10"))
+    max_position_pct: Mapped[Decimal] = mapped_column(Numeric(7, 4), nullable=False, default=Decimal("0.20"))
+    max_positions: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    max_loss_per_trade_pct: Mapped[Decimal] = mapped_column(Numeric(7, 4), nullable=False, default=Decimal("0.005"))
+    max_daily_loss_pct: Mapped[Decimal] = mapped_column(Numeric(7, 4), nullable=False, default=Decimal("0.01"))
+    max_consecutive_stops: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    overnight_total_pct: Mapped[Decimal] = mapped_column(Numeric(7, 4), nullable=False, default=Decimal("0.30"))
+    overnight_single_pct: Mapped[Decimal] = mapped_column(Numeric(7, 4), nullable=False, default=Decimal("0.15"))
+    exclude_locked_limit_up: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    sound_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class LimitUpAiSnapshot(Base):
+    __tablename__ = "limit_up_ai_snapshots"
+    __table_args__ = (
+        UniqueConstraint("signal_id", "snapshot_at", name="uq_limit_up_ai_snapshot_signal_time"),
+        Index("ix_limit_up_ai_snapshot_date_rank", "trading_date", "rank"),
+        Index("ix_limit_up_ai_snapshot_symbol_time", "symbol", "snapshot_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    signal_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    trading_date: Mapped[date] = mapped_column(Date, nullable=False)
+    snapshot_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(12), nullable=False)
+    stock_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    market: Mapped[str] = mapped_column(String(20), nullable=False)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    category: Mapped[str] = mapped_column(String(30), nullable=False)
+    setup_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    score: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False)
+    price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    change_pct: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    limit_distance_pct: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class LimitUpAiPosition(Base):
+    __tablename__ = "limit_up_ai_positions"
+    __table_args__ = (
+        Index("ix_limit_up_ai_position_user_status", "user_id", "status"),
+        Index("ix_limit_up_ai_position_symbol", "symbol", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(12), nullable=False)
+    stock_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    market: Mapped[str] = mapped_column(String(20), nullable=False)
+    setup_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="open")
+    entry_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    exit_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    entry_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    current_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    exit_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    remaining_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    stop_loss: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    target1: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    target2: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    highest_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    lowest_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    take_profit_stage: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    score_entry: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False)
+    score_current: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False)
+    overnight_score: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=Decimal("0"))
+    overnight_hold_pct: Mapped[Decimal] = mapped_column(Numeric(7, 4), nullable=False, default=Decimal("0"))
+    realized_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("0"))
+    unrealized_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("0"))
+    latest_action: Mapped[str] = mapped_column(String(120), nullable=False, default="模擬持有")
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class LimitUpAiTrade(Base):
+    __tablename__ = "limit_up_ai_trades"
+    __table_args__ = (Index("ix_limit_up_ai_trade_time", "executed_at", "symbol"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    position_id: Mapped[int | None] = mapped_column(ForeignKey("limit_up_ai_positions.id"))
+    user_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(12), nullable=False)
+    stock_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    action: Mapped[str] = mapped_column(String(30), nullable=False)
+    setup_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    gross_amount: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    realized_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=Decimal("0"))
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    executed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class LimitUpAiNotification(Base):
+    __tablename__ = "limit_up_ai_notifications"
+    __table_args__ = (
+        UniqueConstraint("user_id", "dedupe_key", name="uq_limit_up_ai_notification_dedupe"),
+        Index("ix_limit_up_ai_notification_user_time", "user_id", "created_at"),
+        Index("ix_limit_up_ai_notification_unread", "user_id", "is_read", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    dedupe_key: Mapped[str] = mapped_column(String(180), nullable=False)
+    notification_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=4)
+    title: Mapped[str] = mapped_column(String(160), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    symbol: Mapped[str | None] = mapped_column(String(12))
+    stock_name: Mapped[str | None] = mapped_column(String(80))
+    setup_type: Mapped[str | None] = mapped_column(String(40))
+    price: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    quantity: Mapped[int | None] = mapped_column(Integer)
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 2))
+    realized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(20, 2))
+    score: Mapped[Decimal | None] = mapped_column(Numeric(7, 2))
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    is_read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class PatternRobotSetting(Base):

@@ -2,13 +2,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  Activity, AlertTriangle, BellRing, ChevronDown, ChevronUp, Crosshair, Radio,
+  Activity, AlertTriangle, ChevronDown, ChevronUp, Crosshair, Radio,
   Pin, TrendingDown, TrendingUp, X, Zap,
 } from "lucide-react";
 import type {
   ElectronicChipFlowAlert,
   ElectronicChipFlowAlertsResponse,
-  ElectronicChipFlowPriceHistory,
   ElectronicChipFlowPricePoint,
   ElectronicChipFlowQuote,
 } from "@/lib/electronic-chip-flow-alerts";
@@ -17,7 +16,6 @@ import type { MarketSnapshot } from "@/lib/market-types";
 import type { MarketIndexDefenseResponse } from "@/lib/market-index-defense";
 import { evaluateThreeGateLevels } from "@/lib/three-gate-price";
 import { detectGroupResonances } from "@/lib/group-resonance";
-import { evaluateLargeOrderGuidance } from "@/lib/large-order-action";
 import { evaluateLargeOrderOutcomes } from "@/lib/large-order-outcome";
 import { buildTaiwanIndexKeyLevels, formatIndexLevel } from "@/lib/taiwan-index-key-levels";
 
@@ -30,11 +28,6 @@ interface MomentumToast {
   id: string;
   alert: ElectronicChipFlowAlert;
   kind: "warning" | "reinforced" | "joint" | "surge";
-}
-
-interface MomentumPanelNotice {
-  alert: ElectronicChipFlowAlert;
-  kind: "retreat" | "surge";
 }
 
 interface ThreeGateToast {
@@ -53,7 +46,6 @@ const PINNED_MOMENTUM_ALERTS_KEY = "twse:pinned-momentum-alerts";
 const MOMENTUM_CLIENT_ID_KEY = "twse:momentum-client-id";
 const THREE_GATE_NOTIFICATION_SIGNATURES_KEY = "twse:pinned-three-gate-notifications";
 const MOMENTUM_BAR_LAYOUT_KEY = "twse:momentum-bar-layout";
-const EXPANDED_TECHNICAL_REFRESH_MS = 5_000;
 const PINNED_TECHNICAL_REFRESH_MS = 5_000;
 const ACTIVE_MONITOR_QUOTE_REFRESH_MS = 2_000;
 
@@ -74,23 +66,6 @@ function formatPrice(value: number): string {
   }).format(value);
 }
 
-function formatAmount(value: number): string {
-  return new Intl.NumberFormat("zh-TW", { maximumFractionDigits: 0 }).format(value);
-}
-
-function formatMonthDay(value: string | null | undefined): string {
-  const text = String(value ?? "").trim();
-  const match = text.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
-  if (match) return `${match[2].padStart(2, "0")}/${match[3].padStart(2, "0")}`;
-  const parsed = value ? new Date(value) : new Date();
-  const safe = Number.isNaN(parsed.getTime()) ? new Date() : parsed;
-  return new Intl.DateTimeFormat("zh-TW", {
-    month: "2-digit",
-    day: "2-digit",
-    timeZone: "Asia/Taipei",
-  }).format(safe);
-}
-
 function orderFlow(alert: ElectronicChipFlowAlert) {
   // Saved pinned alerts created before these gross-flow fields existed can
   // remain in localStorage. Use their net value as a safe display fallback.
@@ -104,15 +79,6 @@ function orderFlow(alert: ElectronicChipFlowAlert) {
     retailLong: alert.recentSmallBuyLots ?? Math.max(alert.recentSmallNetBuyLots, 0),
     retailShort: alert.recentSmallSellLots ?? Math.max(-alert.recentSmallNetBuyLots, 0),
   };
-}
-
-function localTime(value: string): string {
-  return new Intl.DateTimeFormat("zh-TW", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-    timeZone: "Asia/Taipei",
-  }).format(new Date(value));
 }
 
 function localTimeWithSeconds(value: string): string {
@@ -136,7 +102,7 @@ function statusMessage(data: ElectronicChipFlowAlertsResponse | null): string {
   if (data.status === "warming" || data.status === "scanning") {
     return `熱門股＋電子股輪巡中 ${data.scannedCount}/${data.candidateCount} 檔`;
   }
-  return `目前尚未偵測到符合條件的熱門股（近 ${data.windowMinutes} 分鐘）`;
+  return `目前尚無符合Top10條件的熱門股（近 ${data.windowMinutes} 分鐘）`;
 }
 
 function TrendIcon({ alert }: { alert: ElectronicChipFlowAlert }) {
@@ -215,25 +181,6 @@ function TaiwanIndexPulseBar({
   </div>;
 }
 
-function momentumPanelNotices(alerts: ElectronicChipFlowAlert[]): MomentumPanelNotice[] {
-  return alerts.flatMap((alert): MomentumPanelNotice[] => {
-    if (alert.isWarning || alert.trend === "fading") {
-      return [{ alert, kind: "retreat" }];
-    }
-    if (
-      alert.reinforced
-      || alert.trend === "strengthening"
-      || (alert.currentQualifies && (alert.trend === "starting" || alert.momentumChangeLots > 0))
-    ) {
-      return [{ alert, kind: "surge" }];
-    }
-    return [];
-  }).sort((left, right) => {
-    if (left.kind !== right.kind) return left.kind === "retreat" ? -1 : 1;
-    return Math.abs(right.alert.momentumChangeLots) - Math.abs(left.alert.momentumChangeLots);
-  });
-}
-
 function AlertItems({
   alerts,
   windowMinutes,
@@ -255,6 +202,7 @@ function AlertItems({
         onClick={() => onSelectStock(alert.symbol)}
         title={`${alert.name} ${alert.symbol}｜${alert.message}｜大單資料為推估值`}
       >
+        {alert.rank && <span className="chip-alert-rank">#{alert.rank}</span>}
         <strong>{alert.name}</strong>
         <b>{alert.symbol}</b>
         <em><TrendIcon alert={alert} />{alert.simultaneousIncrease ? (direction === "short" ? "大小單同步偏空" : "大小單同步增加") : alert.trendLabel}</em>
@@ -290,7 +238,7 @@ function CompactSignalPills({
         onClick={() => onSelectStock(alert.symbol)}
         title={`${alert.name} ${alert.symbol}｜${alert.message}｜點擊查看個股`}
       >
-        <span>{direction === "short" ? <TrendingDown size={11} /> : <TrendingUp size={11} />}{direction === "short" ? "空" : "多"}</span>
+        <span>{alert.rank ? <b className="chip-signal-rank">#{alert.rank}</b> : (direction === "short" ? <TrendingDown size={11} /> : <TrendingUp size={11} />)}{direction === "short" ? "空" : "多"}</span>
         <strong>{alert.symbol} {alert.name}</strong>
         <b>{momentumLabel} {formatLots(momentumLots)} 張</b>
         <small>{alert.simultaneousIncrease ? "大小單同步" : alert.trendLabel}・{windowMinutes}分・{alert.time}</small>
@@ -338,6 +286,7 @@ function CompactMomentumSummary({
 }) {
   const longTop = alerts.slice(0, 3);
   const shortTop = shortAlerts.slice(0, 3);
+  const rankingLimit = data?.rankingLimit ?? 10;
   const hasSignals = longTop.length > 0 || shortTop.length > 0;
   return <div className="chip-compact-summary-row">
     <div className="chip-compact-actions">
@@ -347,8 +296,8 @@ function CompactMomentumSummary({
         onClick={() => onToggleExpanded("long")}
         aria-expanded={expanded === "long"}
       >
-        <Zap size={13} /><strong>多方</strong><b>{alerts.length}</b>
-        <small>{data ? `掃描 ${data.scannedCount}/${data.candidateCount}` : "載入中"}</small>
+        <Zap size={13} /><strong>多方連續買入Top{rankingLimit}</strong><b>{data?.longCount ?? alerts.length}</b>
+        <small>{data ? `顯示 ${alerts.length}/${rankingLimit}・命中 ${data.longCount ?? alerts.length}・掃描 ${data.scannedCount}/${data.candidateCount}` : "載入中"}</small>
       </button>
       <button
         className={`chip-compact-side short ${expanded === "short" ? "active" : ""}`}
@@ -356,8 +305,8 @@ function CompactMomentumSummary({
         onClick={() => onToggleExpanded("short")}
         aria-expanded={expanded === "short"}
       >
-        <TrendingDown size={13} /><strong>空方</strong><b>{data?.shortCount ?? shortAlerts.length}</b>
-        <small>加空 {data?.shortStrengtheningCount ?? 0}</small>
+        <TrendingDown size={13} /><strong>空方連續賣出Top{rankingLimit}</strong><b>{data?.shortCount ?? shortAlerts.length}</b>
+        <small>顯示 {shortAlerts.length}/{rankingLimit}・命中 {data?.shortCount ?? shortAlerts.length}・加空 {data?.shortStrengtheningCount ?? 0}</small>
       </button>
     </div>
     <div className="chip-compact-signals" aria-live="polite">
@@ -377,11 +326,12 @@ function CompactMomentumSummary({
       </> : <span className="chip-alert-message">{statusMessage(data)}</span>}
     </div>
     {data && <small className="chip-compact-status">
-      多 {alerts.length}・空 {data.shortCount ?? 0}・高頻 {data.highFrequencyTrackingCount}・{data.marketOpen ? "盤中監控" : "盤後暫停"}
+      Top收合持續偵測 {data.autoTopTrackingCount ?? 0}・釘選加碼 {data.extraPinnedTrackingCount ?? 0}/{data.extraPinnedTrackingLimit ?? 10}・高頻 {data.highFrequencyTrackingCount}・{data.marketOpen ? "盤中監控" : "盤後暫停"}
     </small>}
   </div>;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function MomentumHistory({ alert, direction = "long" }: { alert: ElectronicChipFlowAlert; direction?: "long" | "short" }) {
   const points = alert.history.slice(-12);
   const series = [
@@ -412,6 +362,7 @@ function MomentumHistory({ alert, direction = "long" }: { alert: ElectronicChipF
   </div>;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function SignalOutcomeValidation({
   alert,
   points,
@@ -449,6 +400,7 @@ function mergePricePoints(
     .slice(-420);
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function IntradayPriceTrend({
   quote,
   points,
@@ -508,6 +460,7 @@ function IntradayPriceTrend({
   </div>;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function DeductionSignalReminder({
   signals,
   loading,
@@ -545,6 +498,7 @@ function DeductionSignalReminder({
   </div>;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function ThreeGateReminder({ signals, quote }: { signals?: StockDeductionSignals; quote?: ElectronicChipFlowQuote }) {
   if (!signals?.threeGate || signals.currentPrice == null) return null;
   const currentPrice = quote?.price ?? signals.currentPrice;
@@ -583,13 +537,10 @@ function MomentumPanel({
   alerts,
   direction,
   pinnedSymbols,
+  extraPinnedSymbols,
   trackedSymbols,
   alertSymbols,
   quotes,
-  priceHistory,
-  quoteLoading,
-  deductionSignals,
-  deductionLoading,
   onTogglePin,
   onClose,
   onSelectStock,
@@ -598,34 +549,79 @@ function MomentumPanel({
   alerts: ElectronicChipFlowAlert[];
   direction: "long" | "short";
   pinnedSymbols: Set<string>;
+  extraPinnedSymbols: Set<string>;
   trackedSymbols: Set<string>;
   alertSymbols: Set<string>;
   quotes: Record<string, ElectronicChipFlowQuote>;
-  priceHistory: Record<string, ElectronicChipFlowPricePoint[]>;
-  quoteLoading: boolean;
-  deductionSignals: Record<string, StockDeductionSignals>;
-  deductionLoading: boolean;
   onTogglePin: (alert: ElectronicChipFlowAlert) => void;
   onClose: () => void;
   onSelectStock: (symbol: string) => void;
 }) {
   const isShort = direction === "short";
-  const groupResonances = data.marketOpen ? detectGroupResonances(alerts, quotes) : [];
-  const topGroupResonances = groupResonances.slice(0, 3);
-  const topNotices = momentumPanelNotices(alerts);
+  const rankingLimit = data.rankingLimit ?? 10;
+  const rankedAlerts = alerts
+    .filter((alert) => alert.rank && alert.rank <= rankingLimit)
+    .sort((left, right) => (left.rank ?? 99) - (right.rank ?? 99));
+  const pinnedTrackingAlerts = alerts.filter((alert) => {
+    const ranked = Boolean(alert.rank && alert.rank <= rankingLimit);
+    return !ranked && (
+      pinnedSymbols.has(alert.symbol)
+      || extraPinnedSymbols.has(alert.symbol)
+      || trackedSymbols.has(alert.symbol)
+      || !alertSymbols.has(alert.symbol)
+    );
+  });
+  const groupResonances = data.marketOpen ? detectGroupResonances(rankedAlerts, quotes) : [];
+  const maxRankScore = Math.max(1, ...rankedAlerts.map((alert) => alert.rankScore ?? 0));
+  const sideLabel = isShort ? "賣壓" : "買盤";
+  const ratioLabel = isShort ? "賣買比" : "買賣比";
+  const stepLabel = isShort ? "連續偏空" : "連續偏多";
+
+  const strengthMeta = (alert: ElectronicChipFlowAlert) => {
+    if (alert.largeOrderOffsetting) return { label: "多空抵銷", tone: "caution" };
+    if (alert.isWarning || alert.trend === "weakening" || alert.trend === "fading") return { label: "轉弱警示", tone: "warning" };
+    const rank = alert.rank ?? rankingLimit + 1;
+    if (rank <= 3) return { label: "極強", tone: "extreme" };
+    if (rank <= 6) return { label: "強", tone: "strong" };
+    return { label: "觀察", tone: "watch" };
+  };
+
+  const rowFacts = (alert: ElectronicChipFlowAlert) => {
+    const forceLots = isShort
+      ? alert.recentNetSellLots ?? Math.max(0, -alert.recentNetBuyLots)
+      : Math.max(0, alert.recentNetBuyLots);
+    const oppositeLots = isShort ? Math.max(0, alert.recentNetBuyLots) : (alert.recentNetSellLots ?? Math.max(0, -alert.recentNetBuyLots));
+    const dayForceLots = isShort ? Math.max(0, -alert.largeNetLots) : Math.max(0, alert.largeNetLots);
+    const changeLots = isShort ? -alert.momentumChangeLots : alert.momentumChangeLots;
+    const ratio = isShort ? alert.sellBuyRatio ?? 0 : alert.buySellRatio;
+    const steps = isShort ? alert.negativeSteps ?? 0 : alert.positiveSteps;
+    const groupResonance = groupResonances.find((resonance) => resonance.symbols.includes(alert.symbol));
+    const tags = [
+      alert.currentQualifies ? "仍符合" : "追蹤中",
+      alert.reinforced ? (isShort ? "持續加空" : "持續轉強") : "",
+      alert.simultaneousIncrease ? (isShort ? "大小單同步偏空" : "大小單同步") : "",
+      alert.trendStreak >= 2 ? `${alert.trendStreak}段連續` : "",
+      groupResonance ? `族群共振 ${groupResonance.group}` : "",
+      alert.largeOrderOffsetting ? "多空抵銷" : "",
+      alert.isWarning ? "轉弱" : "",
+    ].filter(Boolean);
+    return { forceLots, oppositeLots, dayForceLots, changeLots, ratio, steps, groupResonance, tags };
+  };
+
   return <aside className={`chip-momentum-panel ${isShort ? "short-side" : "long-side"}`} aria-label={isShort ? "空方大單動能雷達" : "多方大單動能雷達"}>
     <header>
       <div>
-        <strong>{isShort ? <TrendingDown size={14} /> : <Zap size={14} />}{isShort ? "空方大單動能雷達" : "多方大單動能雷達"}</strong>
-        <span>官方成交量熱門股＋核心電子股；{isShort ? "專找大戶持續賣超與同步偏空" : "專找大戶持續買超與同步轉強"}</span>
+        <strong>{isShort ? <TrendingDown size={14} /> : <Zap size={14} />}{isShort ? `空方連續大單賣出 Top${rankingLimit}` : `多方連續大單買入 Top${rankingLimit}`}</strong>
+        <span>目前顯示 {rankedAlerts.length}/{rankingLimit}；優先看排名、強度、近段{sideLabel}、{ratioLabel}與是否續強。</span>
       </div>
       <div className="chip-momentum-summary">
-        <span className={isShort ? "short" : "positive"}>{isShort ? <TrendingDown size={12} /> : <TrendingUp size={12} />}{isShort ? `空方啟動 ${data.shortCount ?? 0}` : `持續轉強 ${data.strengtheningCount}`}</span>
+        <span className={isShort ? "short" : "positive"}>{isShort ? <TrendingDown size={12} /> : <TrendingUp size={12} />}{isShort ? `空方Top${rankingLimit} ${rankedAlerts.length}/${rankingLimit}` : `多方Top${rankingLimit} ${rankedAlerts.length}/${rankingLimit}`}</span>
         <span className={isShort ? "short" : "positive"}>{isShort ? <TrendingDown size={12} /> : <TrendingUp size={12} />}{isShort ? `持續加空 ${data.shortStrengtheningCount ?? 0}` : `大小單同步 ${data.jointIncreaseCount}`}</span>
         {!isShort && <span className="warning"><AlertTriangle size={12} />轉弱警示 {data.warningCount}</span>}
         {groupResonances.length > 0 && <span className="group-warning"><AlertTriangle size={12} />族群共振 {groupResonances.length} 組・強烈注意</span>}
         {pinnedSymbols.size > 0 && <span className="pinned"><Pin size={12} />已釘選 {pinnedSymbols.size}</span>}
-        <small>{data.candidateCount}/{data.candidateTarget ?? data.candidateCount} 檔監控池・本輪普查 {data.baselineCycleScannedCount}/{data.candidateCount}・約 {data.baselineCycleTargetSeconds} 秒一輪・熱門快掃 {data.fastCandidateCount}・高頻追蹤 {data.highFrequencyTrackingCount}・展開／釘選約 2 秒即時監控</small>
+        {(data.extraPinnedTrackingCount ?? 0) > 0 && <span className="pinned"><Pin size={12} />釘選加碼 {data.extraPinnedTrackingCount}/{data.extraPinnedTrackingLimit ?? 10}</span>}
+        <small>Top收合持續偵測 {data.autoTopTrackingCount ?? 0}・釘選加碼 {data.extraPinnedTrackingCount ?? 0}/{data.extraPinnedTrackingLimit ?? 10}・監控池 {data.candidateCount}/{data.candidateTarget ?? data.candidateCount}</small>
       </div>
       <button type="button" onClick={onClose} aria-label="關閉大單動能雷達"><X size={15} /></button>
     </header>
@@ -633,50 +629,18 @@ function MomentumPanel({
       <AlertTriangle size={13} />
       <span>{data.universeNotice ?? `目前覆蓋 ${data.candidateCount}/${data.candidateTarget ?? data.candidateCount} 檔；官方來源或處置名單保護尚未完整，系統會持續重試。`}</span>
     </div>}
-    {topNotices.length > 0 && <div className="chip-momentum-alert-banner" role="alert" aria-live="assertive">
-      <strong><BellRing size={15} />大單即時異動 <b>{topNotices.length}</b></strong>
-      <div>{topNotices.map(({ alert, kind }) => <button
-        type="button"
-        className={kind}
-        key={`${kind}-${alert.symbol}`}
-        onClick={() => onSelectStock(alert.symbol)}
-      >
-        <span>{alert.symbol} {alert.name}</span>
-        <b>{kind === "retreat"
-          ? isShort ? "大單賣壓急退" : "大單買盤急退"
-          : isShort ? "大單賣壓急增" : "大單買盤急增"}</b>
-        <small>近段 {formatLots(isShort
-          ? alert.recentNetSellLots ?? Math.max(0, -alert.recentNetBuyLots)
-          : Math.max(0, alert.recentNetBuyLots))} 張・本次 {formatSigned(alert.momentumChangeLots)} 張</small>
-      </button>)}</div>
-    </div>}
-    {topGroupResonances.length > 0 && <div className="chip-group-resonance-banner" role="alert" aria-live="assertive">
-      <strong><AlertTriangle size={15} />族群共振，強烈注意</strong>
-      <div>{topGroupResonances.map((resonance) => <span className={resonance.direction} key={`${resonance.group}-${resonance.direction}`}>
-        {resonance.group} {resonance.count} 檔同步{resonance.direction === "up" ? "上漲" : "下跌"}・平均 {formatSigned(resonance.averageChangePercent)}%・{resonance.names.join("、")}
-      </span>)}</div>
-    </div>}
     <div className="chip-momentum-list">
-      {alerts.length ? alerts.map((alert) => {
+      {rankedAlerts.length ? rankedAlerts.map((alert) => {
         const pinned = pinnedSymbols.has(alert.symbol);
-        const tracking = pinned && trackedSymbols.has(alert.symbol) && !alertSymbols.has(alert.symbol);
-        const retained = pinned && !trackedSymbols.has(alert.symbol) && !alertSymbols.has(alert.symbol);
-        const flow = orderFlow(alert);
-        const quote = quotes[alert.symbol];
-        const quoteDirection = quote ? (quote.change > 0 ? "up" : quote.change < 0 ? "down" : "flat") : "flat";
-        const groupResonance = groupResonances.find((resonance) => resonance.symbols.includes(alert.symbol));
-        const guidance = evaluateLargeOrderGuidance({
-          alert,
-          quote,
-          marketOpen: data.marketOpen,
-          resonance: groupResonance,
-        });
+        const strength = strengthMeta(alert);
+        const facts = rowFacts(alert);
+        const strengthPercent = Math.max(42, Math.min(100, ((alert.rankScore ?? 0) / maxRankScore) * 100));
         const dataState = data.marketOpen ? (alert.dataState ?? "warming") : "closed";
         const dataStateLabel = data.marketOpen
           ? (alert.dataStateLabel ?? "資料暖機中")
           : "盤後停止更新";
         return <article
-          className={`chip-momentum-card level-${alert.alertLevel} ${pinned ? "is-pinned" : ""} ${retained ? "is-retained" : ""} ${groupResonance ? `has-group-resonance resonance-${groupResonance.direction}` : ""}`}
+          className={`chip-strength-row tone-${strength.tone} level-${alert.alertLevel} ${pinned ? "is-pinned" : ""} ${facts.groupResonance ? `has-group-resonance resonance-${facts.groupResonance.direction}` : ""}`}
           key={alert.symbol}
           onClick={() => onSelectStock(alert.symbol)}
           onKeyDown={(event) => {
@@ -689,12 +653,37 @@ function MomentumPanel({
           role="button"
           tabIndex={0}
         >
-          <div className="chip-momentum-stock">
-            <strong>{alert.name}</strong><b>{alert.symbol}</b>
-            {tracking && <span className="chip-momentum-retained">持續追蹤</span>}
-            {retained && <span className="chip-momentum-retained">釘選保留</span>}
-            <span className={`chip-data-state state-${dataState}`}>{dataStateLabel}</span>
-            <em><TrendIcon alert={alert} />{alert.simultaneousIncrease ? (isShort ? "大小單同步偏空" : "大小單同步增加") : alert.trendLabel}</em>
+          <div className="chip-strength-rank">
+            <span>#{alert.rank}</span>
+            <strong>{strength.label}</strong>
+          </div>
+          <div className="chip-strength-main">
+            <div className="chip-strength-title">
+              <strong>{alert.symbol} {alert.name}</strong>
+              <span>{alert.industry}</span>
+              <em><TrendIcon alert={alert} />{alert.trendLabel}</em>
+              <span className={`chip-data-state state-${dataState}`}>{dataStateLabel}</span>
+            </div>
+            <div className="chip-strength-bar" aria-label={`強度 ${Math.round(strengthPercent)}%`}>
+              <i style={{ width: `${strengthPercent}%` }} />
+            </div>
+            <div className="chip-strength-tags">
+              {facts.tags.map((tag) => <span key={tag}>{tag}</span>)}
+            </div>
+          </div>
+          <div className="chip-strength-score">
+            <small>強度分</small>
+            <strong>{Math.round(alert.rankScore ?? 0)}</strong>
+          </div>
+          <div className="chip-strength-metrics">
+            <span><small>近 {data.windowMinutes} 分{sideLabel}</small><strong>{formatLots(facts.forceLots)} 張</strong></span>
+            <span><small>{ratioLabel}</small><strong>{facts.ratio ? `${facts.ratio.toFixed(2)}x` : "—"}</strong></span>
+            <span><small>{stepLabel}</small><strong>{facts.steps} 段</strong></span>
+            <span><small>較前次</small><strong className={facts.changeLots >= 0 ? "flow-long" : "flow-short"}>{formatSigned(facts.changeLots)} 張</strong></span>
+            <span><small>今日累積</small><strong>{formatLots(facts.dayForceLots)} 張</strong></span>
+            <span><small>反向大單</small><strong>{formatLots(facts.oppositeLots)} 張</strong></span>
+          </div>
+          <div className="chip-strength-actions">
             <button
               type="button"
               className={`chip-momentum-pin ${pinned ? "active" : ""}`}
@@ -706,72 +695,34 @@ function MomentumPanel({
                 onTogglePin(alert);
               }}
             ><Pin size={12} /></button>
-            <div className={`chip-momentum-quote ${quoteDirection}`}>
-              {quote ? <>
-                <small>{quote.isRealtime ? "即時價" : "收盤／延遲價"}</small>
-                <strong>{formatPrice(quote.price)}</strong>
-                <span>{formatSigned(quote.change)}（{formatSigned(quote.changePercent)}%）</span>
-                <time dateTime={quote.quoteTimestamp}>{localTimeWithSeconds(quote.quoteTimestamp)}</time>
-              </> : <small>{quoteLoading ? "即時股價讀取中…" : "行情暫時無法取得"}</small>}
-            </div>
-            {groupResonance && <div className={`chip-group-resonance-tag ${groupResonance.direction}`}>
-              <AlertTriangle size={11} />強烈注意｜{groupResonance.group} {groupResonance.count} 檔同步{groupResonance.direction === "up" ? "上漲" : "下跌"}
-            </div>}
-          </div>
-          {alert.largeOrderOffsetting && <div className="chip-order-offsetting">
-            <AlertTriangle size={12} />多空大單同步增加、目前互相抵銷；不當成單邊主力訊號。
-          </div>}
-          <div className="chip-momentum-numbers">
-            <span className="day-total"><small>今日累積・大單多方</small><strong className="flow-long">{formatLots(flow.dayLargeLong)} 張</strong></span>
-            <span className="day-total"><small>今日累積・大單空方</small><strong className="flow-short">{formatLots(flow.dayLargeShort)} 張</strong></span>
-            <span className="day-total"><small>今日累積・散戶多方*</small><strong className="flow-long">{formatLots(flow.dayRetailLong)} 張</strong></span>
-            <span className="day-total"><small>今日累積・散戶空方*</small><strong className="flow-short">{formatLots(flow.dayRetailShort)} 張</strong></span>
-            <span><small>近 {data.windowMinutes} 分・大單多方</small><strong className="flow-long">{formatLots(flow.largeLong)} 張</strong></span>
-            <span><small>近 {data.windowMinutes} 分・大單空方</small><strong className="flow-short">{formatLots(flow.largeShort)} 張</strong></span>
-            <span><small>散戶多方（小單推估）</small><strong className="flow-long">{formatLots(flow.retailLong)} 張</strong></span>
-            <span><small>散戶空方（小單推估）</small><strong className="flow-short">{formatLots(flow.retailShort)} 張</strong></span>
-            <span><small>大單淨額</small><strong className={alert.recentNetBuyLots < 0 ? "flow-short" : "flow-long"}>{formatSigned(alert.recentNetBuyLots)} 張</strong></span>
-            <span><small>散戶淨額</small><strong className={alert.recentSmallNetBuyLots < 0 ? "flow-short" : "flow-long"}>{formatSigned(alert.recentSmallNetBuyLots)} 張</strong></span>
-            <span><small>大小單合計淨額</small><strong className={alert.combinedNetBuyLots < 0 ? "flow-short" : "flow-long"}>{formatSigned(alert.combinedNetBuyLots)} 張</strong></span>
-            <span><small>較前次</small><strong className={alert.momentumChangeLots < 0 ? "flow-short" : "flow-long"}>{formatSigned(alert.momentumChangeLots)} 張</strong></span>
-          </div>
-          <MomentumHistory alert={alert} direction={direction} />
-          <IntradayPriceTrend
-            quote={quote}
-            points={priceHistory[alert.symbol] ?? []}
-            loading={quoteLoading}
-            title="目前股價與盤中即時走勢"
-          />
-          <SignalOutcomeValidation alert={alert} points={priceHistory[alert.symbol] ?? []} />
-          <ThreeGateReminder signals={deductionSignals[alert.symbol]} quote={quote} />
-          <DeductionSignalReminder
-            signals={deductionSignals[alert.symbol]}
-            loading={deductionLoading}
-            direction={direction}
-          />
-          <div className={`chip-large-order-guidance action-${guidance.action}`} aria-label={`大單條件研判：${guidance.label}`}>
-            <div>
-              <small>大單條件研判</small>
-              <strong>{guidance.label}</strong>
-              <b>{guidance.score == null ? "—" : guidance.score}<i>{guidance.score == null ? "資料待補" : "/100"}</i></b>
-              <em>條件一致度・非勝率</em>
-            </div>
-            <span>{guidance.reasons.length ? guidance.reasons.join("・") : "等待更多確認條件"}</span>
-            {guidance.cautions.length > 0 && <span className="caution"><AlertTriangle size={11} />{guidance.cautions.join("・")}</span>}
           </div>
           <p>{alert.message}</p>
-          <footer>
-            出現 {alert.occurrenceCount} 次・高峰 {formatLots(Math.abs(alert.peakRecentNetBuyLots))} 張・啟動 {localTime(alert.firstDetectedAt)}・成交更新 {localTime(alert.updatedAt)}
-            {alert.lastScannedAt ? `・掃描 ${localTimeWithSeconds(alert.lastScannedAt)}` : "・尚未完成掃描"}
-            {alert.lastLargeOrderAt ? `・最後大單 ${localTimeWithSeconds(alert.lastLargeOrderAt)}` : "・尚無新大單"}
-            {alert.effectiveNetThresholdLots != null ? `・有效淨額門檻 ${formatLots(alert.effectiveNetThresholdLots)} 張` : ""}
-            {alert.largeOrderThresholdAmount != null ? `・單筆大單門檻 $${formatAmount(alert.largeOrderThresholdAmount)}` : ""}
-            {retained ? "・釘選保留，等待伺服器恢復追蹤" : pinned ? "・釘選後持續快速監控" : ""}
-          </footer>
         </article>;
-      }) : <div className="chip-momentum-empty">{isShort ? "尚未出現空方大單啟動標的；系統持續輪巡中。" : "尚未出現多方大單啟動標的；系統持續輪巡中。"}</div>}
+      }) : <div className="chip-momentum-empty">{isShort ? `目前尚無符合空方Top${rankingLimit}條件的標的；系統持續輪巡中。` : `目前尚無符合多方Top${rankingLimit}條件的標的；系統持續輪巡中。`}</div>}
+      {pinnedTrackingAlerts.length > 0 && <section className="chip-pinned-followup" aria-label="釘選加碼追蹤">
+        <header>
+          <strong><Pin size={13} />釘選加碼追蹤</strong>
+          <small>不列入Top{rankingLimit}排名，保留快速追蹤</small>
+        </header>
+        {pinnedTrackingAlerts.map((alert) => {
+          const facts = rowFacts(alert);
+          const extraPinned = extraPinnedSymbols.has(alert.symbol);
+          const retained = pinnedSymbols.has(alert.symbol) && !extraPinned && !alertSymbols.has(alert.symbol);
+          return <button
+            type="button"
+            className="chip-pinned-followup-row"
+            key={`pinned-${alert.symbol}`}
+            onClick={() => onSelectStock(alert.symbol)}
+          >
+            <strong>{alert.symbol} {alert.name}</strong>
+            <span>{extraPinned ? "額外釘選追蹤" : retained ? "釘選保留" : "持續追蹤"}</span>
+            <b>{sideLabel} {formatLots(facts.forceLots)} 張</b>
+            <small>{facts.tags.slice(0, 3).join("・") || alert.trendLabel}</small>
+          </button>;
+        })}
+      </section>}
     </div>
-    <footer>{isShort ? "空方柱狀圖以藍色顯示賣壓，柱越高代表淨賣超越強；" : "柱狀圖已分為大單（紫紅）與小單（青綠），淡色代表較前次轉弱；"}「今日累積」自開盤起計算，「近 {data.windowMinutes} 分」用於判斷當下動能。操作建議是保守條件研判，分數代表條件一致度而非勝率；大單與散戶身分皆為成交方向推估。</footer>
+    <footer>強度分只代表大單動能條件一致度，非勝率；Top排名用於快速篩選，仍需搭配個股K線與風險控管。</footer>
   </aside>;
 }
 
@@ -793,10 +744,6 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
   const expandedTrackingSymbolsRef = useRef<string[]>([]);
   const [pinnedAlertSnapshots, setPinnedAlertSnapshots] = useState<ElectronicChipFlowAlert[]>([]);
   const [momentumQuotes, setMomentumQuotes] = useState<Record<string, ElectronicChipFlowQuote>>({});
-  const [momentumPriceHistory, setMomentumPriceHistory] = useState<Record<string, ElectronicChipFlowPricePoint[]>>({});
-  const [quoteLoading, setQuoteLoading] = useState(false);
-  const [deductionSignals, setDeductionSignals] = useState<Record<string, StockDeductionSignals>>({});
-  const [deductionLoading, setDeductionLoading] = useState(false);
   const [marketDefense, setMarketDefense] = useState<MarketIndexDefenseResponse | null>(null);
   const [barLayout, setBarLayout] = useState<MomentumBarLayout>("compact");
 
@@ -982,6 +929,7 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
         // marquee changes only when a stock enters/leaves or its trend state
         // actually changes, so a repeated occurrence does not restart it.
         const nextSignature = nextTickerAlerts.map((alert) => [
+          alert.rank ?? 0,
           alert.symbol,
           alert.trend,
           alert.alertLevel,
@@ -1070,36 +1018,61 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
   const shortAlerts = data?.shortAlerts ?? [];
   const disposedSymbols = new Set(data?.disposedExcludedSymbols ?? []);
   const pinnedSet = new Set(pinnedSymbols);
+  const rankingLimit = data?.rankingLimit ?? 10;
+  const autoTopSymbols = new Set([
+    ...(data?.alerts ?? []).map((alert) => alert.symbol),
+    ...(data?.shortAlerts ?? []).map((alert) => alert.symbol),
+  ]);
+  const extraPinnedTrackingSymbols = new Set(
+    pinnedSymbols
+      .filter((symbol) => !autoTopSymbols.has(symbol) && !disposedSymbols.has(symbol))
+      .slice(0, data?.extraPinnedTrackingLimit ?? 10),
+  );
+  const sortRankedThenPinned = (left: ElectronicChipFlowAlert, right: ElectronicChipFlowAlert) => {
+    const leftRank = left.rank ?? Number.POSITIVE_INFINITY;
+    const rightRank = right.rank ?? Number.POSITIVE_INFINITY;
+    if (leftRank !== rightRank) return leftRank - rightRank;
+    const leftPinnedIndex = pinnedSymbols.indexOf(left.symbol);
+    const rightPinnedIndex = pinnedSymbols.indexOf(right.symbol);
+    if (leftPinnedIndex >= 0 && rightPinnedIndex >= 0) return leftPinnedIndex - rightPinnedIndex;
+    if (leftPinnedIndex >= 0) return 1;
+    if (rightPinnedIndex >= 0) return -1;
+    return left.symbol.localeCompare(right.symbol);
+  };
   const trackedPanelAlerts = data?.trackedAlerts ?? [];
+  const liveLongPanelAlerts = data?.alerts ?? [];
+  const liveLongPanelSymbols = new Set([
+    ...liveLongPanelAlerts.map((alert) => alert.symbol),
+    ...trackedPanelAlerts.map((alert) => alert.symbol),
+  ]);
   const livePanelAlerts = Array.from(
-    new Map([...trackedPanelAlerts, ...(data?.alerts ?? [])].map((alert) => [alert.symbol, alert])).values(),
+    new Map([...liveLongPanelAlerts, ...trackedPanelAlerts].map((alert) => [alert.symbol, alert])).values(),
   );
   const trackedPanelSymbols = new Set(trackedPanelAlerts.map((alert) => alert.symbol));
   const alertPanelSymbols = new Set((data?.alerts ?? []).map((alert) => alert.symbol));
-  const panelAlerts = Array.from(new Map([
-    ...pinnedAlertSnapshots.filter((alert) => !disposedSymbols.has(alert.symbol)).map((alert) => [alert.symbol, alert] as const),
+  const panelAlerts = [
     ...livePanelAlerts.map((alert) => [alert.symbol, alert] as const),
-  ]).values()).sort((left, right) => {
-    const leftPinnedIndex = pinnedSymbols.indexOf(left.symbol);
-    const rightPinnedIndex = pinnedSymbols.indexOf(right.symbol);
-    if (leftPinnedIndex >= 0 && rightPinnedIndex >= 0) return leftPinnedIndex - rightPinnedIndex;
-    return Number(rightPinnedIndex >= 0) - Number(leftPinnedIndex >= 0);
-  });
+    ...pinnedAlertSnapshots
+      .filter((alert) => !disposedSymbols.has(alert.symbol) && !liveLongPanelSymbols.has(alert.symbol))
+      .map((alert) => [alert.symbol, alert] as const),
+  ].map(([, alert]) => alert).sort(sortRankedThenPinned);
   const trackedShortPanelAlerts = data?.trackedShortAlerts ?? [];
+  const liveShortRankedAlerts = data?.shortAlerts ?? [];
+  const liveShortPanelSymbols = new Set([
+    ...liveShortRankedAlerts.map((alert) => alert.symbol),
+    ...trackedShortPanelAlerts.map((alert) => alert.symbol),
+  ]);
   const liveShortPanelAlerts = Array.from(
-    new Map([...trackedShortPanelAlerts, ...shortAlerts].map((alert) => [alert.symbol, alert])).values(),
+    new Map([...liveShortRankedAlerts, ...trackedShortPanelAlerts].map((alert) => [alert.symbol, alert])).values(),
   );
   const trackedShortPanelSymbols = new Set(trackedShortPanelAlerts.map((alert) => alert.symbol));
   const shortAlertPanelSymbols = new Set(shortAlerts.map((alert) => alert.symbol));
-  const shortPanelAlerts = Array.from(new Map([
-    ...pinnedAlertSnapshots.filter((alert) => alert.direction === "short" && !disposedSymbols.has(alert.symbol)).map((alert) => [alert.symbol, alert] as const),
+  const shortPanelAlerts = [
     ...liveShortPanelAlerts.map((alert) => [alert.symbol, alert] as const),
-  ]).values()).sort((left, right) => {
-    const leftPinnedIndex = pinnedSymbols.indexOf(left.symbol);
-    const rightPinnedIndex = pinnedSymbols.indexOf(right.symbol);
-    if (leftPinnedIndex >= 0 && rightPinnedIndex >= 0) return leftPinnedIndex - rightPinnedIndex;
-    return Number(rightPinnedIndex >= 0) - Number(leftPinnedIndex >= 0);
-  });
+    ...pinnedAlertSnapshots
+      .filter((alert) => alert.direction === "short" && !disposedSymbols.has(alert.symbol) && !liveShortPanelSymbols.has(alert.symbol))
+      .map((alert) => [alert.symbol, alert] as const),
+  ].map(([, alert]) => alert).sort(sortRankedThenPinned);
   const expandedAlerts = expanded === "short" ? shortPanelAlerts : panelAlerts;
   const monitoredQuoteAlerts = Array.from(new Map([
     ...pinnedAlertSnapshots
@@ -1118,7 +1091,6 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
     ...pinnedAlertSnapshots
       .filter((alert) => pinnedSet.has(alert.symbol) && !disposedSymbols.has(alert.symbol))
       .map((alert) => [alert.symbol, alert] as const),
-    ...(expanded ? expandedAlerts.map((alert) => [alert.symbol, alert] as const) : []),
   ]).values());
   const technicalSignalRequestPayload = technicalSignalAlerts.length
     ? JSON.stringify(technicalSignalAlerts.map((alert) => ({
@@ -1129,7 +1101,10 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
     : "";
   const pinnedSymbolsSignature = [...pinnedSymbols].sort().join(",");
   const expandedTrackingSymbolsSignature = expanded
-    ? expandedAlerts.map((alert) => alert.symbol).slice(0, 20).join(",")
+    ? (expanded === "short" ? shortAlerts : alerts)
+      .map((alert) => alert.symbol)
+      .slice(0, rankingLimit)
+      .join(",")
     : "";
 
   useEffect(() => {
@@ -1139,40 +1114,7 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
   }, [expandedTrackingSymbolsSignature]);
 
   useEffect(() => {
-    if (!expanded || !quoteRequestPayload) return;
-    const controller = new AbortController();
-    const loadHistory = async () => {
-      try {
-        const response = await fetch("/api/market-data/quote-history", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: `{"items":${quoteRequestPayload}}`,
-          cache: "no-store",
-          signal: controller.signal,
-        });
-        if (!response.ok) throw new Error(`走勢回應 ${response.status}`);
-        const payload = await response.json() as { items: ElectronicChipFlowPriceHistory[] };
-        setMomentumPriceHistory((current) => {
-          const next = { ...current };
-          for (const item of payload.items) {
-            next[item.symbol] = mergePricePoints(next[item.symbol] ?? [], item.points);
-          }
-          return next;
-        });
-      } catch (error) {
-        if ((error as Error).name !== "AbortError") {
-          // The live quote loop below still builds a chart when warmup history
-          // is temporarily unavailable.
-        }
-      }
-    };
-    void loadHistory();
-    return () => controller.abort();
-  }, [expanded, quoteRequestPayload]);
-
-  useEffect(() => {
-    if (!technicalSignalRequestPayload || (!expanded && !data?.marketOpen)) {
-      setDeductionLoading(false);
+    if (!technicalSignalRequestPayload || !data?.marketOpen) {
       return;
     }
     let stopped = false;
@@ -1189,7 +1131,6 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
       }
       controller?.abort();
       controller = new AbortController();
-      if (expanded) setDeductionLoading(true);
       try {
         const response = await fetch("/api/market-data/deduction-signals", {
           method: "POST",
@@ -1201,10 +1142,6 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
         if (!response.ok) throw new Error(`扣抵與三關價訊號回應 ${response.status}`);
         const payload = await response.json() as { items: StockDeductionSignals[] };
         if (stopped) return;
-        setDeductionSignals((current) => ({
-          ...current,
-          ...Object.fromEntries(payload.items.map((item) => [item.symbol, item])),
-        }));
 
         if (data?.marketOpen && pinnedSetForRequest.size) {
           const freshToasts: ThreeGateToast[] = [];
@@ -1253,11 +1190,8 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
         }
       } finally {
         if (!stopped) {
-          setDeductionLoading(false);
-          if ((expanded || pinnedSetForRequest.size > 0) && data?.marketOpen) {
-            const refreshMs = expanded
-              ? EXPANDED_TECHNICAL_REFRESH_MS
-              : PINNED_TECHNICAL_REFRESH_MS;
+          if (pinnedSetForRequest.size > 0 && data?.marketOpen) {
+            const refreshMs = PINNED_TECHNICAL_REFRESH_MS;
             timer = window.setTimeout(loadTechnicalSignals, refreshMs + Math.round(Math.random() * 500));
           }
         }
@@ -1274,11 +1208,10 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
       controller?.abort();
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [data?.marketOpen, data?.tradeDate, expanded, pinnedSymbolsSignature, technicalSignalRequestPayload]);
+  }, [data?.marketOpen, data?.tradeDate, pinnedSymbolsSignature, technicalSignalRequestPayload]);
 
   useEffect(() => {
     if (!quoteRequestPayload) {
-      setQuoteLoading(false);
       return;
     }
     let stopped = false;
@@ -1291,7 +1224,6 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
       if (document.visibilityState === "hidden") return;
       controller?.abort();
       controller = new AbortController();
-      setQuoteLoading(true);
       try {
         const response = await fetch("/api/market-data/quotes", {
           method: "POST",
@@ -1304,17 +1236,6 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
         const payload = await response.json() as { items: ElectronicChipFlowQuote[] };
         if (!stopped) {
           setMomentumQuotes(Object.fromEntries(payload.items.map((quote) => [quote.symbol, quote])));
-          setMomentumPriceHistory((current) => {
-            const next = { ...current };
-            for (const quote of payload.items) {
-              next[quote.symbol] = mergePricePoints(next[quote.symbol] ?? [], [{
-                timestamp: quote.quoteTimestamp,
-                price: quote.price,
-                isRealtime: quote.isRealtime,
-              }]);
-            }
-            return next;
-          });
         }
       } catch (error) {
         if (!stopped && (error as Error).name !== "AbortError") {
@@ -1323,7 +1244,6 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
         }
       } finally {
         if (!stopped) {
-          setQuoteLoading(false);
           timer = window.setTimeout(loadQuotes, refreshMilliseconds);
         }
       }
@@ -1346,7 +1266,7 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
   // Keep one item per symbol. A previous fill-to-four implementation made a
   // single alert (for example 新普) appear back-to-back many times.
   const scrollingAlerts = alerts;
-  const label = data?.marketOpen ? "盤中大單動能" : "大單動能暫停";
+  const longLabel = data?.marketOpen ? `多方連續大單買入 Top${rankingLimit}` : `多方Top${rankingLimit} 暫停`;
   const selectStock = (symbol: string) => {
     setExpanded(null);
     if (onSelectStock) {
@@ -1411,7 +1331,7 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
       <div className="chip-alert-row long-row">
         <button className="chip-alert-label" type="button" onClick={() => setExpanded((current) => current === "long" ? null : "long")} aria-expanded={expanded === "long"}>
           {data?.warningCount ? <AlertTriangle size={14} /> : hasAlerts ? <Zap size={14} /> : <Radio size={13} />}
-          <strong>{label}</strong><em>{data?.warningCount ? `${data.warningCount} 警示` : "多方"}</em>
+          <strong>{longLabel}</strong><em>{data?.warningCount ? `${data.warningCount} 警示` : `${alerts.length} 檔`}</em>
           {expanded === "long" ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
         </button>
         <div className="chip-alert-viewport" aria-live="polite">
@@ -1420,12 +1340,12 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
             <div className="chip-alert-group" aria-hidden="true"><AlertItems alerts={scrollingAlerts} windowMinutes={data?.windowMinutes ?? 5} onSelectStock={selectStock} /></div>
           </div> : <span className="chip-alert-message">{statusMessage(data)}</span>}
         </div>
-        {data && <small className="chip-alert-coverage">多方 {alerts.length}・掃描 {data.scannedCount}/{data.candidateCount}</small>}
+        {data && <small className="chip-alert-coverage">多方Top{rankingLimit} 顯示 {alerts.length}/{rankingLimit}・命中 {data.longCount ?? alerts.length}・Top收合偵測 {data.autoTopTrackingCount ?? 0}</small>}
       </div>
       <div className="chip-alert-row short-row">
         <button className="chip-alert-label" type="button" onClick={() => setExpanded((current) => current === "short" ? null : "short")} aria-expanded={expanded === "short"}>
           {hasShortAlerts ? <TrendingDown size={14} /> : <Radio size={13} />}
-          <strong>{data?.marketOpen ? "盤中空方大單動能" : "空方動能暫停"}</strong><em>{hasShortAlerts ? `${shortAlerts.length} 檔` : "空方"}</em>
+          <strong>{data?.marketOpen ? `空方連續大單賣出 Top${rankingLimit}` : `空方Top${rankingLimit} 暫停`}</strong><em>{hasShortAlerts ? `${shortAlerts.length} 檔` : "空方"}</em>
           {expanded === "short" ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
         </button>
         <div className="chip-alert-viewport" aria-live="polite">
@@ -1434,7 +1354,7 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
             <div className="chip-alert-group short-group" aria-hidden="true"><AlertItems alerts={shortAlerts} direction="short" windowMinutes={data?.windowMinutes ?? 5} onSelectStock={selectStock} /></div>
           </div> : <span className="chip-alert-message">{data?.marketOpen ? "目前尚未偵測到大戶持續加空" : "目前非盤中時段，空方動能監控暫停"}</span>}
         </div>
-        {data && <small className="chip-alert-coverage">空方 {data.shortCount ?? 0}・持續加空 {data.shortStrengtheningCount ?? 0}</small>}
+        {data && <small className="chip-alert-coverage">空方Top{rankingLimit} 顯示 {shortAlerts.length}/{rankingLimit}・命中 {data.shortCount ?? shortAlerts.length}・持續加空 {data.shortStrengtheningCount ?? 0}</small>}
       </div>
     </>}
     {expanded && data && <MomentumPanel
@@ -1442,13 +1362,10 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
       alerts={expandedAlerts}
       direction={expanded}
       pinnedSymbols={pinnedSet}
+      extraPinnedSymbols={extraPinnedTrackingSymbols}
       trackedSymbols={expanded === "short" ? trackedShortPanelSymbols : trackedPanelSymbols}
       alertSymbols={expanded === "short" ? shortAlertPanelSymbols : alertPanelSymbols}
       quotes={momentumQuotes}
-      priceHistory={momentumPriceHistory}
-      quoteLoading={quoteLoading}
-      deductionSignals={deductionSignals}
-      deductionLoading={deductionLoading}
       onTogglePin={togglePin}
       onClose={() => setExpanded(null)}
       onSelectStock={selectStock}

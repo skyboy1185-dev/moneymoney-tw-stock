@@ -607,6 +607,26 @@ def test_selector_recommends_at_most_ten_without_lowering_thresholds() -> None:
     assert next(item for item in candidates if item["id"] == "k")["isOfficialRecommendation"] is False
 
 
+def test_selector_ranks_intraday_confirmation_before_health() -> None:
+    now = datetime(2026, 7, 21, 9, 20, tzinfo=TAIPEI)
+    config = TradingScheduleConfig()
+    session = trading_session_state(config, now, quote_samples=10, infrastructure_ok=True)
+    selector = StableRecommendationSelector()
+
+    official, _ = selector.select(
+        "confirmation-rank-user",
+        [
+            _candidate("strong-confirmation", healthScore=80, confirmationScore=80),
+            _candidate("weak-confirmation", healthScore=95, confirmationScore=50),
+        ],
+        config,
+        session,
+        now=now,
+    )
+
+    assert [item["id"] for item in official] == ["strong-confirmation", "weak-confirmation"]
+
+
 def test_selector_high_confidence_can_enter_after_hourly_quota() -> None:
     now = datetime(2026, 7, 21, 9, 20, tzinfo=TAIPEI)
     config = TradingScheduleConfig(

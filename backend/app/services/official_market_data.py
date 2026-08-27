@@ -42,6 +42,10 @@ class OfficialStockQuote:
     is_realtime: bool
     best_bid: float | None = None
     best_ask: float | None = None
+    bid_prices: tuple[float, ...] = ()
+    bid_volumes: tuple[int, ...] = ()
+    ask_prices: tuple[float, ...] = ()
+    ask_volumes: tuple[int, ...] = ()
 
 
 class MarketDataProvider(Protocol):
@@ -65,6 +69,24 @@ def _first_order_price(value: Any) -> float | None:
     first = str(value or "").split("_", 1)[0]
     parsed = _number(first)
     return parsed if parsed is not None and parsed > 0 else None
+
+
+def _order_prices(value: Any) -> tuple[float, ...]:
+    prices: list[float] = []
+    for raw in str(value or "").split("_"):
+        parsed = _number(raw)
+        if parsed is not None and parsed > 0:
+            prices.append(parsed)
+    return tuple(prices[:5])
+
+
+def _order_volumes(value: Any) -> tuple[int, ...]:
+    volumes: list[int] = []
+    for raw in str(value or "").split("_"):
+        parsed = _number(raw)
+        if parsed is not None and parsed > 0:
+            volumes.append(round(parsed * 1000))
+    return tuple(volumes[:5])
 
 
 def _iso_date(value: Any) -> str:
@@ -104,6 +126,10 @@ def parse_mis_quote(
     has_last_trade = last_trade is not None and last_trade > 0
     best_bid = _first_order_price(row.get("b"))
     best_ask = _first_order_price(row.get("a"))
+    bid_prices = _order_prices(row.get("b"))
+    ask_prices = _order_prices(row.get("a"))
+    bid_volumes = _order_volumes(row.get("g"))
+    ask_volumes = _order_volumes(row.get("f"))
     order_book_price = best_ask or best_bid
     cached_trade = (
         previous_trade
@@ -162,6 +188,10 @@ def parse_mis_quote(
         is_realtime=_is_realtime_quote(date_value, time_value, now),
         best_bid=best_bid,
         best_ask=best_ask,
+        bid_prices=bid_prices,
+        bid_volumes=bid_volumes,
+        ask_prices=ask_prices,
+        ask_volumes=ask_volumes,
     )
 
 

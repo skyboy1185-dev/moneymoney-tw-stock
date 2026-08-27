@@ -37,6 +37,7 @@ from ..services.chip_flow_alerts import (
 )
 from ..services.chip_flow_repository import ChipFlowRepository
 from ..services.day_trading_cache import day_trading_cache
+from ..services.day_trading_candidate_snapshots import replay_candidate_snapshots
 from ..services.day_trading_restrictions import day_trading_restrictions
 from ..services.day_trading_strategies import (
     route_signals_to_active_robot,
@@ -336,6 +337,7 @@ def _selection(
     *,
     raw_signals: list[dict[str, Any]] | None = None,
     now: datetime | None = None,
+    force_candidate_ranking: bool = False,
 ) -> dict[str, Any]:
     risk = _settings(db, user_id)
     schedule_settings = _schedule_settings(db, user_id)
@@ -367,7 +369,8 @@ def _selection(
     # disconnected quote feed), candidate generation cannot affect the public
     # result. Avoid the expensive 276-symbol signal and chip-history scan so
     # status pages stay responsive while the upstream feed is unavailable.
-    if session["formalSignalsAllowed"]:
+    ranked_candidates: list[dict[str, Any]] = []
+    if session["formalSignalsAllowed"] or force_candidate_ranking:
         # Selection endpoints are read paths. Persisting every temporary candidate
         # here caused concurrent page requests to race on the signal primary key.
         filtered_signals = day_trading_restrictions.enrich_short_eligibility(
@@ -390,7 +393,7 @@ def _selection(
             DayTradingPosition.status == "open",
             DayTradingPosition.signal_id.is_not(None),
         )).all())
-        official, _ranked_candidates = stable_recommendation_selector.select(
+        official, ranked_candidates = stable_recommendation_selector.select(
             user_id,
             candidates,
             config,
@@ -409,9 +412,7 @@ def _selection(
     )
     return {
         "recommended": official,
-        # Non-formal scan rows stay internal. Public day-trading responses expose
-        # formal recommendations only so a candidate cannot be mistaken for a signal.
-        "candidates": official,
+        "candidates": ranked_candidates,
         "totalRecommended": len(official),
         "maximumRecommendations": config.maximum_recommendations,
         "session": session,
@@ -513,7 +514,7 @@ def get_signals(
     signals = selection["recommended"]
     day_trading_cache.put(f"signals:{user_id}", selection)
     return {
-        "items": signals, "candidates": selection["candidates"], "total": len(signals),
+        "items": signals, "candidates": signals, "total": len(signals),
         "maximum": selection["maximumRecommendations"], "summary": selection["summary"],
         "automation": selection["session"],
         "mode": selection["regime"].get("mode", "demo"),
@@ -620,6 +621,33 @@ def get_today_signals(db: Session = Depends(get_db)) -> dict[str, Any]:
     return {"tradingDate": trading_date, "items": items, "total": len(items)}
 
 
+@router.get("/candidate-replay/today")
+def get_today_candidate_replay(
+    limit: int = Query(default=200, ge=1, le=500),
+    user_id: str = Depends(_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    trading_date, _, _ = _daily_period()
+    risk = _settings(db, user_id)
+    schedule_settings = _schedule_settings(db, user_id)
+    config = _schedule_config(risk, schedule_settings)
+    items = replay_candidate_snapshots(
+        db,
+        config,
+        trading_date=date.fromisoformat(trading_date),
+        limit=limit,
+    )
+    formal_items = [item for item in items if item["wouldBeOfficialRecommendation"]]
+    return {
+        "tradingDate": trading_date,
+        "items": items,
+        "total": len(items),
+        "formalItems": formal_items,
+        "formalTotal": len(formal_items),
+        "updatedAt": datetime.now(UTC).isoformat(),
+    }
+
+
 @router.get("/signals/{signal_id}")
 def get_signal(signal_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
     signals = _sync_signals(db)
@@ -635,7 +663,7 @@ def get_rankings(
     user_id: str = Depends(_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    selection = _selection(db, user_id)
+    selection = _selection(db, user_id, force_candidate_ranking=True)
     rows = selection["candidates"]
     if direction != "all":
         rows = [item for item in rows if item["direction"] == direction]
@@ -1011,7 +1039,7 @@ async def trigger_scenario(
             "robotStatus": session["robotStatus"],
             "formalSignalsAllowed": session["formalSignalsAllowed"],
             "recommended": official,
-            "candidates": official,
+            "candidates": _ranked,
             "maximumRecommendations": config.maximum_recommendations,
             "lineMessagesSent": recommendation_sent,
         }

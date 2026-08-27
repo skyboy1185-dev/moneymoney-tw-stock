@@ -25,6 +25,7 @@ from .chip_flow_alerts import (
 )
 from .chip_flow_repository import ChipFlowRepository
 from .day_trading_cache import day_trading_cache
+from .day_trading_candidate_snapshots import save_candidate_snapshots
 from .day_trading_restrictions import day_trading_restrictions
 from .day_trading_strategies import (
     route_signals_to_active_robot,
@@ -33,6 +34,7 @@ from .day_trading_strategies import (
 )
 from .day_trading_schedule import (
     TradingScheduleConfig,
+    recommendation_qualification,
     stable_recommendation_selector,
     trading_session_state,
 )
@@ -63,6 +65,7 @@ class DayTradingAutomationSupervisor:
         self._recommendations: list[dict[str, Any]] = []
         self._restored_signal_count = 0
         self._restored_quote_samples = 0
+        self._last_candidate_snapshot_count = 0
         self._last_phase: str | None = None
         self._last_data_status: str | None = None
         self._trading_date: str | None = None
@@ -102,14 +105,35 @@ class DayTradingAutomationSupervisor:
     async def _send_recommendations_and_track(
         self,
         recommendations: list[dict[str, Any]],
+        config: TradingScheduleConfig,
+        session: dict[str, Any],
+        now: datetime,
     ) -> int:
         recommendations = day_trading_restrictions.filter_candidates(recommendations)
+        recommendations = [
+            signal
+            for signal in recommendations
+            if signal.get("isOfficialRecommendation")
+            and recommendation_qualification(signal, config, session, now)[0]
+        ]
         if not recommendations:
             return 0
         try:
             with SessionLocal() as db:
-                created = ensure_positions_for_official_recommendations(db, recommendations)
-                record_official_recommendations(db, recommendations)
+                created = ensure_positions_for_official_recommendations(
+                    db,
+                    recommendations,
+                    config=config,
+                    session=session,
+                    now=now,
+                )
+                record_official_recommendations(
+                    db,
+                    recommendations,
+                    config=config,
+                    session=session,
+                    now=now,
+                )
                 db.commit()
             if created:
                 logger.info(
@@ -183,7 +207,21 @@ class DayTradingAutomationSupervisor:
         self._warmed_symbol_count = day_trading_engine.warmed_symbol_count
         restored = day_trading_cache.get("automation-recommendations")
         if isinstance(restored, list):
-            self._recommendations = day_trading_restrictions.filter_candidates(restored)
+            config = self._config()
+            regime = day_trading_engine.market_regime()
+            session = trading_session_state(
+                config,
+                self._started_at,
+                data_status=regime["dataStatus"],
+                quote_samples=day_trading_engine.sample_count,
+                infrastructure_ok=day_trading_cache.ready_for_formal_signals,
+            )
+            self._recommendations = [
+                signal
+                for signal in day_trading_restrictions.filter_candidates(restored)
+                if signal.get("isOfficialRecommendation")
+                and recommendation_qualification(signal, config, session, self._started_at)[0]
+            ]
             self._restored_signal_count = len(self._recommendations)
         self._task = asyncio.create_task(self._run(), name="day-trading-automation")
 
@@ -373,6 +411,19 @@ class DayTradingAutomationSupervisor:
                     session,
                     now=now,
                 )
+                self._last_candidate_snapshot_count = 0
+                if _ranked_candidates:
+                    try:
+                        with SessionLocal() as db:
+                            self._last_candidate_snapshot_count = save_candidate_snapshots(
+                                db,
+                                _ranked_candidates,
+                                config=config,
+                                snapshot_at=now,
+                            )
+                            db.commit()
+                    except Exception:
+                        logger.exception("Failed to persist day-trading candidate snapshots")
                 self._last_scan_at = now
                 day_trading_cache.put("automation-recommendations", self._recommendations, ttl=86_400)
                 if session["formalSignalsAllowed"]:
@@ -393,6 +444,7 @@ class DayTradingAutomationSupervisor:
                 "restoredSignalCount": self._restored_signal_count,
                 "restoredQuoteSamples": self._restored_quote_samples,
                 "recommendedCount": len(self._recommendations),
+                "candidateSnapshotCount": self._last_candidate_snapshot_count,
                 "candidateUniverseCount": len(day_trading_engine.stock_universe_symbols),
                 "candidateUniverseSource": "large-order-momentum-radar",
                 "quoteCoverageCount": self._quote_coverage_count,
@@ -431,7 +483,12 @@ class DayTradingAutomationSupervisor:
                 ))
             if session["formalSignalsAllowed"] and self._recommendations:
                 line_tasks.append(
-                    self._send_recommendations_and_track(self._recommendations[:config.maximum_recommendations]),
+                    self._send_recommendations_and_track(
+                        self._recommendations[:config.maximum_recommendations],
+                        config,
+                        session,
+                        now,
+                    ),
                 )
             if quote_refresh_due:
                 evaluated, exits_sent = await self._monitor_automatic_positions(

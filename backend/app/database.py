@@ -190,6 +190,14 @@ def cleanup_expired_operational_data(retention_days: int = 7) -> dict[str, int]:
                     "WHERE generated_at < CURRENT_TIMESTAMP - INTERVAL '7 days'"
                 )
             )
+            candidate_snapshot_result = connection.execute(
+                text("DELETE FROM day_trading_candidate_snapshots WHERE trading_date < :cutoff"),
+                {"cutoff": cutoff},
+            )
+            limit_up_snapshot_result = connection.execute(
+                text("DELETE FROM limit_up_ai_snapshots WHERE trading_date < :cutoff"),
+                {"cutoff": cutoff},
+            )
         else:
             snapshot_result = connection.execute(
                 text("DELETE FROM chip_flow_snapshots WHERE trade_date < :cutoff"),
@@ -201,13 +209,25 @@ def cleanup_expired_operational_data(retention_days: int = 7) -> dict[str, int]:
                     "WHERE generated_at < datetime('now', '-7 days')"
                 )
             )
+            candidate_snapshot_result = connection.execute(
+                text("DELETE FROM day_trading_candidate_snapshots WHERE trading_date < :cutoff"),
+                {"cutoff": cutoff.isoformat()},
+            )
+            limit_up_snapshot_result = connection.execute(
+                text("DELETE FROM limit_up_ai_snapshots WHERE trading_date < :cutoff"),
+                {"cutoff": cutoff.isoformat()},
+            )
     deleted = {
         "chip_flow_snapshots": max(0, snapshot_result.rowcount or 0),
         "day_trading_signals": max(0, signal_result.rowcount or 0),
+        "day_trading_candidate_snapshots": max(0, candidate_snapshot_result.rowcount or 0),
+        "limit_up_ai_snapshots": max(0, limit_up_snapshot_result.rowcount or 0),
     }
     if engine.dialect.name == "postgresql":
         with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
             connection.execute(text("VACUUM (ANALYZE) chip_flow_snapshots"))
             connection.execute(text("VACUUM (ANALYZE) day_trading_signals"))
+            connection.execute(text("VACUUM (ANALYZE) day_trading_candidate_snapshots"))
+            connection.execute(text("VACUUM (ANALYZE) limit_up_ai_snapshots"))
     logger.warning("operational database retention cleanup completed: %s", deleted)
     return deleted

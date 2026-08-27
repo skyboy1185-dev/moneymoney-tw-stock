@@ -432,6 +432,10 @@ class MockDayTradingEngine:
                         quote.is_realtime,
                         quote.best_bid,
                         quote.best_ask,
+                        list(quote.bid_prices),
+                        list(quote.bid_volumes),
+                        list(quote.ask_prices),
+                        list(quote.ask_volumes),
                     ]
                     for quote in samples
                 ],
@@ -486,6 +490,10 @@ class MockDayTradingEngine:
                         is_realtime=bool(sample[8]),
                         best_bid=float(sample[9]) if sample[9] is not None else None,
                         best_ask=float(sample[10]) if sample[10] is not None else None,
+                        bid_prices=tuple(float(value) for value in sample[11]) if len(sample) > 11 and isinstance(sample[11], list) else (),
+                        bid_volumes=tuple(int(value) for value in sample[12]) if len(sample) > 12 and isinstance(sample[12], list) else (),
+                        ask_prices=tuple(float(value) for value in sample[13]) if len(sample) > 13 and isinstance(sample[13], list) else (),
+                        ask_volumes=tuple(int(value) for value in sample[14]) if len(sample) > 14 and isinstance(sample[14], list) else (),
                     ))
                 except (TypeError, ValueError):
                     continue
@@ -856,6 +864,12 @@ class MockDayTradingEngine:
                     else f"價格取自 {quote.source}；正在累積實際行情樣本，暫不產生正式訊號。"
                 ),
                 "quoteIsRealtime": quote.is_realtime,
+                "bestBid": quote.best_bid,
+                "bestAsk": quote.best_ask,
+                "bidPrices": list(quote.bid_prices),
+                "bidVolumes": list(quote.bid_volumes),
+                "askPrices": list(quote.ask_prices),
+                "askVolumes": list(quote.ask_volumes),
                 "quoteStatus": "盤中行情" if quote.is_realtime else "最近有效行情／收盤",
                 "status": (
                     "blocked"

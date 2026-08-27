@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { Activity, BarChart3, Bot, Fish, Flame, Landmark, Newspaper, Rocket, ScanSearch, Search, SlidersHorizontal, Telescope, TrendingUp, Waves, Wifi, WifiOff } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Activity, BarChart3, Bot, Fish, Flame, Landmark, Newspaper, Rocket, ScanSearch, Search, SlidersHorizontal, Telescope, TrendingUp, Waves, Wifi, WifiOff, Zap } from "lucide-react";
 import { StockAnalysis } from "@/components/StockAnalysis";
 import { Screener } from "@/components/Screener";
 import { PortfolioPage } from "@/components/PortfolioPage";
@@ -14,6 +14,7 @@ import { ElectronicChipFlowTicker } from "@/components/ElectronicChipFlowTicker"
 import { AdaptiveElectronicPage } from "@/components/AdaptiveElectronicPage";
 import { LongTermSelectionPage } from "@/components/LongTermSelectionPage";
 import { RocketRadarPage } from "@/components/RocketRadarPage";
+import { LimitUpAiPage } from "@/components/LimitUpAiPage";
 import { WhaleAccumulationPage } from "@/components/WhaleAccumulationPage";
 import { PatternRobotPage } from "@/components/PatternRobotPage";
 import { LegalTermsButton } from "@/components/LegalTermsGate";
@@ -21,8 +22,21 @@ import { PrivateSiteLogoutButton } from "@/components/PrivateSiteLogoutButton";
 import type { MarketSnapshot } from "@/lib/market-types";
 import type { StockPayload } from "@/lib/types";
 
-type Tab = "analysis" | "screener" | "day-trading" | "pattern-robot" | "adaptive-electronic" | "rocket-radar" | "long-term" | "whale-accumulation" | "institutional-investors" | "chip-flow" | "portfolio" | "industries" | "news";
+type Tab = "analysis" | "screener" | "day-trading" | "limit-up-ai" | "pattern-robot" | "adaptive-electronic" | "rocket-radar" | "long-term" | "whale-accumulation" | "institutional-investors" | "chip-flow" | "portfolio" | "industries" | "news";
 type Connection = "connecting" | "connected" | "disconnected";
+const VIEW_TABS: Tab[] = ["analysis", "screener", "day-trading", "limit-up-ai", "pattern-robot", "adaptive-electronic", "rocket-radar", "long-term", "whale-accumulation", "institutional-investors", "chip-flow", "portfolio", "industries", "news"];
+
+function viewUrl(symbol: string, view: Tab): string {
+  const params = new URLSearchParams({ symbol });
+  if (view !== "analysis") params.set("view", view);
+  return `?${params.toString()}`;
+}
+
+function resolveViewTab(view: string | null): Tab {
+  if (view === "ai") return "adaptive-electronic";
+  if (view === "limit-up-robot") return "limit-up-ai";
+  return view && VIEW_TABS.includes(view as Tab) ? view as Tab : "analysis";
+}
 
 async function fetchStock(query: string): Promise<StockPayload> {
   const response = await fetch(`/api/stocks?q=${encodeURIComponent(query)}`);
@@ -33,6 +47,7 @@ async function fetchStock(query: string): Promise<StockPayload> {
 
 export default function Home() {
   const [tab, setTab] = useState<Tab>("analysis");
+  const tabRef = useRef<Tab>("analysis");
   const [query, setQuery] = useState("2330");
   const [stock, setStock] = useState<StockPayload | null>(null);
   const [loading, setLoading] = useState(true);
@@ -42,18 +57,25 @@ export default function Home() {
   const [autoMode] = useState(true);
   const [userId, setUserId] = useState("");
   const [rocketUnread, setRocketUnread] = useState(0);
+  const [limitUpUnread, setLimitUpUnread] = useState(0);
 
-  const loadStock = useCallback(async (keyword: string) => {
+  useEffect(() => {
+    tabRef.current = tab;
+  }, [tab]);
+
+  const loadStock = useCallback(async (keyword: string, preferredTab?: Tab) => {
     const normalized = keyword.trim();
     if (!normalized) { setError("請輸入股票代號或名稱。"); return; }
     setLoading(true);
     setError("");
     try {
       const result = await fetchStock(normalized);
+      const nextTab = preferredTab ?? (tabRef.current === "limit-up-ai" ? "limit-up-ai" : "analysis");
       setStock(result);
       setQuery(result.meta.symbol);
-      setTab("analysis");
-      window.history.replaceState(null, "", `?symbol=${result.meta.symbol}`);
+      setTab(nextTab);
+      tabRef.current = nextTab;
+      window.history.replaceState(null, "", viewUrl(result.meta.symbol, nextTab));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "查詢失敗，請稍後再試。");
     } finally {
@@ -63,15 +85,11 @@ export default function Home() {
 
   useEffect(() => {
     const initial = new URLSearchParams(window.location.search).get("symbol") ?? "2330";
-    const requestedView = new URLSearchParams(window.location.search).get("view") as Tab | "ai" | null;
+    const requestedView = new URLSearchParams(window.location.search).get("view");
+    const initialTab = resolveViewTab(requestedView);
     setQuery(initial);
-    void loadStock(initial).then(() => {
-      if (requestedView === "ai") {
-        setTab("adaptive-electronic");
-      } else if (requestedView && ["analysis", "screener", "day-trading", "pattern-robot", "adaptive-electronic", "rocket-radar", "long-term", "whale-accumulation", "institutional-investors", "chip-flow", "portfolio", "industries", "news"].includes(requestedView)) {
-        setTab(requestedView);
-      }
-    });
+    tabRef.current = initialTab;
+    void loadStock(initial, initialTab);
   }, [loadStock]);
 
   useEffect(() => {
@@ -107,6 +125,28 @@ export default function Home() {
     return () => window.clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    if (!userId) return;
+    const loadLimitUpUnread = async () => {
+      try {
+        const response = await fetch("/api/limit-up-ai/notifications/unread", {
+          cache: "no-store",
+          headers: { "x-user-id": userId },
+        });
+        if (response.ok) setLimitUpUnread((await response.json()).count ?? 0);
+      } catch { /* badge retries on the next interval */ }
+    };
+    void loadLimitUpUnread();
+    const timer = window.setInterval(() => void loadLimitUpUnread(), 30_000);
+    return () => window.clearInterval(timer);
+  }, [userId]);
+
+  const switchTab = useCallback((next: Tab) => {
+    setTab(next);
+    tabRef.current = next;
+    window.history.replaceState(null, "", viewUrl(stock?.meta.symbol ?? query, next));
+  }, [query, stock?.meta.symbol]);
+
   const connectionLabel = connection === "connected"
     ? snapshot?.marketOpen
       ? "行情已連線"
@@ -125,7 +165,7 @@ export default function Home() {
         }}
       />
       <header className="topbar enhanced">
-        <button className="brand" onClick={() => setTab("analysis")} aria-label="回到個股分析">
+        <button className="brand" onClick={() => switchTab("analysis")} aria-label="回到個股分析">
           <span className="brand-icon"><BarChart3 size={20} /></span>
           <span><strong>Moneymoney</strong><small>台股分析</small></span>
         </button>
@@ -144,18 +184,19 @@ export default function Home() {
       </header>
 
       <nav className="main-nav" aria-label="主要功能">
-        <button className={tab === "analysis" ? "active" : ""} onClick={() => setTab("analysis")}><Activity size={17} />個股分析</button>
-        <button className={tab === "screener" ? "active" : ""} onClick={() => setTab("screener")}><SlidersHorizontal size={17} />AI 選股</button>
-        <button className={tab === "day-trading" ? "active ai-nav" : "ai-nav"} onClick={() => setTab("day-trading")}><Bot size={17} />當沖機器人<span>LIVE</span></button>
-        <button className={tab === "pattern-robot" ? "active pattern-nav" : "pattern-nav"} onClick={() => setTab("pattern-robot")}><ScanSearch size={17} />型態選股機器人</button>
-        <button className={tab === "adaptive-electronic" ? "active" : ""} onClick={() => setTab("adaptive-electronic")}><TrendingUp size={17} />超強AI當沖系統</button>
-        <button className={tab === "rocket-radar" ? "active rocket-nav" : "rocket-nav"} onClick={() => setTab("rocket-radar")}><Rocket size={17} />飆股雷達{rocketUnread > 0 && <span className="rocket-unread-badge">{rocketUnread > 99 ? "99+" : rocketUnread}</span>}</button>
-        <button className={tab === "long-term" ? "active" : ""} onClick={() => setTab("long-term")}><Telescope size={17} />長線選股</button>
-        <button className={tab === "whale-accumulation" ? "active whale-nav" : "whale-nav"} onClick={() => setTab("whale-accumulation")}><Fish size={17} />大戶偷掃貨</button>
-        <button className={tab === "institutional-investors" ? "active" : ""} onClick={() => setTab("institutional-investors")}><Landmark size={17} />三大法人</button>
-        <button className={tab === "chip-flow" ? "active" : ""} onClick={() => setTab("chip-flow")}><Waves size={17} />盤中籌碼</button>
-        <button className={tab === "industries" ? "active" : ""} onClick={() => setTab("industries")}><Flame size={17} />產業熱點</button>
-        <button className={tab === "news" ? "active" : ""} onClick={() => setTab("news")}><Newspaper size={17} />新聞</button>
+        <button className={tab === "analysis" ? "active" : ""} onClick={() => switchTab("analysis")}><Activity size={17} />個股分析</button>
+        <button className={tab === "screener" ? "active" : ""} onClick={() => switchTab("screener")}><SlidersHorizontal size={17} />AI 選股</button>
+        <button className={tab === "day-trading" ? "active ai-nav" : "ai-nav"} onClick={() => switchTab("day-trading")}><Bot size={17} />當沖機器人<span>LIVE</span></button>
+        <button className={tab === "limit-up-ai" ? "active rocket-nav limit-up-nav" : "rocket-nav limit-up-nav"} onClick={() => switchTab("limit-up-ai")} aria-label="開啟專抓漲停飆股AI"><Zap size={17} />漲停機器人{limitUpUnread > 0 && <span className="rocket-unread-badge">{limitUpUnread > 99 ? "99+" : limitUpUnread}</span>}</button>
+        <button className={tab === "pattern-robot" ? "active pattern-nav" : "pattern-nav"} onClick={() => switchTab("pattern-robot")}><ScanSearch size={17} />型態選股機器人</button>
+        <button className={tab === "adaptive-electronic" ? "active" : ""} onClick={() => switchTab("adaptive-electronic")}><TrendingUp size={17} />超強AI當沖系統</button>
+        <button className={tab === "rocket-radar" ? "active rocket-nav" : "rocket-nav"} onClick={() => switchTab("rocket-radar")}><Rocket size={17} />飆股雷達{rocketUnread > 0 && <span className="rocket-unread-badge">{rocketUnread > 99 ? "99+" : rocketUnread}</span>}</button>
+        <button className={tab === "long-term" ? "active" : ""} onClick={() => switchTab("long-term")}><Telescope size={17} />長線選股</button>
+        <button className={tab === "whale-accumulation" ? "active whale-nav" : "whale-nav"} onClick={() => switchTab("whale-accumulation")}><Fish size={17} />大戶偷掃貨</button>
+        <button className={tab === "institutional-investors" ? "active" : ""} onClick={() => switchTab("institutional-investors")}><Landmark size={17} />三大法人</button>
+        <button className={tab === "chip-flow" ? "active" : ""} onClick={() => switchTab("chip-flow")}><Waves size={17} />盤中籌碼</button>
+        <button className={tab === "industries" ? "active" : ""} onClick={() => switchTab("industries")}><Flame size={17} />產業熱點</button>
+        <button className={tab === "news" ? "active" : ""} onClick={() => switchTab("news")}><Newspaper size={17} />新聞</button>
       </nav>
 
       <main className="main-content">
@@ -175,6 +216,8 @@ export default function Home() {
           <Screener onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }} />
         ) : tab === "day-trading" ? (
           <DayTradingDashboard />
+        ) : tab === "limit-up-ai" ? (
+          <LimitUpAiPage symbol={stock?.meta.symbol ?? query} />
         ) : tab === "pattern-robot" ? (
           <PatternRobotPage userId={userId} onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }} />
         ) : tab === "adaptive-electronic" ? (

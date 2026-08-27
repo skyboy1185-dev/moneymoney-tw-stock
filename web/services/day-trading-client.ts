@@ -22,6 +22,7 @@ export const dayTradingClient = {
   signals: (userId: string) => request<{ items: unknown[]; candidates: unknown[]; summary: string; maximum: number }>("signals", userId),
   todaySignals: (userId: string) => request<{ tradingDate: string; items: unknown[]; total: number }>("signals/today", userId),
   rankings: (userId: string) => request<{ items: unknown[] }>("rankings", userId),
+  candidateReplayToday: (userId: string) => request<{ tradingDate: string; items: unknown[]; total: number; formalTotal: number }>("candidate-replay/today", userId),
   positions: (userId: string) => request<{ items: unknown[] }>("positions", userId),
   alerts: (userId: string) => request<{ items: unknown[]; unread: number }>("alerts", userId),
   trades: (userId: string, month = "") => request<{ period: string; items: unknown[] }>(`trades${month ? `?month=${encodeURIComponent(month)}` : ""}`, userId),

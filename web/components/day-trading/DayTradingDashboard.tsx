@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Activity, BellRing, Bot, Eye, Gauge, Radio, RefreshCw, ShieldAlert, X } from "lucide-react";
 import { streamRetryDelay } from "@/lib/day-trading-engine";
 import type {
-  DayTradingAlert, DayTradingPerformance, DayTradingPosition, DayTradingSignal,
+  DayTradingAlert, DayTradingCandidateReplay, DayTradingPerformance, DayTradingPosition, DayTradingSignal,
   DayTradingTrade, LineTradeDelivery, MarketRegime,
 } from "@/lib/day-trading-types";
 import { dayTradingClient } from "@/services/day-trading-client";
@@ -71,7 +71,7 @@ function StrategyAllocationCell({
 
 export function DayTradingDashboard() {
   const {
-    regime, signals, positions, alerts, trades, performance, connection, emergency,
+    regime, signals, candidates, positions, alerts, trades, performance, connection, emergency,
     setInitial, setConnection, handleEvent, dismissEmergency,
   } = useDayTradingStore();
   const [userId, setUserId] = useState("");
@@ -82,6 +82,7 @@ export function DayTradingDashboard() {
   const [monitored, setMonitored] = useState<string[]>([]);
   const [performancePositions, setPerformancePositions] = useState<DayTradingPosition[]>([]);
   const [todaySignals, setTodaySignals] = useState<DayTradingSignal[]>([]);
+  const [candidateReplay, setCandidateReplay] = useState<DayTradingCandidateReplay[]>([]);
   const [selectedSignalId, setSelectedSignalId] = useState<string | null>(null);
   const [selectedPositionId, setSelectedPositionId] = useState<number | null>(null);
   const [performanceMonth] = useState(currentTaipeiMonth);
@@ -89,8 +90,10 @@ export function DayTradingDashboard() {
   const lineToastTimers = useRef<number[]>([]);
 
   const refresh = useCallback(async (id: string, prefetchedRegime?: unknown) => {
-    const [regimeData, signalData, todaySignalData, positionData, alertData, performancePositionData, automationAlertData, tradeData, performanceData] = await Promise.all([
-      prefetchedRegime ?? dayTradingClient.regime(id), dayTradingClient.signals(id), dayTradingClient.todaySignals(id),
+    const [regimeData, signalData, rankingData, replayData, todaySignalData, positionData, alertData, performancePositionData, automationAlertData, tradeData, performanceData] = await Promise.all([
+      prefetchedRegime ?? dayTradingClient.regime(id), dayTradingClient.signals(id), dayTradingClient.rankings(id),
+      dayTradingClient.candidateReplayToday(id),
+      dayTradingClient.todaySignals(id),
       dayTradingClient.positions(id),
       dayTradingClient.alerts(id), dayTradingClient.positions(AUTOMATION_PERFORMANCE_USER_ID),
       dayTradingClient.alerts(AUTOMATION_PERFORMANCE_USER_ID),
@@ -108,11 +111,12 @@ export function DayTradingDashboard() {
     const manualAlerts = (alertData.items as DayTradingAlert[])
       .map((item) => ({ ...item, automaticTracking: false }));
     setTodaySignals(todaySignalData.items as DayTradingSignal[]);
+    setCandidateReplay(replayData.items as DayTradingCandidateReplay[]);
     setPerformancePositions(automaticPositions);
     setInitial({
       regime: regimeData as MarketRegime,
       signals: signalData.items as DayTradingSignal[],
-      candidates: [],
+      candidates: rankingData.items as DayTradingSignal[],
       positions: combinedPositions,
       alerts: [...automaticAlerts, ...manualAlerts]
         .filter((item, index, rows) => rows.findIndex((candidate) => candidate.id === item.id) === index)
@@ -200,8 +204,9 @@ export function DayTradingDashboard() {
 
   const loadPortfolio = useCallback(async () => {
     if (!userId) return;
-    const [positionData, alertData, todaySignalData, performancePositionData, automationAlertData, tradeData, performanceData] = await Promise.all([
+    const [positionData, alertData, replayData, todaySignalData, performancePositionData, automationAlertData, tradeData, performanceData] = await Promise.all([
       dayTradingClient.positions(userId), dayTradingClient.alerts(userId),
+      dayTradingClient.candidateReplayToday(userId),
       dayTradingClient.todaySignals(userId),
       dayTradingClient.positions(AUTOMATION_PERFORMANCE_USER_ID),
       dayTradingClient.alerts(AUTOMATION_PERFORMANCE_USER_ID),
@@ -217,6 +222,7 @@ export function DayTradingDashboard() {
     const manualAlerts = (alertData.items as DayTradingAlert[])
       .map((item) => ({ ...item, automaticTracking: false }));
     setTodaySignals(todaySignalData.items as DayTradingSignal[]);
+    setCandidateReplay(replayData.items as DayTradingCandidateReplay[]);
     setPerformancePositions(automaticPositions);
     setInitial({
       positions: [...automaticPositions, ...manualPositions]
@@ -282,6 +288,7 @@ export function DayTradingDashboard() {
       : regime.environmentScore >= 60 ? "recovery" : "range";
   const selectedSignal = signals.find((item) => item.id === selectedSignalId) ?? null;
   const selectedPosition = positions.find((item) => item.id === selectedPositionId) ?? null;
+  const replayFormalCount = candidateReplay.filter((item) => item.wouldBeOfficialRecommendation).length;
 
   return <div className="adaptive-page day-trading-page day-trading-adaptive">
     <DayTradingDisclaimer mode={regime.mode} notice={regime.dataNotice} />
@@ -346,6 +353,11 @@ export function DayTradingDashboard() {
 
     <DayTradingPerformancePanel performance={performance} positions={performancePositions} trades={trades} />
 
+    <CandidateReplaySection
+      items={candidateReplay}
+      formalCount={replayFormalCount}
+    />
+
     <section className="adaptive-table-card positions-section">
       <div className="table-title"><div><h2>當沖／隔日多單持倉監控</h2><p>清楚區分當沖與隔日多單；隔夜只開放雙信心度皆達 85 的多方部位。</p></div><span>{positions.length} 筆</span></div>
       {positions.length ? <div className="adaptive-table-wrap"><table><thead><tr><th>策略帳本</th><th>股票</th><th>方向／持倉類型</th><th>進場資訊</th><th>目前價</th><th>未實現盈虧</th><th>停損</th><th>目標價</th><th>信心／狀態</th><th>操作</th></tr></thead><tbody>{positions.map((position) => <tr key={position.id}><td><b>{position.automationStrategyLabel ?? "手動模擬"}</b><span>{position.automaticTracking ? "原版機器人帳本" : "個人模擬帳本"}</span></td><td><b>{position.symbol}</b><span>{position.stockName}</span></td><td className={position.direction === "long" ? "text-up" : "text-down"}><b>{position.direction === "long" ? "做多" : "放空"}</b><span>{position.holdingPeriodLabel ?? "當沖"}{position.overnightEligible && position.holdingPeriod !== "overnight_long" ? "・達隔夜門檻" : ""}</span></td><td><b>{displayNumber(position.entryPrice)}</b><span>{displayTime(position.openedAt)}</span></td><td>{displayNumber(position.currentPrice)}</td><td className={position.unrealizedProfit >= 0 ? "text-up" : "text-down"}><b>{displayNumber(position.unrealizedProfit, 0)} 元</b><span>{displayNumber(position.returnPercentage)}%</span></td><td>{displayNumber(position.stopLoss)}<span>{position.trailingStop == null ? "未設移動停損" : `移動 ${displayNumber(position.trailingStop)}`}</span></td><td>{displayNumber(position.target1)}<span>{displayNumber(position.target2)}</span></td><td><b>個股 {displayNumber(position.entryConfidence ?? position.healthScore, 0)}／策略 {displayNumber(position.strategyConfidence ?? 0, 0)}</b><span>{position.latestAction}</span></td><td><div className="row-actions">{position.automaticTracking ? <span className="candidate-status confirmed">機器人自動監控</span> : <button onClick={() => setSelectedPositionId(position.id)}><Eye size={14} />管理</button>}</div></td></tr>)}</tbody></table></div> : <div className="adaptive-empty">{(performance?.today?.tradeCount ?? 0) > 0 ? `今日機器人已完成 ${performance?.today?.tradeCount ?? 0} 筆出場，目前無未平倉部位。` : "目前尚無模擬持倉，系統持續掃描中。"}</div>}
@@ -354,6 +366,20 @@ export function DayTradingDashboard() {
     <section className="adaptive-table-card live-signal-section">
       <div className="table-title"><div><h2>本小時 AI 當沖精選</h2><p>多空新進場皆只到 12:00。每小時最多 {regime.maximumRecommendations} 檔，不會降低風控門檻。</p></div><span>{signals.length}／{regime.maximumRecommendations} 檔</span></div>
       {signals.length ? <div className="adaptive-table-wrap"><table><thead><tr><th>排名</th><th>股票</th><th>方向／三關價</th><th>評分</th><th>目前價</th><th>進場區間</th><th>停損／目標</th><th>風報比／大單</th><th>狀態</th><th>操作</th></tr></thead><tbody>{signals.map((signal) => <tr key={signal.id}><td>#{signal.rank}</td><td><b>{signal.symbol}</b><span>{signal.stockName} · {signal.market}</span></td><td><b className={signal.direction === "long" ? "text-up" : "text-down"}>{signal.direction === "long" ? "做多" : "放空"}</b><span>{signal.threeGateEntryStatus ?? signal.threeGateStatus ?? signal.action}</span></td><td><b>{signal.confidenceScore}</b><span>健康 {signal.healthScore}</span></td><td>{displayNumber(signal.price)}<span>{signal.changePercent >= 0 ? "+" : ""}{displayNumber(signal.changePercent)}%</span></td><td>{displayNumber(signal.entryMin)}～{displayNumber(signal.entryMax)}<span>{signal.vwapStatus}</span></td><td>{displayNumber(signal.stopLoss)}<span>{displayNumber(signal.target1)}／{displayNumber(signal.target2)}</span></td><td>{displayNumber(signal.riskRewardRatio)}<span>{signal.largeOrderStatus ?? `${displayNumber(signal.largeOrderForce, 0)} 分`}</span></td><td><span className={`candidate-status ${signal.status}`}>{signal.recommendationLabel || signal.status}</span></td><td><div className="row-actions"><button onClick={() => setSelectedSignalId(signal.id)}><Eye size={14} />詳情</button><button onClick={() => monitor(signal)}>監控</button><button onClick={() => void simulate(signal)}>模擬</button></div></td></tr>)}</tbody></table></div> : <div className="adaptive-empty">{regime.automation.phase === "scanning" ? "目前沒有符合風控標準的交易機會，建議觀望。" : regime.automation.statusMessage}</div>}
+    </section>
+
+    <section className="adaptive-table-card live-signal-section">
+      <div className="table-title">
+        <div>
+          <h2>候選雷達 Top 20</h2>
+          <p>這裡不是正式進場清單；用來看哪些股票被刷掉，以及弱在信心、5分K、大單、流動性或時段。</p>
+        </div>
+        <span>{candidates.length} 檔候選</span>
+      </div>
+      {candidates.length ? <div className="adaptive-table-wrap"><table><thead><tr><th>排名</th><th>股票</th><th>方向</th><th>信心／確認</th><th>健康／動能</th><th>大單</th><th>RR／流動性</th><th>狀態與刷掉原因</th></tr></thead><tbody>{candidates.slice(0, 20).map((candidate) => {
+        const blocker = candidate.qualificationFailures?.[0] ?? "符合正式推薦條件";
+        return <tr key={candidate.id}><td>#{candidate.rank}</td><td><b>{candidate.symbol}</b><span>{candidate.stockName} · {candidate.market}</span></td><td><b className={candidate.direction === "long" ? "text-up" : "text-down"}>{candidate.direction === "long" ? "做多" : "放空"}</b><span>{candidate.action}</span></td><td><b>{displayNumber(candidate.confidenceScore, 0)} / {displayNumber(candidate.confirmationScore, 0)}</b><span>門檻 80 / 45</span></td><td><b>{displayNumber(candidate.healthScore, 0)}</b><span>{candidate.vwapStatus}</span></td><td><b>{displayNumber(candidate.largeOrderForce, 0)}</b><span>{candidate.largeOrderStatus ?? (candidate.largeOrderContinuousBuy || candidate.largeOrderContinuousSell ? "連續性通過" : "連續性不足")}</span></td><td><b>{displayNumber(candidate.riskRewardRatio)}</b><span>量 {candidate.volume.toLocaleString("zh-TW")}</span></td><td><span className={`candidate-status ${candidate.isOfficialRecommendation ? "confirmed" : "blocked"}`}>{candidate.isOfficialRecommendation ? "正式可進場" : "候選未通過"}</span><small>{blocker}</small></td></tr>;
+      })}</tbody></table></div> : <div className="adaptive-empty">目前沒有候選排名；若非正式進場時段，系統只監控既有持倉。</div>}
     </section>
 
     <section className="adaptive-table-card live-signal-section">
@@ -381,6 +407,28 @@ export function DayTradingDashboard() {
     {selectedPosition && <div className="adaptive-modal-backdrop" onClick={() => setSelectedPositionId(null)}><article className="adaptive-modal day-trading-detail-modal" onClick={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setSelectedPositionId(null)}><X /></button><span className="eyebrow">{selectedPosition.symbol} {selectedPosition.stockName}</span><h2>持倉風控管理</h2><PositionMonitorCard position={selectedPosition} onClose={(item, percentage) => void closePosition(item, percentage).then(() => setSelectedPositionId(null))} onUpdate={(item, body) => void updatePosition(item, body)} /></article></div>}
     <DayTradingDisclaimer mode={regime.mode} notice={regime.dataNotice} />
   </div>;
+}
+
+function CandidateReplaySection({
+  items,
+  formalCount,
+}: {
+  items: DayTradingCandidateReplay[];
+  formalCount: number;
+}) {
+  return <section className="adaptive-table-card live-signal-section">
+    <div className="table-title">
+      <div>
+        <h2>今日候選回推</h2>
+        <p>用目前最新正式門檻，回推今天每輪掃描留下的 Top 20 候選；只保留關鍵動能與刷掉原因。</p>
+      </div>
+      <span>{formalCount} / {items.length} 會正式</span>
+    </div>
+    {items.length ? <div className="adaptive-table-wrap"><table><thead><tr><th>時間 / 當時排名</th><th>股票</th><th>方向</th><th>新版判斷</th><th>信心 / 確認</th><th>大單動能</th><th>健康 / RR</th><th>刷掉原因</th></tr></thead><tbody>{items.slice(0, 80).map((item) => {
+      const failure = item.replayFailures?.[0] ?? "符合新版正式條件";
+      return <tr key={`${item.snapshotAt}-${item.id}`}><td><b>{displayTime(item.snapshotAt)}</b><span>#{item.rank}</span></td><td><b>{item.symbol}</b><span>{item.stockName} · {item.market}</span></td><td><b className={item.direction === "long" ? "text-up" : "text-down"}>{item.direction === "long" ? "多" : "空"}</b><span>{item.action}</span></td><td><span className={`candidate-status ${item.wouldBeOfficialRecommendation ? "confirmed" : "blocked"}`}>{item.wouldBeOfficialRecommendation ? "會列正式" : "不列正式"}</span><small>原本：{item.originalOfficialRecommendation ? "正式" : "候選"}</small></td><td><b>{displayNumber(item.confidenceScore, 0)} / {displayNumber(item.confirmationScore, 0)}</b><span>門檻 80 / 45</span></td><td><b>{displayNumber(item.largeOrderForce, 0)}</b><span>{item.largeOrderStatus ?? (item.largeOrderContinuousBuy || item.largeOrderContinuousSell ? "連續大單成立" : "連續大單不足")}</span></td><td><b>{displayNumber(item.healthScore, 0)} / {displayNumber(item.riskRewardRatio)}</b><span>量 {item.volume.toLocaleString("zh-TW")}</span></td><td><small>{failure}</small></td></tr>;
+    })}</tbody></table></div> : <div className="adaptive-empty">目前還沒有候選快照；自動掃描啟動後，每輪會開始保存 Top 20，之後這裡就能回推今天哪些會正式。</div>}
+  </section>;
 }
 
 function AlertTriangleIcon() {

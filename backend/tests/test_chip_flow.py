@@ -19,8 +19,10 @@ from app.services.chip_flow_provider import (
 )
 from app.services.chip_flow_service import ChipFlowService
 from app.services.chip_flow_alerts import (
+    EXTRA_PINNED_TRACKING_LIMIT,
     FAST_POPULAR_LIMIT,
     MAX_CONCURRENT_STOCK_SCANS,
+    MOMENTUM_RANK_LIMIT,
     ChipFlowAlertRules,
     ElectronicChipFlowAlertMonitor,
     analyze_large_order_momentum,
@@ -677,6 +679,172 @@ def test_expanded_tracking_is_isolated_by_browser_client() -> None:
     assert set(monitor._active_tracking_stocks(now)) == {"2330", "2317"}
 
 
+def test_payload_ranks_long_momentum_top_ten_and_tracks_it_when_collapsed() -> None:
+    stocks = tuple(
+        ThemeStock(str(4000 + index), f"Stock {index}", "銝?", "AI", ("AI",))
+        for index in range(12)
+    )
+
+    def rows(force_lots: int) -> list[SimpleNamespace]:
+        return [
+            alert_snapshot(0, buy_shares=20_000, sell_shares=5_000),
+            alert_snapshot(
+                2,
+                buy_shares=20_000 + force_lots * 500,
+                sell_shares=6_000,
+            ),
+            alert_snapshot(
+                5,
+                buy_shares=20_000 + force_lots * 1_000,
+                sell_shares=7_000,
+            ),
+        ]
+
+    class ServiceStub:
+        provider = SimpleNamespace(
+            capabilities=SimpleNamespace(available=True, source="test-stream"),
+        )
+
+        def alert_snapshots_snapshot(
+            self,
+            stock_ids: list[str],
+            trade_date: date,
+        ) -> dict[str, list[SimpleNamespace]]:
+            return {
+                stock_id: rows(20 + int(stock_id) - 4000)
+                for stock_id in stock_ids
+            }
+
+    monitor = ElectronicChipFlowAlertMonitor(service=ServiceStub())  # type: ignore[arg-type]
+    monitor._stocks = stocks
+    now = datetime(2026, 7, 29, 10, 6, tzinfo=TAIPEI)
+
+    payload = monitor.payload(now=now, client_id="browser-one")
+    ranked_symbols = [alert["symbol"] for alert in payload["alerts"]]
+
+    assert len(ranked_symbols) == MOMENTUM_RANK_LIMIT
+    assert payload["longCount"] == 12
+    assert [alert["rank"] for alert in payload["alerts"]] == list(range(1, 11))
+    assert ranked_symbols == [str(symbol) for symbol in range(4011, 4001, -1)]
+    assert payload["autoTopTrackingCount"] == MOMENTUM_RANK_LIMIT
+    assert set(monitor.high_frequency_symbols_snapshot(now)) == set(ranked_symbols)
+
+
+def test_payload_ranks_short_momentum_top_ten() -> None:
+    stocks = tuple(
+        ThemeStock(str(4100 + index), f"Short {index}", "銝?", "AI", ("AI",))
+        for index in range(12)
+    )
+
+    def rows(force_lots: int) -> list[SimpleNamespace]:
+        return [
+            alert_snapshot(0, buy_shares=5_000, sell_shares=20_000),
+            alert_snapshot(
+                2,
+                buy_shares=6_000,
+                sell_shares=20_000 + force_lots * 500,
+            ),
+            alert_snapshot(
+                5,
+                buy_shares=7_000,
+                sell_shares=20_000 + force_lots * 1_000,
+            ),
+        ]
+
+    class ServiceStub:
+        provider = SimpleNamespace(
+            capabilities=SimpleNamespace(available=True, source="test-stream"),
+        )
+
+        def alert_snapshots_snapshot(
+            self,
+            stock_ids: list[str],
+            trade_date: date,
+        ) -> dict[str, list[SimpleNamespace]]:
+            return {
+                stock_id: rows(20 + int(stock_id) - 4100)
+                for stock_id in stock_ids
+            }
+
+    monitor = ElectronicChipFlowAlertMonitor(service=ServiceStub())  # type: ignore[arg-type]
+    monitor._stocks = stocks
+    now = datetime(2026, 7, 29, 10, 6, tzinfo=TAIPEI)
+
+    payload = monitor.payload(now=now, client_id="browser-one")
+    ranked_symbols = [alert["symbol"] for alert in payload["shortAlerts"]]
+
+    assert len(ranked_symbols) == MOMENTUM_RANK_LIMIT
+    assert payload["shortCount"] == 12
+    assert [alert["rank"] for alert in payload["shortAlerts"]] == list(range(1, 11))
+    assert ranked_symbols == [str(symbol) for symbol in range(4111, 4101, -1)]
+
+
+def test_pins_add_ten_extra_high_frequency_symbols_above_auto_top_ten() -> None:
+    top_stocks = tuple(
+        ThemeStock(str(4200 + index), f"Top {index}", "銝?", "AI", ("AI",))
+        for index in range(10)
+    )
+    pinned_stocks = tuple(
+        ThemeStock(str(4300 + index), f"Pin {index}", "銝?", "AI", ("AI",))
+        for index in range(12)
+    )
+
+    def top_rows(stock_id: str) -> list[SimpleNamespace]:
+        force_lots = 20 + int(stock_id) - 4200
+        return [
+            alert_snapshot(0, buy_shares=20_000, sell_shares=5_000),
+            alert_snapshot(
+                2,
+                buy_shares=20_000 + force_lots * 500,
+                sell_shares=6_000,
+            ),
+            alert_snapshot(
+                5,
+                buy_shares=20_000 + force_lots * 1_000,
+                sell_shares=7_000,
+            ),
+        ]
+
+    class ServiceStub:
+        provider = SimpleNamespace(
+            capabilities=SimpleNamespace(available=True, source="test-stream"),
+        )
+
+        def alert_snapshots_snapshot(
+            self,
+            stock_ids: list[str],
+            trade_date: date,
+        ) -> dict[str, list[SimpleNamespace]]:
+            return {
+                stock_id: top_rows(stock_id) if stock_id.startswith("42") else []
+                for stock_id in stock_ids
+            }
+
+    monitor = ElectronicChipFlowAlertMonitor(service=ServiceStub())  # type: ignore[arg-type]
+    monitor._stocks = (*top_stocks, *pinned_stocks)
+    pinned_symbols = [
+        top_stocks[0].symbol,
+        top_stocks[1].symbol,
+        *[stock.symbol for stock in pinned_stocks],
+    ]
+    now = datetime(2026, 7, 29, 10, 6, tzinfo=TAIPEI)
+
+    payload = monitor.payload(
+        now=now,
+        pinned_symbols=pinned_symbols,
+        client_id="browser-one",
+    )
+    high_frequency_symbols = set(monitor.high_frequency_symbols_snapshot(now))
+
+    assert payload["autoTopTrackingCount"] == MOMENTUM_RANK_LIMIT
+    assert payload["extraPinnedTrackingLimit"] == EXTRA_PINNED_TRACKING_LIMIT
+    assert payload["extraPinnedTrackingCount"] == EXTRA_PINNED_TRACKING_LIMIT
+    assert set(stock.symbol for stock in top_stocks) <= high_frequency_symbols
+    assert set(stock.symbol for stock in pinned_stocks[:10]) <= high_frequency_symbols
+    assert pinned_stocks[10].symbol not in high_frequency_symbols
+    assert pinned_stocks[11].symbol not in high_frequency_symbols
+
+
 def test_layered_scan_batch_prioritizes_hot_fast_and_background_stocks() -> None:
     monitor = ElectronicChipFlowAlertMonitor()
     stocks = tuple(
@@ -736,7 +904,19 @@ def test_three_hundred_stock_background_pool_completes_within_ninety_seconds() -
 
 
 def test_alert_payload_uses_live_memory_snapshots_for_browser_polls() -> None:
-    monitor = ElectronicChipFlowAlertMonitor()
+    class ServiceStub:
+        provider = SimpleNamespace(
+            capabilities=SimpleNamespace(available=True, source="test-stream"),
+        )
+
+        def alert_snapshots_snapshot(
+            self,
+            stock_ids: list[str],
+            trade_date: date,
+        ) -> dict[str, list[SimpleNamespace]]:
+            return {symbol: [] for symbol in stock_ids}
+
+    monitor = ElectronicChipFlowAlertMonitor(service=ServiceStub())  # type: ignore[arg-type]
     monitor._stocks = (ALERT_STOCK,)
     now = datetime(2026, 7, 29, 10, 0, tzinfo=TAIPEI)
     first = monitor.payload(now=now, client_id="browser-one")
@@ -1017,7 +1197,7 @@ def test_service_accumulates_incremental_batches_without_retaining_trade_ids() -
             at=datetime(2026, 7, 29, 9, 1, 5, tzinfo=TAIPEI),
         )],
         [tick(
-            "second", price="100", shares=10_000, bid="100",
+            "second", price="200", shares=10_000, bid="200",
             at=datetime(2026, 7, 29, 9, 2, 5, tzinfo=TAIPEI),
         )],
     ])
@@ -1064,6 +1244,22 @@ def test_service_replaces_stale_same_day_snapshots_with_reconstructed_series() -
             small_net_shares=0,
             unknown_shares=0,
             updated_at=datetime(2026, 7, 29, 9, 0, tzinfo=TAIPEI),
+        ))
+        db.add(ChipFlowSnapshot(
+            trade_date=DAY,
+            stock_id="3138",
+            snapshot_time=datetime(2026, 7, 29, 10, 30, tzinfo=TAIPEI),
+            large_buy_shares=888_000,
+            large_sell_shares=0,
+            large_net_shares=888_000,
+            medium_buy_shares=0,
+            medium_sell_shares=0,
+            medium_net_shares=0,
+            small_buy_shares=0,
+            small_sell_shares=0,
+            small_net_shares=0,
+            unknown_shares=0,
+            updated_at=datetime(2026, 7, 29, 10, 30, tzinfo=TAIPEI),
         ))
         db.commit()
 

@@ -16,6 +16,7 @@ from .routers import (
     day_trading,
     line_integration,
     large_holders,
+    limit_up_ai,
     long_term,
     market_data,
     pattern_robot,
@@ -90,6 +91,7 @@ app.include_router(ai_stock_line_integration.router, prefix=settings.api_prefix)
 app.include_router(ai_stock.router, prefix=settings.api_prefix)
 app.include_router(adaptive_electronic.router, prefix=settings.api_prefix)
 app.include_router(large_holders.router, prefix=settings.api_prefix)
+app.include_router(limit_up_ai.router, prefix=settings.api_prefix)
 app.include_router(long_term.router, prefix=settings.api_prefix)
 app.include_router(rocket_radar.router, prefix=settings.api_prefix)
 app.include_router(market_data.router, prefix=settings.api_prefix)

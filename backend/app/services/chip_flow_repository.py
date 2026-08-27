@@ -1,4 +1,5 @@
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -7,9 +8,12 @@ from ..models import ChipFlowSnapshot
 from .chip_flow_types import ChipFlowSnapshotData
 
 
+TAIPEI = ZoneInfo("Asia/Taipei")
+
+
 def _utc_minute_key(value: datetime) -> datetime:
     if value.tzinfo is None:
-        return value
+        value = value.replace(tzinfo=TAIPEI)
     return value.astimezone(UTC).replace(tzinfo=None)
 
 
@@ -33,9 +37,6 @@ class ChipFlowRepository:
                 select(ChipFlowSnapshot).where(
                     ChipFlowSnapshot.trade_date == trade_date,
                     ChipFlowSnapshot.stock_id == stock_id,
-                    ChipFlowSnapshot.snapshot_time.in_([
-                        snapshot.snapshot_time for snapshot in snapshots
-                    ]),
                 )
             )
         }
@@ -80,23 +81,23 @@ class ChipFlowRepository:
         ):
             raise ValueError("replace_day snapshots must share one stock and trade date")
 
-        snapshot_times = [item.snapshot_time for item in snapshots]
-        self.db.execute(
-            delete(ChipFlowSnapshot).where(
+        snapshot_keys = {_utc_minute_key(item.snapshot_time) for item in snapshots}
+        existing_rows = list(self.db.scalars(
+            select(ChipFlowSnapshot).where(
                 ChipFlowSnapshot.stock_id == stock_id,
                 ChipFlowSnapshot.trade_date == trade_date,
-                ChipFlowSnapshot.snapshot_time.not_in(snapshot_times),
             )
-        )
+        ))
+        kept_rows = []
+        for row in existing_rows:
+            if _utc_minute_key(row.snapshot_time) not in snapshot_keys:
+                self.db.delete(row)
+            else:
+                kept_rows.append(row)
 
-        latest_stored = self.db.scalar(
-            select(ChipFlowSnapshot.snapshot_time)
-            .where(
-                ChipFlowSnapshot.stock_id == stock_id,
-                ChipFlowSnapshot.trade_date == trade_date,
-            )
-            .order_by(ChipFlowSnapshot.snapshot_time.desc())
-            .limit(1)
+        latest_stored = max(
+            (row.snapshot_time for row in kept_rows),
+            default=None,
         )
         if latest_stored is None:
             candidates = snapshots

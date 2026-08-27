@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 import json
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
@@ -7,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.models import (
     DayTradingAlert,
+    DayTradingCandidateSnapshot,
     DayTradingPosition,
     DayTradingRecommendationHistory,
     DayTradingTrade,
@@ -26,6 +28,11 @@ from app.services.automated_position_tracker import (
     pending_automatic_position_events,
     record_official_recommendations,
 )
+from app.services.day_trading_candidate_snapshots import replay_candidate_snapshots, save_candidate_snapshots
+from app.services.day_trading_schedule import TradingScheduleConfig, trading_session_state
+
+
+TAIPEI = ZoneInfo("Asia/Taipei")
 
 
 def _session() -> Session:
@@ -49,6 +56,49 @@ def _signal() -> dict[str, object]:
         "generatedAt": "2026-07-30T09:41:52+08:00",
         "isOfficialRecommendation": True,
     }
+
+
+def _qualified_signal(**overrides: object) -> dict[str, object]:
+    value = {
+        **_signal(),
+        "status": "confirmed",
+        "dataMode": "official",
+        "quoteIsRealtime": True,
+        "confidenceScore": 85,
+        "healthScore": 85,
+        "riskRewardRatio": 2.0,
+        "volume": 1_000_000,
+        "turnover": 100_000_000,
+        "spreadPercentage": 0.1,
+        "tradingEligible": True,
+        "shortAvailabilityKnown": True,
+        "shortEligible": True,
+        "nearLimitDown": False,
+        "excessiveNegativeDeviation": False,
+        "chaseBlocked": False,
+        "stopDistancePercent": 1.0,
+        "marketAlignment": 80,
+        "confirmationScore": 70,
+        "volumeScore": 80,
+        "activeForce": 80,
+        "largeOrderForce": 70,
+        "largeOrderDataAvailable": True,
+        "largeOrderContinuousBuy": True,
+        "largeOrderContinuousSell": True,
+        "industryScore": 80,
+        "liquidityScore": 80,
+        "momentumUniverseMember": True,
+        "expiresAt": "2026-07-30T10:00:00+08:00",
+    }
+    value.update(overrides)
+    return value
+
+
+def _formal_session() -> tuple[TradingScheduleConfig, dict[str, object], datetime]:
+    now = datetime(2026, 7, 30, 9, 41, 52, tzinfo=TAIPEI)
+    config = TradingScheduleConfig()
+    session = trading_session_state(config, now, quote_samples=10, infrastructure_ok=True)
+    return config, session, now
 
 
 def _delivered_entry(db: Session, signal_id: str) -> None:
@@ -189,6 +239,60 @@ def test_official_recommendation_history_is_deduplicated() -> None:
         assert payload["recommendedQuantityLots"] == 2
         assert payload["strategyAllocations"][FIXED_STRATEGY_KEY]["quantityLots"] == 2
         assert DYNAMIC_STRATEGY_KEY not in payload["strategyAllocations"]
+
+
+def test_low_confidence_official_recommendation_does_not_open_or_record() -> None:
+    config, session, now = _formal_session()
+    signal = _qualified_signal(confidenceScore=79)
+
+    with _session() as db:
+        created = ensure_positions_for_delivered_entries(
+            db,
+            [signal],
+            config=config,
+            session=session,
+            now=now,
+        )
+        recorded = record_official_recommendations(
+            db,
+            [signal],
+            config=config,
+            session=session,
+            now=now,
+        )
+        db.commit()
+
+        assert created == []
+        assert recorded == 0
+        assert db.scalar(select(func.count()).select_from(DayTradingPosition)) == 0
+        assert db.scalar(select(func.count()).select_from(DayTradingRecommendationHistory)) == 0
+
+
+def test_low_confirmation_official_recommendation_does_not_open_or_record() -> None:
+    config, session, now = _formal_session()
+    signal = _qualified_signal(confirmationScore=44)
+
+    with _session() as db:
+        created = ensure_positions_for_delivered_entries(
+            db,
+            [signal],
+            config=config,
+            session=session,
+            now=now,
+        )
+        recorded = record_official_recommendations(
+            db,
+            [signal],
+            config=config,
+            session=session,
+            now=now,
+        )
+        db.commit()
+
+        assert created == []
+        assert recorded == 0
+        assert db.scalar(select(func.count()).select_from(DayTradingPosition)) == 0
+        assert db.scalar(select(func.count()).select_from(DayTradingRecommendationHistory)) == 0
 
 
 def test_fixed_two_lot_strategy_skips_excessive_stop_risk() -> None:
@@ -466,6 +570,41 @@ def test_force_close_uses_last_known_price_when_quote_is_unavailable() -> None:
         assert len(events) == 1
         assert events[0]["price"] == 2255
         assert events[0]["action"] == "收盤前全部賣出"
+
+
+def test_candidate_snapshots_can_be_replayed_with_latest_rules() -> None:
+    with _session() as db:
+        config, _, now = _formal_session()
+        qualified = _qualified_signal(id="2330-long-qualified", rank=1)
+        weak = _qualified_signal(
+            id="2454-long-weak-confirmation",
+            symbol="2454",
+            stockName="weak",
+            rank=2,
+            confirmationScore=20,
+        )
+
+        saved = save_candidate_snapshots(
+            db,
+            [qualified, weak],
+            config=config,
+            snapshot_at=now,
+        )
+        db.commit()
+
+        assert saved == 2
+        assert db.scalar(select(func.count()).select_from(DayTradingCandidateSnapshot)) == 2
+
+        replayed = replay_candidate_snapshots(
+            db,
+            config,
+            trading_date=now.date(),
+        )
+        by_id = {item["id"]: item for item in replayed}
+
+        assert by_id["2330-long-qualified"]["wouldBeOfficialRecommendation"] is True
+        assert by_id["2454-long-weak-confirmation"]["wouldBeOfficialRecommendation"] is False
+        assert by_id["2454-long-weak-confirmation"]["replayFailures"]
 
 
 def test_bearish_five_minute_structure_closes_long_position() -> None:

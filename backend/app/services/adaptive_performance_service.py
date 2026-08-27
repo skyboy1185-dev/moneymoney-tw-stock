@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, time
+from datetime import UTC, date, datetime, time
 from decimal import Decimal, ROUND_HALF_UP
 import json
 from typing import Any, Iterable
@@ -342,6 +342,26 @@ def _manage_open_trades(
     return emitted
 
 
+def _stored_signal_created_at(signal: AdaptiveSignal) -> datetime:
+    """Return signal created_at with DB compatibility.
+
+    SQLite strips timezone information in tests after round-tripping aware
+    datetimes.  Those values represent the original wall time, not UTC.  Keep
+    that compatibility for persisted signals while the live scan timestamp is
+    still normalized by adaptive_entry_window_open().
+    """
+    created_at = signal.created_at
+    return created_at.replace(tzinfo=TAIPEI) if created_at.tzinfo is None else created_at
+
+
+def _signal_open_for_new_entry(signal: AdaptiveSignal, trade_date: date) -> bool:
+    return adaptive_entry_window_open(
+        _stored_signal_created_at(signal),
+        True,
+        trade_date,
+    )
+
+
 def update_adaptive_paper_trades(
     db: Session,
     payload: AdaptiveScanPayload,
@@ -370,12 +390,14 @@ def update_adaptive_paper_trades(
         AdaptiveSignal.signal_type.in_(["entry_confirmed", "new_top5"]),
     ).order_by(AdaptiveSignal.created_at.desc()).limit(100)).all()
     for signal in recent:
-        created_at = signal.created_at if signal.created_at.tzinfo else signal.created_at.replace(tzinfo=TAIPEI)
+        created_at = _stored_signal_created_at(signal)
         if created_at.astimezone(TAIPEI).date() == payload.market.trade_date and signal.stock_code:
             entry_signals[signal.signal_key] = signal
 
     for signal in entry_signals.values():
         if signal.stock_code is None or signal.price is None:
+            continue
+        if not _signal_open_for_new_entry(signal, payload.market.trade_date):
             continue
         candidate = candidate_by_symbol.get(signal.stock_code)
         if candidate is None:

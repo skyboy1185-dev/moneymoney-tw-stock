@@ -187,6 +187,13 @@ export interface DayTradingSignal {
   recommendedAt?: string;
 }
 
+export interface DayTradingCandidateReplay extends DayTradingSignal {
+  snapshotAt: string;
+  originalOfficialRecommendation: boolean;
+  wouldBeOfficialRecommendation: boolean;
+  replayFailures: string[];
+}
+
 export interface DayTradingPosition {
   id: number;
   signalId: string;

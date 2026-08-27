@@ -40,6 +40,8 @@ PRIORITY_CYCLE_TARGET_SECONDS = 5
 HOT_CYCLE_TARGET_SECONDS = 10
 BACKGROUND_CYCLE_TARGET_SECONDS = 90
 CANDIDATE_TARGET = 300
+MOMENTUM_RANK_LIMIT = 10
+EXTRA_PINNED_TRACKING_LIMIT = 10
 MAX_PRIORITY_BATCH_SIZE = 20
 MAX_HOT_BATCH_SIZE = 8
 MAX_BACKGROUND_BATCH_SIZE = 8
@@ -816,6 +818,64 @@ def enrich_day_trading_large_order_confirmation(
     return enriched
 
 
+def _alert_float(alert: dict[str, object], field: str, default: float = 0.0) -> float:
+    value = alert.get(field, default)
+    try:
+        return float(str(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _momentum_rank_score(alert: dict[str, object], direction: str) -> float:
+    short_side = direction == "short"
+    force = (
+        _alert_float(alert, "recentNetSellLots")
+        if short_side else max(0.0, _alert_float(alert, "recentNetBuyLots"))
+    )
+    ratio = _alert_float(alert, "sellBuyRatio" if short_side else "buySellRatio")
+    steps = _alert_float(alert, "negativeSteps" if short_side else "positiveSteps")
+    day_force = (
+        max(0.0, -_alert_float(alert, "largeNetLots"))
+        if short_side else max(0.0, _alert_float(alert, "largeNetLots"))
+    )
+    score = 0.0
+    if bool(alert.get("currentQualifies")):
+        score += 10_000
+    if not bool(alert.get("isWarning")):
+        score += 2_000
+    if bool(alert.get("reinforced")) or alert.get("trend") == "strengthening":
+        score += 1_000
+    if bool(alert.get("simultaneousIncrease")):
+        score += 400
+    score += _alert_float(alert, "occurrenceCount") * 120
+    score += _alert_float(alert, "trendStreak") * 80
+    score += steps * 60
+    score += force * 12
+    score += min(ratio, 99.0) * 8
+    score += day_force * 0.5
+    if bool(alert.get("isWarning")):
+        score -= 500
+    return round(score, 2)
+
+
+def _rank_momentum_alerts(
+    alerts: Sequence[dict[str, object]],
+    direction: str,
+) -> list[dict[str, object]]:
+    ranked = sorted(
+        (dict(alert) for alert in alerts),
+        key=lambda item: (
+            _momentum_rank_score(item, direction),
+            str(item.get("symbol", "")),
+        ),
+        reverse=True,
+    )
+    for index, item in enumerate(ranked, start=1):
+        item["rank"] = index
+        item["rankScore"] = _momentum_rank_score(item, direction)
+    return ranked
+
+
 class ElectronicChipFlowAlertMonitor:
     def __init__(
         self,
@@ -854,6 +914,7 @@ class ElectronicChipFlowAlertMonitor:
         self._scanned_symbols: set[str] = set()
         self._cycle_scanned_symbols: set[str] = set()
         self._hot_symbols: set[str] = set()
+        self._auto_top_tracking_symbols: set[str] = set()
         self._day_trading_priority_symbols: set[str] = set()
         self._pinned_clients: dict[str, tuple[datetime, dict[str, ThemeStock]]] = {}
         self._tracking_clients: dict[str, tuple[datetime, dict[str, ThemeStock]]] = {}
@@ -987,6 +1048,45 @@ class ElectronicChipFlowAlertMonitor:
         if set(previous) != set(next_tracking):
             self._payload_cache.clear()
 
+    def _extra_pinned_tracking_stocks(
+        self,
+        auto_top_symbols: set[str],
+        now: datetime | None = None,
+        client_id: str | None = None,
+    ) -> dict[str, ThemeStock]:
+        current = _aware(now or datetime.now(TAIPEI))
+        self._active_pinned_stocks(current)
+        selected: dict[str, ThemeStock] = {}
+        for pinned_client_id, (_, stocks) in self._pinned_clients.items():
+            if client_id is not None and pinned_client_id != client_id:
+                continue
+            extra_count = 0
+            for symbol, stock in stocks.items():
+                if symbol in auto_top_symbols or not self._stock_is_allowed(stock):
+                    continue
+                selected.setdefault(symbol, stock)
+                extra_count += 1
+                if extra_count >= EXTRA_PINNED_TRACKING_LIMIT:
+                    break
+        return selected
+
+    def _high_frequency_symbols(
+        self,
+        eligible_symbols: set[str],
+        now: datetime | None = None,
+    ) -> set[str]:
+        auto_top_symbols = self._auto_top_tracking_symbols & eligible_symbols
+        extra_pinned_symbols = set(
+            self._extra_pinned_tracking_stocks(auto_top_symbols, now),
+        )
+        symbols = (
+            auto_top_symbols
+            | self._day_trading_priority_symbols
+            | extra_pinned_symbols
+            | set(self._active_tracking_stocks(now))
+        ) & eligible_symbols
+        return symbols
+
     async def start(self) -> None:
         if self._task and not self._task.done():
             return
@@ -1014,14 +1114,12 @@ class ElectronicChipFlowAlertMonitor:
             str(symbol) for symbol in symbols if str(symbol) in available
         }
 
-    def high_frequency_symbols_snapshot(self) -> tuple[str, ...]:
+    def high_frequency_symbols_snapshot(
+        self,
+        now: datetime | None = None,
+    ) -> tuple[str, ...]:
         available = {stock.symbol for stock in self._eligible_stocks()}
-        symbols = (
-            self._hot_symbols
-            | self._day_trading_priority_symbols
-            | set(self._active_pinned_stocks())
-            | set(self._active_tracking_stocks())
-        ) & available
+        symbols = self._high_frequency_symbols(available, now)
         return tuple(sorted(symbols))
 
     @staticmethod
@@ -1050,6 +1148,7 @@ class ElectronicChipFlowAlertMonitor:
         self._scanned_symbols.clear()
         self._cycle_scanned_symbols.clear()
         self._hot_symbols.clear()
+        self._auto_top_tracking_symbols.clear()
         self._day_trading_priority_symbols.clear()
         self._last_full_scan_at = None
         self._last_error = None
@@ -1107,6 +1206,7 @@ class ElectronicChipFlowAlertMonitor:
             self._scanned_symbols.intersection_update(active_symbols)
             self._cycle_scanned_symbols.intersection_update(active_symbols)
             self._hot_symbols.intersection_update(active_symbols)
+            self._auto_top_tracking_symbols.intersection_update(active_symbols)
             self._day_trading_priority_symbols.intersection_update(active_symbols)
             self._payload_cache.clear()
         except Exception as error:
@@ -1127,11 +1227,13 @@ class ElectronicChipFlowAlertMonitor:
 
     def _next_scan_batch(self) -> list[ThemeStock]:
         eligible_stocks = self._eligible_stocks()
-        pinned_stocks = self._active_pinned_stocks()
         tracking_stocks = self._active_tracking_stocks()
+        auto_top_symbols = self._auto_top_tracking_symbols
+        extra_pinned_stocks = self._extra_pinned_tracking_stocks(auto_top_symbols)
         priority_symbols = (
             self._day_trading_priority_symbols
-            | pinned_stocks.keys()
+            | auto_top_symbols
+            | extra_pinned_stocks.keys()
             | tracking_stocks.keys()
         )
         hot_symbols = self._hot_symbols - priority_symbols
@@ -1301,14 +1403,15 @@ class ElectronicChipFlowAlertMonitor:
 
     async def _scan_next(self, trade_date: date) -> None:
         batch = self._next_scan_batch()
-        pinned_symbols = set(self._active_pinned_stocks()) | set(self._active_tracking_stocks())
+        eligible_symbols = {stock.symbol for stock in self._eligible_stocks()}
+        priority_symbols = self._high_frequency_symbols(eligible_symbols)
 
         async def scan_limited(stock: ThemeStock) -> str | None:
             # A batch can contain hot, pinned, fast and background stocks at once.
             # Keep it below the SQLAlchemy pool capacity so browser reads retain
             # connections and a slow provider response cannot create a DB stampede.
             async with self._scan_semaphore:
-                return await self._scan_stock(stock, trade_date, pinned_symbols)
+                return await self._scan_stock(stock, trade_date, priority_symbols)
 
         results = await asyncio.gather(*(
             scan_limited(stock)
@@ -1367,9 +1470,9 @@ class ElectronicChipFlowAlertMonitor:
             self._scan_sequence,
             self._universe_updated_at.isoformat() if self._universe_updated_at else None,
             restriction_state.get("lastRefreshAt"),
-            tuple(sorted(client_pinned_stocks)),
+            tuple(client_pinned_stocks),
             tuple(sorted(all_pinned_stocks)),
-            tuple(sorted(client_tracking_stocks)),
+            tuple(client_tracking_stocks),
             tuple(sorted(all_tracking_stocks)),
         )
         cached_payload = self._payload_cache.get(cache_key)
@@ -1404,12 +1507,9 @@ class ElectronicChipFlowAlertMonitor:
         }
         stocks = list(self._eligible_stocks())
         eligible_symbols = {stock.symbol for stock in stocks}
-        high_frequency_symbols = (
-            self._hot_symbols
-            | self._day_trading_priority_symbols
-            | set(all_pinned_stocks)
-            | set(all_tracking_stocks)
-        ) & eligible_symbols
+        if not market_open and self._auto_top_tracking_symbols:
+            self._auto_top_tracking_symbols.clear()
+        high_frequency_symbols = self._high_frequency_symbols(eligible_symbols, current)
         if market_open:
             rows_by_symbol = self.service.alert_snapshots_snapshot(
                 [stock.symbol for stock in stocks],
@@ -1429,9 +1529,7 @@ class ElectronicChipFlowAlertMonitor:
                     as_of=current,
                 )
                 if alert is not None:
-                    alerts.append(self._enrich_runtime_alert(
-                        alert, current, high_frequency_symbols,
-                    ))
+                    alerts.append(alert)
                     self._hot_symbols.add(stock.symbol)
                 else:
                     if stock.symbol not in all_pinned_stocks:
@@ -1443,9 +1541,7 @@ class ElectronicChipFlowAlertMonitor:
                     as_of=current,
                 )
                 if short_alert is not None:
-                    short_alerts.append(self._enrich_runtime_alert(
-                        short_alert, current, high_frequency_symbols,
-                    ))
+                    short_alerts.append(short_alert)
                     self._hot_symbols.add(stock.symbol)
                 if stock.symbol in client_pinned_stocks:
                     tracked = analyze_large_order_momentum(
@@ -1456,9 +1552,7 @@ class ElectronicChipFlowAlertMonitor:
                         keep_tracking=True,
                     )
                     if tracked is not None:
-                        tracked_alerts.append(self._enrich_runtime_alert(
-                            tracked, current, high_frequency_symbols,
-                        ))
+                        tracked_alerts.append(tracked)
                     tracked_short = analyze_large_order_short_momentum(
                         stock,
                         cast(Sequence[ChipFlowAlertSnapshot], rows),
@@ -1467,29 +1561,56 @@ class ElectronicChipFlowAlertMonitor:
                         keep_tracking=True,
                     )
                     if tracked_short is not None:
-                        tracked_short_alerts.append(self._enrich_runtime_alert(
-                            tracked_short, current, high_frequency_symbols,
-                        ))
-        level_priority = {"critical": 4, "warning": 3, "positive": 2, "info": 1}
-        alerts.sort(
-            key=lambda item: (
-                level_priority.get(str(item["alertLevel"]), 0),
-                bool(item["simultaneousIncrease"]),
-                bool(item["reinforced"]),
-                float(item["recentNetBuyLots"]),
-                float(item["largeNetLots"]),
-            ),
-            reverse=True,
+                        tracked_short_alerts.append(tracked_short)
+        alerts = _rank_momentum_alerts(alerts, "long")
+        short_alerts = _rank_momentum_alerts(short_alerts, "short")
+        long_rank_by_symbol = {str(item["symbol"]): item for item in alerts}
+        short_rank_by_symbol = {str(item["symbol"]): item for item in short_alerts}
+
+        def ranked_tracking_alert(
+            alert: dict[str, object],
+            rank_by_symbol: dict[str, dict[str, object]],
+        ) -> dict[str, object]:
+            ranked = rank_by_symbol.get(str(alert.get("symbol")))
+            return {**alert, **({"rank": ranked["rank"], "rankScore": ranked["rankScore"]} if ranked else {})}
+
+        tracked_alerts = [
+            ranked_tracking_alert(alert, long_rank_by_symbol)
+            for alert in tracked_alerts
+        ]
+        tracked_short_alerts = [
+            ranked_tracking_alert(alert, short_rank_by_symbol)
+            for alert in tracked_short_alerts
+        ]
+        top_alerts = alerts[:MOMENTUM_RANK_LIMIT]
+        top_short_alerts = short_alerts[:MOMENTUM_RANK_LIMIT]
+        next_auto_top_tracking_symbols = {
+            str(item["symbol"])
+            for item in (*top_alerts, *top_short_alerts)
+        }
+        if market_open:
+            self._auto_top_tracking_symbols = (
+                next_auto_top_tracking_symbols & eligible_symbols
+            )
+        else:
+            self._auto_top_tracking_symbols.clear()
+        high_frequency_symbols = self._high_frequency_symbols(eligible_symbols, current)
+        client_extra_pinned_stocks = self._extra_pinned_tracking_stocks(
+            self._auto_top_tracking_symbols,
+            current,
+            client_id,
         )
-        short_alerts.sort(
-            key=lambda item: (
-                bool(item["currentQualifies"]),
-                bool(item["reinforced"]),
-                float(item.get("recentNetSellLots", 0)),
-                float(item.get("sellBuyRatio", 0)),
-            ),
-            reverse=True,
-        )
+
+        def enrich_alerts(items: Sequence[dict[str, object]]) -> list[dict[str, object]]:
+            return [
+                self._enrich_runtime_alert(item, current, high_frequency_symbols)
+                for item in items
+            ]
+
+        top_alerts = enrich_alerts(top_alerts)
+        top_short_alerts = enrich_alerts(top_short_alerts)
+        tracked_alerts = enrich_alerts(tracked_alerts)
+        tracked_short_alerts = enrich_alerts(tracked_short_alerts)
         scanned_count = len(self._scanned_symbols & eligible_symbols)
         if not capabilities.available:
             status = "unavailable"
@@ -1551,16 +1672,21 @@ class ElectronicChipFlowAlertMonitor:
             "highFrequencyTrackingCount": len(high_frequency_symbols),
             "pinnedTrackingCount": len(client_pinned_stocks),
             "expandedTrackingCount": len(client_tracking_stocks),
+            "rankingLimit": MOMENTUM_RANK_LIMIT,
+            "longCount": len(alerts),
+            "autoTopTrackingCount": len(self._auto_top_tracking_symbols),
+            "extraPinnedTrackingLimit": EXTRA_PINNED_TRACKING_LIMIT,
+            "extraPinnedTrackingCount": len(client_extra_pinned_stocks),
             "refreshSeconds": round(self.scan_interval_seconds, 1),
             "warningCount": sum(bool(item["isWarning"]) for item in alerts),
             "strengtheningCount": sum(bool(item["reinforced"]) for item in alerts),
             "jointIncreaseCount": sum(bool(item["simultaneousIncrease"]) for item in alerts),
             "marketPulse": market_pulse,
-            "alerts": alerts[:12],
+            "alerts": top_alerts,
             "trackedAlerts": tracked_alerts,
             "shortCount": len(short_alerts),
             "shortStrengtheningCount": sum(bool(item["reinforced"]) for item in short_alerts),
-            "shortAlerts": short_alerts[:12],
+            "shortAlerts": top_short_alerts,
             "trackedShortAlerts": tracked_short_alerts,
             "lastError": self._last_error,
             "notice": (

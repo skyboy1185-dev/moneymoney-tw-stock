@@ -322,14 +322,14 @@ def _ranking_key(item: dict[str, Any]) -> tuple[float, ...]:
     return (
         float(item.get("marketAlignment", 0)),
         float(item.get("confidenceScore", 0)),
-        float(item.get("healthScore", 0)),
-        float(item.get("riskRewardRatio", 0)),
         float(item.get("confirmationScore", 0)),
+        float(item.get("healthScore", 0)),
         float(item.get("volumeScore", 0)),
         float(item.get("activeForce", 0)),
         abs(float(item.get("largeOrderForce", 0))),
-        float(item.get("industryScore", 0)),
+        float(item.get("riskRewardRatio", 0)),
         float(item.get("liquidityScore", 0)),
+        float(item.get("industryScore", 0)),
         freshness,
         -distance,
     )

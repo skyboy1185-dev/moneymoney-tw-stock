@@ -330,6 +330,54 @@ function DecisionReasonList({ reasons }: { reasons: string[] }) {
   );
 }
 
+function superAiEntryPhase() {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Taipei",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date());
+  const value = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
+  const weekday = value("weekday");
+  const hour = Number(value("hour"));
+  const minute = Number(value("minute"));
+  const minutes = hour * 60 + minute;
+  if (weekday === "Sat" || weekday === "Sun" || !Number.isFinite(minutes)) {
+    return {
+      label: "非交易日",
+      tone: "off",
+      message: "今天不開新當沖倉；系統只保留既有資料與觀察名單。",
+    };
+  }
+  if (minutes < 9 * 60) {
+    return {
+      label: "開盤前",
+      tone: "off",
+      message: "09:00 前不開新倉；開盤後才開始判斷正式進場。",
+    };
+  }
+  if (minutes < 12 * 60) {
+    return {
+      label: "可進場時段",
+      tone: "on",
+      message: "09:00～12:00 允許符合風控的超強 AI 新進場。",
+    };
+  }
+  if (minutes <= 13 * 60 + 30) {
+    return {
+      label: "停止新進場",
+      tone: "off",
+      message: "12:00 後不新增當沖倉，只監控既有持倉與隔日觀察名單。",
+    };
+  }
+  return {
+    label: "收盤後",
+    tone: "off",
+    message: "今日不再開新倉；強勢標的只保留為隔日觀察。",
+  };
+}
+
 export function AdaptiveElectronicPage({
   userId,
   onSelectStock,
@@ -434,12 +482,13 @@ export function AdaptiveElectronicPage({
     }
   };
 
+  const marketRegime = status?.marketState.regime;
   const visibleCandidates = useMemo(() => candidates.filter((item) => {
     const textMatch = !query || `${item.stockCode}${item.stockName}${item.subIndustry}${item.strategyName}`.includes(query);
-    const side = status?.marketState.regime === "CRASH" || item.strategyType === "CRASH" || item.relativeStrength < -3 ? "SHORT" : "LONG";
+    const side = marketRegime === "CRASH" || item.strategyType === "CRASH" || item.relativeStrength < -3 ? "SHORT" : "LONG";
     const sideMatch = !sideFilter || sideFilter === side;
     return textMatch && sideMatch;
-  }), [candidates, query, sideFilter, status?.marketState.regime]);
+  }), [candidates, query, sideFilter, marketRegime]);
 
   const usedCapital = (settings?.maxCapital ?? 0) - (settings?.availableCapital ?? 0);
   const summary = performance?.summary;
@@ -447,6 +496,7 @@ export function AdaptiveElectronicPage({
   const risk = status?.risk;
   const openPositions = performance?.openPositions ?? [];
   const closedTrades = performance?.closedTrades ?? [];
+  const entryPhase = useMemo(() => superAiEntryPhase(), []);
 
   if (loading && !status) {
     return (
@@ -479,6 +529,11 @@ export function AdaptiveElectronicPage({
       </header>
 
       <p className="pattern-risk-notice"><ShieldAlert />{USER_WARNING}</p>
+      <p className="pattern-risk-notice">
+        <Activity />
+        <span className={`pattern-system-state ${entryPhase.tone}`}>{entryPhase.label}</span>
+        {entryPhase.message}
+      </p>
       <p className="pattern-risk-notice">
         <Bot />策略隔離：本頁是「超強AI當沖系統」，使用 SUPER_AI_DAYTRADE 來源、AI 評分、多空權重、R/R 與獨立模擬績效；可共用行情資料，但不沿用「當沖機器人」的三關價／原版當沖策略與績效。
       </p>

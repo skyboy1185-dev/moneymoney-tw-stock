@@ -8,6 +8,8 @@ export type ElectronicChipFlowAlertStatus =
 
 export interface ElectronicChipFlowAlert {
   direction?: "long" | "short";
+  rank?: number;
+  rankScore?: number;
   symbol: string;
   name: string;
   market: "上市" | "上櫃";
@@ -157,6 +159,11 @@ export interface ElectronicChipFlowAlertsResponse {
   highFrequencyTrackingCount: number;
   pinnedTrackingCount: number;
   expandedTrackingCount?: number;
+  rankingLimit?: number;
+  longCount?: number;
+  autoTopTrackingCount?: number;
+  extraPinnedTrackingLimit?: number;
+  extraPinnedTrackingCount?: number;
   refreshSeconds: number;
   warningCount: number;
   strengtheningCount: number;

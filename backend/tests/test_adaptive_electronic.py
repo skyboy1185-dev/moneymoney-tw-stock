@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -209,7 +209,16 @@ def test_new_entry_window_closes_exactly_at_noon() -> None:
         datetime(2026, 7, 31, 11, 59, 59, tzinfo=TAIPEI), True, date(2026, 7, 31),
     ) is True
     assert adaptive_entry_window_open(
+        datetime(2026, 7, 31, 3, 59, 59, tzinfo=UTC), True, date(2026, 7, 31),
+    ) is True
+    assert adaptive_entry_window_open(
         datetime(2026, 7, 31, 12, 0, tzinfo=TAIPEI), True, date(2026, 7, 31),
+    ) is False
+    assert adaptive_entry_window_open(
+        datetime(2026, 7, 31, 4, 0, tzinfo=UTC), True, date(2026, 7, 31),
+    ) is False
+    assert adaptive_entry_window_open(
+        datetime(2026, 7, 31, 4, 6), True, date(2026, 7, 31),
     ) is False
     assert adaptive_entry_window_open(
         datetime(2026, 7, 31, 13, 10, tzinfo=TAIPEI), False, date(2026, 7, 31),
@@ -661,6 +670,132 @@ def test_super_ai_exit_restores_reserved_capital_after_net_loss() -> None:
     _release_reserved_capital(Settings, Trade(), Decimal("-8000"))
 
     assert Settings.available_capital == Decimal("1936940.00")
+
+
+def super_ai_candidate(
+    *,
+    trade_date: date,
+    now: datetime,
+    stock_code: str = "2330",
+) -> AdaptiveStockCandidate:
+    return AdaptiveStockCandidate(
+        trade_date=trade_date,
+        stock_code=stock_code,
+        stock_name="TSMC",
+        market_type="TWSE",
+        main_industry="Electronic",
+        sub_industry="AI",
+        strategy_type="BREAKOUT",
+        total_score=Decimal("92"),
+        technical_score=Decimal("30"),
+        chip_score=Decimal("15"),
+        fundamental_score=Decimal("15"),
+        industry_score=Decimal("15"),
+        market_score=Decimal("15"),
+        health_score=Decimal("88"),
+        previous_health_score=Decimal("86"),
+        current_price=Decimal("100"),
+        entry_price_low=Decimal("100"),
+        entry_price_high=Decimal("101"),
+        breakout_price=Decimal("100"),
+        stop_loss_price=Decimal("98"),
+        target_price_1=Decimal("103"),
+        target_price_2=Decimal("105"),
+        allocation_percent=Decimal("10"),
+        relative_strength=Decimal("4"),
+        volume_status="ok",
+        industry_strength=Decimal("80"),
+        false_breakout_risk=Decimal("10"),
+        candidate_status="can_enter",
+        rank=1,
+        score_breakdown_json="{}",
+        selected_reasons="[]",
+        risk_reasons="[]",
+        missing_data_json="[]",
+        quote_source="TWSE MIS",
+        quote_timestamp=now,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def super_ai_watch_signal(
+    *,
+    now: datetime,
+    stock_code: str = "2330",
+    signal_key: str = "watch-entry-window-test",
+) -> AdaptiveSignal:
+    return AdaptiveSignal(
+        signal_key=signal_key,
+        stock_code=stock_code,
+        stock_name="TSMC",
+        signal_type="new_top5",
+        action="WATCH",
+        strategy_type="BREAKOUT",
+        price=Decimal("100"),
+        health_score=Decimal("88"),
+        reasons_json="[]",
+        line_push_status="pending",
+        created_at=now,
+    )
+
+
+def test_super_ai_paper_trade_enters_before_noon_cutoff() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 8, 26, 10, 30, tzinfo=TAIPEI)
+    payload = AdaptiveScanPayload(
+        market=market(trade_date=date(2026, 8, 26), updated_at=now, market_open=True),
+        industries=[],
+        stocks=[],
+    )
+    candidate = super_ai_candidate(trade_date=payload.market.trade_date, now=now)
+    signal = super_ai_watch_signal(now=now)
+
+    with Session(engine) as db:
+        db.add_all([candidate, signal])
+        db.commit()
+        update_adaptive_paper_trades(db, payload, [candidate], [signal], "BREAKOUT")
+        db.commit()
+
+        assert db.scalar(select(func.count(AdaptivePaperTrade.id))) == 1
+        stored_signal = db.scalar(select(AdaptiveSignal).where(AdaptiveSignal.signal_key == signal.signal_key))
+        assert stored_signal is not None
+        assert stored_signal.signal_type == "entry_confirmed"
+
+
+def test_super_ai_paper_trade_blocks_after_noon_cutoff_for_naive_utc_payload() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    trade_date = date(2026, 8, 26)
+    early_watch = datetime(2026, 8, 26, 10, 19, tzinfo=TAIPEI)
+    late_scan_naive_utc = datetime(2026, 8, 26, 4, 18)
+    payload = AdaptiveScanPayload(
+        market=market(trade_date=trade_date, updated_at=late_scan_naive_utc, market_open=True),
+        industries=[],
+        stocks=[],
+    )
+    candidate = super_ai_candidate(trade_date=trade_date, now=early_watch)
+    signal = super_ai_watch_signal(now=early_watch)
+
+    with Session(engine) as db:
+        db.add_all([candidate, signal])
+        db.commit()
+        update_adaptive_paper_trades(db, payload, [candidate], [signal], "BREAKOUT")
+        db.commit()
+
+        assert db.scalar(select(func.count(AdaptivePaperTrade.id))) == 0
+        stored_signal = db.scalar(select(AdaptiveSignal).where(AdaptiveSignal.signal_key == signal.signal_key))
+        assert stored_signal is not None
+        assert stored_signal.signal_type == "new_top5"
 
 
 def test_super_ai_blocked_entry_does_not_create_watch_notification() -> None:

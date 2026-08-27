@@ -17,6 +17,10 @@ from ..models import (
     DayTradingTrade,
 )
 from .day_trading import evaluate_position
+from .day_trading_schedule import (
+    TradingScheduleConfig,
+    recommendation_qualification,
+)
 
 
 AUTOMATION_USER_ID = "system-automation"
@@ -193,6 +197,8 @@ def record_official_recommendations(
     db: Session,
     recommendations: list[dict[str, Any]],
     *,
+    config: TradingScheduleConfig | None = None,
+    session: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> int:
     current = now or datetime.now(UTC)
@@ -200,6 +206,11 @@ def record_official_recommendations(
     for signal in recommendations:
         if not signal.get("isOfficialRecommendation"):
             continue
+        if config is not None and session is not None:
+            passed, failures = recommendation_qualification(signal, config, session, current)
+            signal["qualificationFailures"] = failures
+            if not passed:
+                continue
         signal_id = str(signal.get("id", ""))
         if not signal_id or db.scalar(select(DayTradingRecommendationHistory.id).where(
             DayTradingRecommendationHistory.signal_id == signal_id,
@@ -232,6 +243,8 @@ def ensure_positions_for_official_recommendations(
     db: Session,
     recommendations: list[dict[str, Any]],
     *,
+    config: TradingScheduleConfig | None = None,
+    session: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> list[DayTradingPosition]:
     """Create independent fixed-lot and dynamic-capital virtual positions."""
@@ -240,6 +253,11 @@ def ensure_positions_for_official_recommendations(
     for signal in recommendations:
         if not signal.get("isOfficialRecommendation"):
             continue
+        if config is not None and session is not None:
+            passed, failures = recommendation_qualification(signal, config, session, current)
+            signal["qualificationFailures"] = failures
+            if not passed:
+                continue
         direction = str(signal.get("direction", ""))
         if direction not in {"long", "short"}:
             continue
