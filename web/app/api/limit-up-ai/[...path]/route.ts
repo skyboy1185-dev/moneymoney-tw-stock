@@ -20,7 +20,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
     const headers = new Headers({
       Accept: "application/json",
       "Content-Type": request.headers.get("content-type") ?? "application/json",
-      "x-user-id": request.headers.get("x-user-id") ?? "",
+      "x-user-id": request.headers.get("x-user-id") ?? "demo-user",
     });
     const cookie = request.headers.get("cookie");
     const authorization = request.headers.get("authorization");
