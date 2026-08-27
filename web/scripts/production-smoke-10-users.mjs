@@ -48,8 +48,8 @@ const jsonChecks = [
   { name: "api:pattern-detections", path: "/api/pattern-robot/detections?pageSize=300", long: true },
   { name: "api:pattern-performance", path: "/api/pattern-robot/performance" },
   { name: "api:pattern-orders", path: "/api/pattern-robot/orders?pageSize=50" },
-  { name: "api:longterm-events-long-only", path: "/api/long-term/events?mode=long_only&afterId=0&limit=20" },
-  { name: "api:longterm-events-focused", path: "/api/long-term/events?mode=focused_long&afterId=0&limit=20" },
+  { name: "api:longterm-events-long-only", path: "/api/long-term/events?mode=long_only&afterId=0&limit=20", long: true },
+  { name: "api:longterm-events-focused", path: "/api/long-term/events?mode=focused_long&afterId=0&limit=20", long: true },
 ];
 
 const sseChecks = [
@@ -87,6 +87,7 @@ await Promise.all(users.map(async (user) => {
 const elapsedMs = Date.now() - startedAt;
 const failures = allResults.filter((result) => !result.ok);
 const grouped = groupByName(allResults);
+const thresholdFailures = [];
 
 console.log("");
 console.log("Endpoint summary");
@@ -94,6 +95,8 @@ for (const [name, results] of grouped) {
   const latencies = results.filter((result) => result.ok).map((result) => result.ms);
   const failed = results.length - latencies.length;
   const p95 = latencies.length ? percentile(latencies, 95) : 0;
+  const limit = ["long-json", "sse"].includes(results[0]?.kind) ? longP95LimitMs : jsonP95LimitMs;
+  if (!failed && p95 > limit) thresholdFailures.push(`${name} p95=${Math.round(p95)}ms limit=${limit}ms`);
   const statusText = failed ? "FAIL" : "OK";
   console.log(`${statusText} ${name} count=${results.length} failed=${failed} p95=${Math.round(p95)}ms`);
   for (const failure of results.filter((result) => !result.ok).slice(0, 3)) {
@@ -113,8 +116,9 @@ const longP95 = longLatencies.length ? percentile(longLatencies, 95) : 0;
 console.log("");
 console.log(`Total: checks=${allResults.length}, failures=${failures.length}, elapsed=${Math.round(elapsedMs)}ms`);
 console.log(`Latency: json/page p95=${Math.round(jsonP95)}ms limit=${jsonP95LimitMs}ms; long/sse p95=${Math.round(longP95)}ms limit=${longP95LimitMs}ms`);
+for (const failure of thresholdFailures) console.log(`THRESHOLD ${failure}`);
 
-if (failures.length || jsonP95 > jsonP95LimitMs || longP95 > longP95LimitMs) {
+if (failures.length || thresholdFailures.length || jsonP95 > jsonP95LimitMs || longP95 > longP95LimitMs) {
   process.exit(1);
 }
 
