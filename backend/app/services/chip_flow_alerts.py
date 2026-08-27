@@ -1011,8 +1011,15 @@ def _alert_float(alert: dict[str, object], field: str, default: float = 0.0) -> 
         return default
 
 
+def _directional_momentum_change(alert: dict[str, object], short_side: bool) -> float:
+    raw_change = _alert_float(alert, "momentumChangeLots")
+    directional_change = -raw_change if short_side else raw_change
+    return max(0.0, directional_change)
+
+
 def _momentum_rank_score(alert: dict[str, object], direction: str) -> float:
     short_side = direction == "short"
+    momentum_change = _directional_momentum_change(alert, short_side)
     if alert.get("rankingBasis") == "session":
         force = _alert_float(alert, "sessionNetSellLots" if short_side else "sessionNetBuyLots")
         gross = _alert_float(alert, "sessionLargeSellLots" if short_side else "sessionLargeBuyLots")
@@ -1023,21 +1030,22 @@ def _momentum_rank_score(alert: dict[str, object], direction: str) -> float:
         )
         steps = _alert_float(alert, "negativeSteps" if short_side else "positiveSteps")
         score = 0.0
+        score += momentum_change * 120
+        score += steps * 220
+        score += recent_force * 14
+        score += force * 8
+        score += gross * 1.5
+        score += min(ratio, 99.0) * 8
         if bool(alert.get("currentQualifies")):
-            score += 10_000
+            score += 1_200
         if alert.get("rankingFillReason") == "net":
-            score += 2_000
+            score += 500
         else:
-            score += 250
+            score += 100
         if bool(alert.get("largeOrderOffsetting")):
-            score -= 300
+            score -= 1_500
         if bool(alert.get("reinforced")) or alert.get("trend") == "strengthening":
-            score += 600
-        score += force * 25
-        score += gross * 5
-        score += recent_force * 8
-        score += steps * 60
-        score += min(ratio, 99.0) * 6
+            score += 1_800
         return round(score, 2)
     force = (
         _alert_float(alert, "recentNetSellLots")
@@ -1050,22 +1058,23 @@ def _momentum_rank_score(alert: dict[str, object], direction: str) -> float:
         if short_side else max(0.0, _alert_float(alert, "largeNetLots"))
     )
     score = 0.0
-    if bool(alert.get("currentQualifies")):
-        score += 10_000
-    if not bool(alert.get("isWarning")):
-        score += 2_000
-    if bool(alert.get("reinforced")) or alert.get("trend") == "strengthening":
-        score += 1_000
-    if bool(alert.get("simultaneousIncrease")):
-        score += 400
-    score += _alert_float(alert, "occurrenceCount") * 120
-    score += _alert_float(alert, "trendStreak") * 80
-    score += steps * 60
-    score += force * 12
+    score += momentum_change * 120
+    score += steps * 220
+    score += _alert_float(alert, "trendStreak") * 120
+    score += force * 14
     score += min(ratio, 99.0) * 8
-    score += day_force * 0.5
+    score += _alert_float(alert, "occurrenceCount") * 80
+    score += day_force * 0.25
+    if bool(alert.get("currentQualifies")):
+        score += 1_200
+    if not bool(alert.get("isWarning")):
+        score += 400
+    if bool(alert.get("reinforced")) or alert.get("trend") == "strengthening":
+        score += 1_800
+    if bool(alert.get("simultaneousIncrease")):
+        score += 500
     if bool(alert.get("isWarning")):
-        score -= 500
+        score -= 1_200
     return round(score, 2)
 
 

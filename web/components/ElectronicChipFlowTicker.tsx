@@ -1232,14 +1232,16 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
 
   const longRankingAlerts = selectLargeOrderRankings(data, "long");
   const shortRankingAlerts = selectLargeOrderRankings(data, "short");
-  const alerts = longRankingAlerts;
-  const shortAlerts = shortRankingAlerts;
+  const rankingLimit = data?.rankingLimit ?? 10;
+  const runningLongTop10 = longRankingAlerts.slice(0, rankingLimit);
+  const runningShortTop10 = shortRankingAlerts.slice(0, rankingLimit);
+  const alerts = runningLongTop10;
+  const shortAlerts = runningShortTop10;
   const disposedSymbols = new Set(data?.disposedExcludedSymbols ?? []);
   const pinnedSet = new Set(pinnedSymbols);
-  const rankingLimit = data?.rankingLimit ?? 10;
   const dingSourceAlerts = Array.from(new Map([
-    ...longRankingAlerts.slice(0, rankingLimit),
-    ...shortRankingAlerts.slice(0, rankingLimit),
+    ...runningLongTop10,
+    ...runningShortTop10,
   ].map((alert) => [alert.symbol, alert])).values());
   const dingRequestPayload = dingSourceAlerts.length
     ? JSON.stringify(dingSourceAlerts.map((alert) => ({

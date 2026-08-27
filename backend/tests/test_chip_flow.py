@@ -25,6 +25,7 @@ from app.services.chip_flow_alerts import (
     MOMENTUM_RANK_LIMIT,
     ChipFlowAlertRules,
     ElectronicChipFlowAlertMonitor,
+    _momentum_rank_score,
     analyze_large_order_momentum,
     analyze_large_order_short_momentum,
     build_market_order_pulse,
@@ -50,6 +51,62 @@ from app.services.theme_stock_universe import ThemeStock
 
 TAIPEI = ZoneInfo("Asia/Taipei")
 DAY = date(2026, 7, 29)
+
+
+def test_momentum_rank_score_prioritizes_recent_increase_over_static_session_size() -> None:
+    increasing = {
+        "rankingBasis": "session",
+        "sessionNetBuyLots": 70,
+        "sessionLargeBuyLots": 90,
+        "recentNetBuyLots": 28,
+        "momentumChangeLots": 32,
+        "positiveSteps": 4,
+        "sessionBuySellRatio": 3.0,
+        "currentQualifies": True,
+        "rankingFillReason": "net",
+        "trend": "strengthening",
+    }
+    static_large = {
+        "rankingBasis": "session",
+        "sessionNetBuyLots": 220,
+        "sessionLargeBuyLots": 260,
+        "recentNetBuyLots": 2,
+        "momentumChangeLots": 0,
+        "positiveSteps": 0,
+        "sessionBuySellRatio": 3.0,
+        "currentQualifies": True,
+        "rankingFillReason": "net",
+    }
+
+    assert _momentum_rank_score(increasing, "long") > _momentum_rank_score(static_large, "long")
+
+
+def test_short_momentum_rank_score_uses_directional_recent_increase() -> None:
+    increasing_short = {
+        "rankingBasis": "session",
+        "sessionNetSellLots": 70,
+        "sessionLargeSellLots": 90,
+        "recentNetSellLots": 28,
+        "momentumChangeLots": -32,
+        "negativeSteps": 4,
+        "sessionSellBuyRatio": 3.0,
+        "currentQualifies": True,
+        "rankingFillReason": "net",
+        "trend": "strengthening",
+    }
+    static_large_short = {
+        "rankingBasis": "session",
+        "sessionNetSellLots": 220,
+        "sessionLargeSellLots": 260,
+        "recentNetSellLots": 2,
+        "momentumChangeLots": 0,
+        "negativeSteps": 0,
+        "sessionSellBuyRatio": 3.0,
+        "currentQualifies": True,
+        "rankingFillReason": "net",
+    }
+
+    assert _momentum_rank_score(increasing_short, "short") > _momentum_rank_score(static_large_short, "short")
 
 
 def test_snapshot_exposes_small_order_buy_and_sell_totals() -> None:
