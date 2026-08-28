@@ -127,7 +127,7 @@ describe("selectLargeOrderRankings", () => {
 });
 
 describe("selectLargeOrderMomentumToastCandidates", () => {
-  it("keeps long-side fading warnings only when they are inside the visible Top10", () => {
+  it("does not create toasts for long-side fading warnings even inside the visible Top10", () => {
     const top10Warning = alert("2412", {
       trend: "fading",
       alertLevel: "critical",
@@ -149,9 +149,22 @@ describe("selectLargeOrderMomentumToastCandidates", () => {
       ],
     });
 
-    expect(selectLargeOrderMomentumToastCandidates(payload)).toEqual([
-      { alert: top10Warning, kind: "warning" },
-    ]);
+    expect(selectLargeOrderMomentumToastCandidates(payload)).toEqual([]);
+  });
+
+  it("does not create toasts for weakening warning rows", () => {
+    const weakening = alert("2412", {
+      trend: "weakening",
+      alertLevel: "warning",
+      isWarning: true,
+      rank: 1,
+    });
+    const payload = basePayload({
+      alerts: [weakening],
+      longRankings: [weakening],
+    });
+
+    expect(selectLargeOrderMomentumToastCandidates(payload)).toEqual([]);
   });
 
   it("does not turn short-side fading rows into long-side urgent toasts", () => {

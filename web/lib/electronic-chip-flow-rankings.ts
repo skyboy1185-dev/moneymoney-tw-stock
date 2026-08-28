@@ -24,7 +24,7 @@ export function selectLargeOrderRankings(
   return withDisplayRanks(rankings);
 }
 
-export type LargeOrderMomentumToastKind = "warning" | "reinforced" | "joint" | "surge";
+export type LargeOrderMomentumToastKind = "reinforced" | "joint" | "surge";
 
 export interface LargeOrderMomentumToastCandidate {
   alert: ElectronicChipFlowAlert;
@@ -33,7 +33,7 @@ export interface LargeOrderMomentumToastCandidate {
 
 function momentumToastKind(alert: ElectronicChipFlowAlert): LargeOrderMomentumToastKind | null {
   if (alert.isWarning || alert.trend === "weakening" || alert.trend === "fading" || alert.alertLevel === "critical") {
-    return "warning";
+    return null;
   }
   if (alert.simultaneousIncrease) return "joint";
   if (alert.reinforced) return "reinforced";
@@ -49,18 +49,9 @@ export function selectLargeOrderMomentumToastCandidates(
 
   data.alerts.forEach((alert) => {
     const kind = momentumToastKind(alert);
-    if (!kind || kind === "warning") return;
+    if (!kind) return;
     candidates.set(alert.symbol, { alert, kind });
   });
-
-  const rankingLimit = data.rankingLimit ?? 10;
-  selectLargeOrderRankings(data, "long")
-    .slice(0, rankingLimit)
-    .forEach((alert) => {
-      const kind = momentumToastKind(alert);
-      if (kind !== "warning") return;
-      candidates.set(alert.symbol, { alert, kind });
-    });
 
   return [...candidates.values()];
 }

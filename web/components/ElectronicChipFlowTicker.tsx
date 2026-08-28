@@ -29,7 +29,7 @@ interface ElectronicChipFlowTickerProps {
 interface MomentumToast {
   id: string;
   alert: ElectronicChipFlowAlert;
-  kind: "warning" | "reinforced" | "joint" | "surge";
+  kind: "reinforced" | "joint" | "surge";
 }
 
 interface ThreeGateToast {
@@ -1151,10 +1151,7 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
         const nextUrgentSignatures = new Map<string, string>();
         const freshToasts: MomentumToast[] = [];
         selectLargeOrderMomentumToastCandidates(payload).forEach(({ alert, kind }) => {
-          const signature = [
-            kind,
-            kind === "warning" ? alert.trend : 1,
-          ].join(":");
+          const signature = `${kind}:1`;
           nextUrgentSignatures.set(alert.symbol, signature);
           if (urgentSignatures.current.get(alert.symbol) === signature) return;
           freshToasts.push({
@@ -1167,7 +1164,7 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
         if (freshToasts.length) {
           const prioritized = freshToasts
             .sort((left, right) => {
-              const priority = { warning: 4, joint: 3, reinforced: 2, surge: 1 } as const;
+              const priority = { joint: 3, reinforced: 2, surge: 1 } as const;
               return priority[right.kind] - priority[left.kind];
             })
             .slice(0, 3);
@@ -1178,7 +1175,7 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
           prioritized.forEach((item) => {
             const timer = window.setTimeout(
               () => closeMomentumToast(item.id),
-              item.kind === "warning" ? 15_000 : item.kind === "surge" ? 12_000 : 10_000,
+              item.kind === "surge" ? 12_000 : 10_000,
             );
             toastTimers.current.push(timer);
           });
@@ -1556,9 +1553,9 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
         role="alert"
       >
         <button type="button" className="chip-emergency-body" onClick={() => selectStock(item.alert.symbol)}>
-          <span className="chip-emergency-icon">{item.kind === "warning" ? <AlertTriangle /> : item.kind === "surge" ? <Zap /> : <TrendingUp />}</span>
+          <span className="chip-emergency-icon">{item.kind === "surge" ? <Zap /> : <TrendingUp />}</span>
           <div>
-            <strong>{item.kind === "warning" ? "大單急退警示" : item.kind === "joint" ? "大小單同步增加" : item.kind === "reinforced" ? "大單急增・持續轉強" : "大單急增"}</strong>
+            <strong>{item.kind === "joint" ? "大小單同步增加" : item.kind === "reinforced" ? "大單急增・持續轉強" : "大單急增"}</strong>
             <h4>{item.alert.symbol} {item.alert.name}</h4>
             <p>{item.alert.message}</p>
             <small>近 {data?.windowMinutes ?? 5} 分｜大單 多 {formatLots(flow.largeLong)}／空 {formatLots(flow.largeShort)}｜散戶 多 {formatLots(flow.retailLong)}／空 {formatLots(flow.retailShort)} 張・{item.alert.time}</small>
