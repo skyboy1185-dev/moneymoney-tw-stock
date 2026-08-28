@@ -65,11 +65,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .chip-alert-ticker.has-short-alerts .short-row { background: linear-gradient(90deg, rgba(17,47,77,.99), rgba(10,27,48,.98) 55%, rgba(14,40,66,.98)); }
 .chip-alert-ticker.has-short-alerts .short-row .chip-alert-label svg { color: #69b7ff; filter: drop-shadow(0 0 6px rgba(70,159,244,.45)); }
 .short-row .chip-alert-label em { color: #83c8ff; background: rgba(64,145,223,.1); border-color: rgba(87,167,238,.24); }
-.chip-alert-ticker.has-alerts { background: linear-gradient(90deg, rgba(62,21,34,.98), rgba(19,30,48,.98) 48%, rgba(55,23,35,.98)); border-bottom-color: rgba(255,95,97,.32); }
 .chip-alert-ticker.is-expanded { border-bottom-color: #6d527d; }
 .chip-alert-label { height: 100%; padding: 0; display: flex; align-items: center; gap: 8px; color: #e2e9f3; white-space: nowrap; background: transparent; border: 0; cursor: pointer; }
 .chip-alert-label svg { color: #7e93ad; }
-.chip-alert-ticker.has-alerts .chip-alert-label svg { color: #ff6d72; filter: drop-shadow(0 0 6px rgba(255,95,97,.48)); }
 .chip-alert-label strong { font-size: 13px; letter-spacing: .05em; }
 .chip-alert-label em { padding: 3px 7px; color: #e5b567; background: rgba(226,177,91,.09); border: 1px solid rgba(226,177,91,.2); border-radius: 10px; font-size: 11px; font-style: normal; }
 .chip-alert-viewport { min-width: 0; height: 100%; overflow: hidden; display: flex; align-items: center; }

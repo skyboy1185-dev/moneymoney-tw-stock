@@ -1565,7 +1565,7 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
       </article>})}
     </div>}
     <section
-    className={`chip-alert-ticker layout-${barLayout} ${hasAlerts ? "has-alerts" : ""} ${hasShortAlerts ? "has-short-alerts" : ""} ${expanded ? "is-expanded" : ""}`}
+    className={`chip-alert-ticker layout-${barLayout} ${hasShortAlerts ? "has-short-alerts" : ""} ${expanded ? "is-expanded" : ""}`}
     aria-label="熱門股與電子股大單動能提醒"
     title={data?.notice}
   >
@@ -1583,8 +1583,8 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
     /> : <>
       <div className="chip-alert-row long-row">
         <button className="chip-alert-label" type="button" onClick={() => toggleExpanded("long")} aria-expanded={expanded === "long"}>
-          {data?.warningCount ? <AlertTriangle size={14} /> : hasAlerts ? <Zap size={14} /> : <Radio size={13} />}
-          <strong>{longLabel}</strong><em>{data?.warningCount ? `${data.warningCount} 警示` : `${alerts.length} 檔`}</em>
+          {hasAlerts ? <Zap size={14} /> : <Radio size={13} />}
+          <strong>{longLabel}</strong><em>{alerts.length} 檔</em>
           {expanded === "long" ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
         </button>
         <div className="chip-alert-viewport" aria-live="polite">
