@@ -350,18 +350,6 @@ function CompactMomentumSummary({
   </div>;
 }
 
-function Top10DataStatus({ data }: { data: ElectronicChipFlowAlertsResponse | null }) {
-  if (!data) return <small className="chip-compact-status">Top10 資料載入中。</small>;
-  const rankingLimit = data.rankingLimit ?? 10;
-  const marketState = data.marketOpen ? "盤中累積" : "非交易時段";
-  const resetHint = !data.marketOpen && (data.longRankingCount ?? 0) === 0 && (data.shortRankingCount ?? 0) === 0
-    ? "；目前沒有可保留的 Top10，若剛重新部署後端，盤中記憶體累計會從 0 重新開始"
-    : "";
-  return <small className="chip-compact-status">
-    Top10 狀態：{marketState}・多方 {data.longRankingCount ?? 0}/{rankingLimit}・空方 {data.shortRankingCount ?? 0}/{rankingLimit}・掃描 {data.scannedCount ?? 0}/{data.candidateCount ?? 0}{resetHint}
-  </small>;
-}
-
 // Kept for rollback/reference, but the live ticker uses only the summary entry
 // row now. Showing both made Top10 look duplicated when the same rankings were
 // rendered twice.
@@ -1625,7 +1613,6 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
         {data && <small className="chip-alert-coverage">空方Top{rankingLimit} 顯示 {shortAlerts.length}/{rankingLimit}・正式 {data.shortCount ?? 0}・持續加空 {data.shortStrengtheningCount ?? 0}</small>}
       </div>
     </>}
-    <Top10DataStatus data={data} />
     {expandedTradeSide && data && <MomentumPanel
       data={data}
       alerts={expandedAlerts}
