@@ -26,11 +26,11 @@ body::before { content: ""; position: fixed; inset: 0; z-index: 0; pointer-event
 button, input, select { font: inherit; }
 button { color: inherit; }
 button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #8c82ff; outline-offset: 2px; }
-.app-shell { --ticker-sticky-height: 180px; min-height: 100vh; position: relative; z-index: 1; }
-.app-shell:has(.chip-alert-ticker.layout-classic) { --ticker-sticky-height: 216px; }
+.app-shell { --ticker-sticky-height: 96px; min-height: 100vh; position: relative; z-index: 1; }
+.app-shell:has(.chip-alert-ticker.layout-classic) { --ticker-sticky-height: 132px; }
 
-.chip-alert-ticker { --ticker-height: 216px; height: var(--ticker-height); padding: 0; display: block; position: sticky; top: 0; z-index: 46; overflow: visible; color: #a7b4c7; background: linear-gradient(90deg, rgba(18,33,53,.98), rgba(12,24,41,.98)); border-bottom: 1px solid #2b3e58; box-shadow: 0 8px 26px rgba(0,5,14,.24); }
-.chip-alert-ticker.layout-compact { --ticker-height: 180px; height: var(--ticker-height); }
+.chip-alert-ticker { --ticker-height: 132px; height: var(--ticker-height); padding: 0; display: block; position: sticky; top: 0; z-index: 46; overflow: visible; color: #a7b4c7; background: linear-gradient(90deg, rgba(18,33,53,.98), rgba(12,24,41,.98)); border-bottom: 1px solid #2b3e58; box-shadow: 0 8px 26px rgba(0,5,14,.24); }
+.chip-alert-ticker.layout-compact { --ticker-height: 96px; height: var(--ticker-height); }
 .taiwan-index-pulse { height: 40px; padding: 0 max(18px, calc((100vw - 1680px) / 2)); display: grid; grid-template-columns: auto minmax(190px, .75fr) minmax(430px, 1.65fr) minmax(145px, .65fr) minmax(145px, .65fr) minmax(220px, .9fr); align-items: center; gap: 12px; overflow-x: auto; color: #aebdd0; background: linear-gradient(90deg, rgba(23, 38, 61, .99), rgba(14, 29, 48, .99)); border-bottom: 1px solid rgba(85, 105, 132, .4); font-size: 10px; font-variant-numeric: tabular-nums; scrollbar-width: thin; }
 .taiwan-index-pulse.direction-bullish { background: linear-gradient(90deg, rgba(69, 25, 41, .98), rgba(20, 33, 52, .99)); box-shadow: inset 4px 0 0 #ef627d; }
 .taiwan-index-pulse.direction-bearish { background: linear-gradient(90deg, rgba(15, 48, 74, .99), rgba(15, 31, 51, .99)); box-shadow: inset 4px 0 0 #54a9e8; }
