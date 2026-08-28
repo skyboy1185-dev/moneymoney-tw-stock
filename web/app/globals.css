@@ -41,8 +41,21 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .taiwan-index-pulse small { color: #7f90a6; }
 .taiwan-index-pulse-futures strong { color: #eff5fb; font-size: 13px; }
 .taiwan-index-pulse-futures span, .taiwan-index-pulse-flow span { color: #8798ad; }
+.taiwan-index-pulse-futures time { color: #65758d; font-size: 9px; }
 .taiwan-index-pulse .up, .taiwan-index-pulse-flow.large strong { color: #ff8092; }
 .taiwan-index-pulse .down, .taiwan-index-pulse-flow.small strong { color: #55d0a0; }
+.futures-price-flash-up { display: inline-block; animation: futures-flash-up 1.4s ease-out; }
+.futures-price-flash-down { display: inline-block; animation: futures-flash-down 1.4s ease-out; }
+.metric-flash-up { animation: futures-flash-up 1.4s ease-out; }
+.metric-flash-down { animation: futures-flash-down 1.4s ease-out; }
+@keyframes futures-flash-up {
+  0% { color: #fff; text-shadow: 0 0 16px rgba(255, 128, 146, .9); transform: scale(1.04); }
+  100% { text-shadow: none; transform: none; }
+}
+@keyframes futures-flash-down {
+  0% { color: #fff; text-shadow: 0 0 16px rgba(85, 208, 160, .9); transform: scale(1.04); }
+  100% { text-shadow: none; transform: none; }
+}
 .taiwan-index-pulse-verdict { justify-content: flex-end; }
 .taiwan-index-pulse-verdict small { padding: 2px 7px; color: #dfe8f3; background: rgba(109, 128, 153, .18); border-radius: 8px; }
 .taiwan-index-pulse.direction-bullish .taiwan-index-pulse-verdict strong { color: #ff8ca0; }

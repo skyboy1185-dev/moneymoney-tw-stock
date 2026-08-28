@@ -20,6 +20,7 @@ import { evaluateLargeOrderOutcomes } from "@/lib/large-order-outcome";
 import { selectLargeOrderMomentumToastCandidates, selectLargeOrderRankings } from "@/lib/electronic-chip-flow-rankings";
 import { buildDingSelectionRows, type DingSelectionRow } from "@/lib/ding-selection";
 import { buildTaiwanIndexKeyLevels, formatIndexLevel } from "@/lib/taiwan-index-key-levels";
+import { futuresFlashDirection, type FuturesFlashDirection } from "@/lib/market-snapshot-refresh";
 
 interface ElectronicChipFlowTickerProps {
   onSelectStock?: (symbol: string) => void;
@@ -126,6 +127,8 @@ function TaiwanIndexPulseBar({
 }) {
   const pulse = data?.marketPulse;
   const futures = marketSnapshot?.context;
+  const previousFuturesPrice = useRef<number | null>(null);
+  const [futuresFlash, setFuturesFlash] = useState<FuturesFlashDirection>("");
   const pulseLive = data?.marketOpen && pulse?.status === "realtime";
   const direction = pulseLive ? pulse.direction : "neutral";
   const trendLabel = pulseLive ? pulse.trendLabel : data?.marketOpen ? "大／小單暖機中" : "現貨收盤・停止更新";
@@ -133,6 +136,15 @@ function TaiwanIndexPulseBar({
   const referencePrice = (futures?.futuresPrice && futures.futuresPrice > 0)
     ? futures.futuresPrice
     : futures?.indexPrice;
+  useEffect(() => {
+    const price = futures?.futuresPrice;
+    const direction = futuresFlashDirection(previousFuturesPrice.current, price);
+    if (price != null && Number.isFinite(price)) previousFuturesPrice.current = price;
+    if (!direction) return;
+    setFuturesFlash(direction);
+    const timer = window.setTimeout(() => setFuturesFlash(""), 1400);
+    return () => window.clearTimeout(timer);
+  }, [futures?.futuresPrice, futures?.futuresQuoteAt]);
   const keyLevels = buildTaiwanIndexKeyLevels(futures, marketDefense);
   const pivotText = keyLevels.pivot
     ? `多空 ${formatIndexLevel(keyLevels.pivot.value)}（${keyLevels.pivot.source}）`
@@ -152,10 +164,11 @@ function TaiwanIndexPulseBar({
     </div>
     <div className="taiwan-index-pulse-futures">
       <small>台指期 {futures?.futuresContract ?? ""}</small>
-      <strong>{referencePrice ? formatLots(referencePrice) : "—"}</strong>
+      <strong className={futuresFlash ? `futures-price-flash-${futuresFlash}` : ""}>{referencePrice ? formatLots(referencePrice) : "—"}</strong>
       <span className={(futures?.futuresChangePercent ?? 0) > 0 ? "up" : (futures?.futuresChangePercent ?? 0) < 0 ? "down" : ""}>
         {futures ? `${formatSigned(futures.futuresChange)}（${formatSigned(futures.futuresChangePercent)}%）` : "行情待補"}
       </span>
+      {futures?.futuresQuoteAt && <time>{futures.futuresQuoteAt}</time>}
     </div>
     <div
       className={`taiwan-index-key-levels state-${keyLevels.tone}`}

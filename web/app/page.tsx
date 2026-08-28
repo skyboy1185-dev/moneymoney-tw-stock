@@ -22,6 +22,7 @@ import { PatternRobotPage } from "@/components/PatternRobotPage";
 import { LegalTermsButton } from "@/components/LegalTermsGate";
 import { PrivateSiteLogoutButton } from "@/components/PrivateSiteLogoutButton";
 import type { MarketSnapshot } from "@/lib/market-types";
+import { marketSnapshotFallbackPollMs, shouldFallbackRefreshMarketSnapshot } from "@/lib/market-snapshot-refresh";
 import type { StockPayload } from "@/lib/types";
 
 type Tab = "analysis" | "screener" | "day-trading" | "limit-up-ai" | "pattern-robot" | "adaptive-electronic" | "rocket-radar" | "long-term" | "whale-accumulation" | "institutional-investors" | "chip-flow" | "portfolio" | "industries" | "news";
@@ -60,6 +61,9 @@ export default function Home() {
   const [userId, setUserId] = useState("");
   const [rocketUnread, setRocketUnread] = useState(0);
   const [limitUpUnread, setLimitUpUnread] = useState(0);
+  const snapshotRef = useRef<MarketSnapshot | null>(null);
+  const lastMarketEventAtRef = useRef(0);
+  const fallbackRefreshInFlightRef = useRef(false);
 
   useEffect(() => {
     tabRef.current = tab;
@@ -85,6 +89,13 @@ export default function Home() {
     }
   }, []);
 
+  const applyMarketSnapshot = useCallback((nextSnapshot: MarketSnapshot) => {
+    snapshotRef.current = nextSnapshot;
+    lastMarketEventAtRef.current = Date.now();
+    setSnapshot(nextSnapshot);
+    setConnection("connected");
+  }, []);
+
   useEffect(() => {
     const initial = new URLSearchParams(window.location.search).get("symbol") ?? "2330";
     const requestedView = new URLSearchParams(window.location.search).get("view");
@@ -105,15 +116,67 @@ export default function Home() {
 
   useEffect(() => {
     setConnection("connecting");
+    lastMarketEventAtRef.current = Date.now();
     const source = new EventSource(`/api/stream?auto=${autoMode ? "1" : "0"}`);
     source.addEventListener("market", (event) => {
-      setSnapshot(JSON.parse((event as MessageEvent).data));
-      setConnection("connected");
+      applyMarketSnapshot(JSON.parse((event as MessageEvent).data) as MarketSnapshot);
     });
     source.onopen = () => setConnection("connected");
     source.onerror = () => setConnection("disconnected");
     return () => source.close();
-  }, [autoMode]);
+  }, [applyMarketSnapshot, autoMode]);
+
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let stopped = false;
+    const schedule = () => {
+      if (stopped) return;
+      const current = snapshotRef.current;
+      const delay = current
+        ? marketSnapshotFallbackPollMs({
+            marketOpen: current.marketOpen,
+            futuresMarketOpen: current.futuresMarketOpen,
+          })
+        : 30_000;
+      timer = setTimeout(() => void tick(), delay);
+    };
+    const tick = async () => {
+      const current = snapshotRef.current;
+      if (
+        !fallbackRefreshInFlightRef.current
+        && shouldFallbackRefreshMarketSnapshot({
+          now: Date.now(),
+          lastEventAt: lastMarketEventAtRef.current,
+          hasSnapshot: Boolean(current),
+          marketOpen: current?.marketOpen ?? false,
+          futuresMarketOpen: current?.futuresMarketOpen ?? false,
+        })
+      ) {
+        fallbackRefreshInFlightRef.current = true;
+        try {
+          const response = await fetch(`/api/ai?auto=${autoMode ? "1" : "0"}&refresh=1`, {
+            cache: "no-store",
+            headers: userId ? { "x-user-id": userId } : undefined,
+          });
+          if (response.ok) {
+            applyMarketSnapshot(await response.json() as MarketSnapshot);
+          } else {
+            setConnection("disconnected");
+          }
+        } catch {
+          setConnection("disconnected");
+        } finally {
+          fallbackRefreshInFlightRef.current = false;
+        }
+      }
+      schedule();
+    };
+    schedule();
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [applyMarketSnapshot, autoMode, userId]);
 
   useEffect(() => {
     const loadUnread = async () => {

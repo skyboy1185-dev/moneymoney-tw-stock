@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Activity, AlertTriangle, ArrowDownRight, ArrowUpRight, Bot, BrainCircuit, BriefcaseBusiness, Clock3, Database, Eye, Radio, ShieldCheck, Sparkles, Star, TrendingUp, X, Zap } from "lucide-react";
 import type { MarketDirection, MarketSnapshot, RankingRow, TimelinePoint } from "@/lib/market-types";
 import { formatPercent, formatVolume, safeNumber, valueClass } from "@/lib/format";
+import { futuresFlashDirection, type FuturesFlashDirection } from "@/lib/market-snapshot-refresh";
 import { AIStockWorkflow } from "@/components/AIStockWorkflow";
 
 const LABELS: Record<MarketDirection, string> = {
@@ -41,6 +42,31 @@ export function AiCenter({ snapshot, loading, autoMode, onAutoModeChange, onSele
   const [holdingTarget, setHoldingTarget] = useState<RankingRow | null>(null);
   const [holdingForm, setHoldingForm] = useState({ cost: "", lots: "1", buyDate: new Date().toISOString().slice(0, 10) });
   const [actionMessage, setActionMessage] = useState("");
+  const previousMetricValues = useRef(new Map<string, number>());
+  const [metricFlashes, setMetricFlashes] = useState<Record<string, FuturesFlashDirection>>({});
+
+  useEffect(() => {
+    if (!snapshot) return;
+    const changed: Record<string, FuturesFlashDirection> = {};
+    for (const metric of snapshot.metrics) {
+      if (!metric.id.startsWith("futures")) continue;
+      const direction = futuresFlashDirection(previousMetricValues.current.get(metric.id), metric.value);
+      previousMetricValues.current.set(metric.id, metric.value);
+      if (direction) changed[metric.id] = direction;
+    }
+    const changedIds = Object.keys(changed);
+    if (!changedIds.length) return;
+    setMetricFlashes((current) => ({ ...current, ...changed }));
+    const timer = window.setTimeout(() => {
+      setMetricFlashes((current) => {
+        const next = { ...current };
+        for (const id of changedIds) delete next[id];
+        return next;
+      });
+    }, 1400);
+    return () => window.clearTimeout(timer);
+  }, [snapshot]);
+
   useEffect(() => {
     if (!userId) return;
     void Promise.all([
@@ -126,7 +152,9 @@ export function AiCenter({ snapshot, loading, autoMode, onAutoModeChange, onSele
         <div className="metric-grid">
           {snapshot.metrics.map((metric) => {
             const up = metric.change1m >= 0;
-            return <article key={metric.id} className="force-metric">
+            const flash = metricFlashes[metric.id];
+            const futuresMetric = metric.id.startsWith("futures");
+            return <article key={metric.id} className={["force-metric", futuresMetric ? "futures-live-metric" : "", flash ? `metric-flash-${flash}` : ""].filter(Boolean).join(" ")}>
               <div><span>{metric.label}</span>{up ? <ArrowUpRight className="text-up" size={16} /> : <ArrowDownRight className="text-down" size={16} />}</div>
               <strong className={metric.value > 0 && ["large-order","market-force","futures-change","futures-percent","index-change","index-percent"].includes(metric.id) ? "text-up" : metric.value < 0 ? "text-down" : ""}>{metricValue(metric.value, metric.unit)} <small>{metric.unit}</small></strong>
               {metric.hasIntradayChanges === false
