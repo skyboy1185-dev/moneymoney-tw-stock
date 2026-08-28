@@ -735,7 +735,6 @@ function MomentumPanel({
       <div className="chip-momentum-summary">
         <span className={isShort ? "short" : "positive"}>{isShort ? <TrendingDown size={12} /> : <TrendingUp size={12} />}{isShort ? `空方Top${rankingLimit} ${rankedAlerts.length}/${rankingLimit}` : `多方Top${rankingLimit} ${rankedAlerts.length}/${rankingLimit}`}</span>
         <span className={isShort ? "short" : "positive"}>{isShort ? <TrendingDown size={12} /> : <TrendingUp size={12} />}{isShort ? `持續加空 ${data.shortStrengtheningCount ?? 0}` : `大小單同步 ${data.jointIncreaseCount}`}</span>
-        {!isShort && <span className="warning"><AlertTriangle size={12} />轉弱警示 {data.warningCount}</span>}
         {groupResonances.length > 0 && <span className="group-warning"><AlertTriangle size={12} />族群共振 {groupResonances.length} 組・強烈注意</span>}
         {pinnedSymbols.size > 0 && <span className="pinned"><Pin size={12} />已釘選 {pinnedSymbols.size}</span>}
         {(data.extraPinnedTrackingCount ?? 0) > 0 && <span className="pinned"><Pin size={12} />釘選加碼 {data.extraPinnedTrackingCount}/{data.extraPinnedTrackingLimit ?? 10}</span>}

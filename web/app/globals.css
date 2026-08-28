@@ -199,7 +199,6 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .chip-momentum-summary { display: flex; align-items: center; gap: 9px; }
 .chip-momentum-summary span { padding: 6px 9px; display: inline-flex; align-items: center; gap: 5px; border-radius: 7px; }
 .chip-momentum-summary .positive { color: #ff91aa; background: rgba(196,48,94,.13); border: 1px solid rgba(231,84,128,.22); }
-.chip-momentum-summary .warning { color: #ffbc72; background: rgba(194,103,36,.13); border: 1px solid rgba(232,137,65,.23); }
 .chip-momentum-summary .group-warning { color: #ffe08a; background: rgba(212, 121, 28, .2); border: 1px solid rgba(255, 185, 63, .42); box-shadow: 0 0 12px rgba(255, 164, 45, .14); }
 .chip-momentum-summary .pinned { color: #ffd76b; background: rgba(192,143,35,.13); border: 1px solid rgba(237,185,63,.25); }
 .chip-momentum-summary small { color: #78899f; font-size: 11px; }
