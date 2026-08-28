@@ -35,7 +35,7 @@ function formatTime(value?: string | null): string {
   return parsed.toLocaleTimeString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" });
 }
 
-function dayTradingHealth(payload: unknown, error?: string): RobotHealth {
+export function dayTradingHealth(payload: unknown, error?: string): RobotHealth {
   const body = record(payload);
   const automation = record(body.automation);
   const supervisor = record(body.supervisor);
@@ -45,16 +45,30 @@ function dayTradingHealth(payload: unknown, error?: string): RobotHealth {
   const supervisorStatus = text(supervisor.status);
   const dataStatus = text(body.dataStatus);
   const latest = text(session.localTime) || text(body.updatedAt);
+  const badDataStatus = dataStatus === "disconnected" || dataStatus === "source_error" || dataStatus === "severe_delay";
+  const runningSupervisor = supervisorStatus === "running";
+  const activePhase = ["warmup", "scanning"].includes(phase);
+  const completedPhase = ["summary", "entry_closed", "closing", "non_trading"].includes(phase);
   let tone: HealthTone = "warming";
   let status = "等待啟動";
 
   if (error) {
     tone = "error";
     status = "連線異常";
-  } else if (dataStatus === "disconnected" || dataStatus === "source_error" || dataStatus === "severe_delay") {
+  } else if (runningSupervisor && completedPhase) {
+    tone = "paused";
+    status = phase === "summary"
+      ? "今日掃描完成"
+      : phase === "entry_closed" || phase === "closing"
+        ? "停止新進場"
+        : "盤後待機";
+  } else if (badDataStatus && activePhase) {
     tone = "error";
     status = "資料異常";
-  } else if (supervisorStatus === "running" || ["warmup", "scanning", "entry_closed", "closing"].includes(phase)) {
+  } else if (badDataStatus && !runningSupervisor) {
+    tone = "error";
+    status = "資料異常";
+  } else if (runningSupervisor || ["warmup", "scanning", "entry_closed", "closing", "summary"].includes(phase)) {
     tone = phase === "scanning" ? "ok" : "warming";
     status = phase === "scanning" ? "盤中掃描" : phase === "entry_closed" ? "停止新進場" : "排程運作";
   }
