@@ -12,6 +12,7 @@ import { ChipFlowPage } from "@/components/ChipFlowPage";
 import { DayTradingDashboard } from "@/components/day-trading/DayTradingDashboard";
 import { ElectronicChipFlowTicker } from "@/components/ElectronicChipFlowTicker";
 import { RobotHealthPanel } from "@/components/RobotHealthPanel";
+import { TodayRobotNotificationsPanel } from "@/components/TodayRobotNotificationsPanel";
 import { AdaptiveElectronicPage } from "@/components/AdaptiveElectronicPage";
 import { LongTermSelectionPage } from "@/components/LongTermSelectionPage";
 import { RocketRadarPage } from "@/components/RocketRadarPage";
@@ -201,6 +202,7 @@ export default function Home() {
       </nav>
 
       <RobotHealthPanel userId={userId} onOpen={switchTab} />
+      <TodayRobotNotificationsPanel userId={userId} onOpen={switchTab} />
 
       <main className="main-content">
         {error && <div className="error-banner" role="alert">{error}</div>}
