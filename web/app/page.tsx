@@ -22,7 +22,13 @@ import { PatternRobotPage } from "@/components/PatternRobotPage";
 import { LegalTermsButton } from "@/components/LegalTermsGate";
 import { PrivateSiteLogoutButton } from "@/components/PrivateSiteLogoutButton";
 import type { MarketSnapshot } from "@/lib/market-types";
-import { marketSnapshotFallbackPollMs, shouldFallbackRefreshMarketSnapshot } from "@/lib/market-snapshot-refresh";
+import {
+  futuresFlashDirection,
+  isFuturesQuoteDelayed,
+  marketSnapshotFallbackPollMs,
+  shouldFallbackRefreshMarketSnapshot,
+  type FuturesFlashDirection,
+} from "@/lib/market-snapshot-refresh";
 import type { StockPayload } from "@/lib/types";
 
 type Tab = "analysis" | "screener" | "day-trading" | "limit-up-ai" | "pattern-robot" | "adaptive-electronic" | "rocket-radar" | "long-term" | "whale-accumulation" | "institutional-investors" | "chip-flow" | "portfolio" | "industries" | "news";
@@ -39,6 +45,78 @@ function resolveViewTab(view: string | null): Tab {
   if (view === "ai") return "adaptive-electronic";
   if (view === "limit-up-robot") return "limit-up-ai";
   return view && VIEW_TABS.includes(view as Tab) ? view as Tab : "analysis";
+}
+
+function formatFuturesNumber(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  return new Intl.NumberFormat("zh-TW", { maximumFractionDigits: 2 }).format(value);
+}
+
+function formatFuturesSigned(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  return `${value > 0 ? "+" : ""}${formatFuturesNumber(value)}`;
+}
+
+function quoteTimeLabel(quoteAt: string | null | undefined, updatedAt: string | null | undefined): string {
+  if (quoteAt) return quoteAt.includes(" ") ? quoteAt.split(" ").pop() ?? quoteAt : quoteAt;
+  if (!updatedAt) return "等待";
+  return new Date(updatedAt).toLocaleTimeString("zh-TW", {
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    timeZone: "Asia/Taipei",
+  });
+}
+
+function FuturesLiveChip({ snapshot }: { snapshot: MarketSnapshot | null }) {
+  const futures = snapshot?.context;
+  const previousPrice = useRef<number | null>(null);
+  const [flash, setFlash] = useState<FuturesFlashDirection>("");
+  const [now, setNow] = useState(() => Date.now());
+  const price = futures?.futuresPrice;
+  const hasPrice = price != null && Number.isFinite(price) && price > 0;
+  const delayed = hasPrice
+    ? isFuturesQuoteDelayed({ now, quoteAt: futures?.futuresQuoteAt, updatedAt: snapshot?.updatedAt })
+    : true;
+  const status = !hasPrice || !snapshot?.futuresMarketOpen
+    ? "waiting"
+    : delayed
+      ? "delayed"
+      : "live";
+  const statusLabel = status === "live" ? "LIVE" : status === "delayed" ? "延遲" : "等待夜盤";
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 15_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const direction = futuresFlashDirection(previousPrice.current, price);
+    if (price != null && Number.isFinite(price)) previousPrice.current = price;
+    if (!direction) return;
+    setFlash(direction);
+    const timer = window.setTimeout(() => setFlash(""), 1400);
+    return () => window.clearTimeout(timer);
+  }, [price, futures?.futuresQuoteAt]);
+
+  return (
+    <div
+      className={`futures-live-chip status-${status}`}
+      title={`台指期官方行情；報價時間 ${futures?.futuresQuoteAt ?? snapshot?.updatedAt ?? "等待資料"}`}
+    >
+      <span className="futures-live-label">
+        <Activity size={12} />
+        台指夜盤
+        <b>{statusLabel}</b>
+      </span>
+      <strong className={flash ? `futures-price-flash-${flash}` : ""}>{hasPrice ? formatFuturesNumber(price) : "—"}</strong>
+      <span className={(futures?.futuresChangePercent ?? 0) > 0 ? "up" : (futures?.futuresChangePercent ?? 0) < 0 ? "down" : ""}>
+        {hasPrice ? `${formatFuturesSigned(futures?.futuresChange)}（${formatFuturesSigned(futures?.futuresChangePercent)}%）` : "行情待補"}
+      </span>
+      <time>{quoteTimeLabel(futures?.futuresQuoteAt, snapshot?.updatedAt)}</time>
+    </div>
+  );
 }
 
 async function fetchStock(query: string): Promise<StockPayload> {
@@ -142,15 +220,19 @@ export default function Home() {
     };
     const tick = async () => {
       const current = snapshotRef.current;
+      const forceNightFuturesRefresh = Boolean(current?.futuresMarketOpen && !current.marketOpen);
       if (
         !fallbackRefreshInFlightRef.current
-        && shouldFallbackRefreshMarketSnapshot({
-          now: Date.now(),
-          lastEventAt: lastMarketEventAtRef.current,
-          hasSnapshot: Boolean(current),
-          marketOpen: current?.marketOpen ?? false,
-          futuresMarketOpen: current?.futuresMarketOpen ?? false,
-        })
+        && (
+          forceNightFuturesRefresh
+          || shouldFallbackRefreshMarketSnapshot({
+            now: Date.now(),
+            lastEventAt: lastMarketEventAtRef.current,
+            hasSnapshot: Boolean(current),
+            marketOpen: current?.marketOpen ?? false,
+            futuresMarketOpen: current?.futuresMarketOpen ?? false,
+          })
+        )
       ) {
         fallbackRefreshInFlightRef.current = true;
         try {
@@ -240,6 +322,7 @@ export default function Home() {
           <button type="submit" disabled={loading}>{loading ? <span className="spinner small" /> : "查詢"}</button>
         </form>
         <div className="connection-panel">
+          <FuturesLiveChip snapshot={snapshot} />
           <div className={`connection-state ${connection}`}>
             {connection === "connected" ? <Wifi size={14} /> : <WifiOff size={14} />}
             <span>{connectionLabel}</span>
