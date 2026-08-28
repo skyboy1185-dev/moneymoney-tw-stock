@@ -395,10 +395,18 @@ export function DayTradingDashboard() {
   const selectedSignal = signals.find((item) => item.id === selectedSignalId) ?? null;
   const selectedPosition = positions.find((item) => item.id === selectedPositionId) ?? null;
   const replayFormalCount = candidateReplay.filter((item) => item.wouldBeOfficialRecommendation).length;
+  const quoteCoverageCount = regime.quoteCoverageCount ?? regime.supervisor?.quoteCoverageCount ?? 0;
+  const candidateUniverseCount = regime.candidateUniverseCount ?? regime.supervisor?.candidateUniverseCount ?? 0;
+  const indexDelayWarning = regime.dataQualityMode === "index_delay"
+    ? regime.dataQualityWarning
+      ?? `加權指數延遲 ${regime.dataDelaySeconds} 秒；個股即時報價覆蓋 ${quoteCoverageCount}/${candidateUniverseCount}，正式訊號仍以個股逐檔風控。`
+    : null;
+  const formalBlockReason = regime.formalBlockReason
+    ?? (!regime.automation.formalSignalsAllowed && regime.marketOpen ? regime.automation.statusMessage : null);
 
   return <div className="adaptive-page day-trading-page day-trading-adaptive">
     <DayTradingDisclaimer mode={regime.mode} notice={regime.dataNotice} />
-    {regime.degraded && <div className="data-anomaly-banner"><ShieldAlert /><div><strong>當沖核心資料降級，正式進場已暫停</strong><span>{regime.fallbackReason ? `錯誤摘要：${regime.fallbackReason}` : "系統保留頁面與既有監控狀態，等待後端核心資料恢復。"}</span></div></div>}
+    {regime.degraded && regime.dataQualityMode !== "index_delay" && <div className="data-anomaly-banner"><ShieldAlert /><div><strong>當沖核心資料降級，正式進場已暫停</strong><span>{regime.fallbackReason ? `錯誤摘要：${regime.fallbackReason}` : "系統保留頁面與既有監控狀態，等待後端核心資料恢復。"}</span></div></div>}
     <p className="pattern-risk-notice">
       <ShieldAlert />策略隔離：本頁是「當沖機器人」，使用原版盤中訊號、三關價、即時持倉監控與 day_trading_* 績效；可共用行情資料，但不沿用「超強AI當沖系統」的 SUPER_AI_DAYTRADE AI 評分、空方候選池或獨立績效。
     </p>
@@ -418,7 +426,9 @@ export function DayTradingDashboard() {
       <div className="day-trading-heading-actions"><div className="dt-hero-status"><StreamConnectionStatus status={connection} /><MarketDataDelayBadge seconds={regime.dataDelaySeconds} status={regime.dataStatus} /></div><button onClick={() => void refresh(userId)} disabled={!userId}><RefreshCw size={16} />更新</button></div>
     </section>
 
-    {!regime.degraded && regime.marketOpen && regime.dataStatus !== "normal" && <div className="data-anomaly-banner"><ShieldAlert /><div><strong>行情已延遲 {regime.dataDelaySeconds} 秒</strong><span>目前停止產生新進場訊號，請勿依賴舊報價進行交易；既有持倉仍持續檢查出場風險。</span></div></div>}
+    {indexDelayWarning && <div className="automation-banner phase-warmup"><Activity /><div><strong>大盤指數延遲，個股報價足夠，AI 當沖仍運作</strong><span>{indexDelayWarning}</span></div></div>}
+    {!indexDelayWarning && formalBlockReason && regime.marketOpen && regime.dataStatus !== "normal" && <div className="data-anomaly-banner"><ShieldAlert /><div><strong>AI 當沖暫停正式訊號</strong><span>{formalBlockReason}</span></div></div>}
+    {!formalBlockReason && !regime.degraded && regime.marketOpen && regime.dataStatus !== "normal" && <div className="data-anomaly-banner"><ShieldAlert /><div><strong>行情已延遲 {regime.dataDelaySeconds} 秒</strong><span>目前停止產生新進場訊號，請勿依賴舊報價進行交易；既有持倉仍持續檢查出場風險。</span></div></div>}
     {(regime.automation.phase === "warmup" || (regime.automation.phase === "scanning" && (regime.supervisor?.warmedSymbolCount ?? 0) === 0)) && <div className="automation-banner phase-warmup"><Activity /><div><strong>多空動能掃描中</strong><span>09:00 開盤即開始多空、量能與大單掃描；09:05 起取得首根完整 5 分 K，通過風控才通知正式買進或放空。</span></div></div>}
     {regime.automation.phase === "long_only" && <div className="automation-banner phase-long-only"><Activity /><div><strong>12:00 後停止新進場</strong><span>多空都不再新增部位；既有持倉仍依三關價、5 分 K、量能、大單與停損停利持續管理。</span></div></div>}
     <section className={`regime-hero day-trading-regime ${regimeTone}`}>

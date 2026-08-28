@@ -350,23 +350,26 @@ def _selection(
     schedule_settings = _schedule_settings(db, user_id)
     config = _schedule_config(risk, schedule_settings)
     regime = day_trading_engine.market_regime()
+    quote_source_status = (
+        "degraded" if regime.get("dataQualityMode") == "index_delay"
+        else "healthy" if regime["dataStatus"] == "normal"
+        else "closed" if regime["dataStatus"] == "closed"
+        else "error"
+    )
     infrastructure = {
-        "quoteSource": (
-            "healthy" if regime["dataStatus"] == "normal"
-            else "closed" if regime["dataStatus"] == "closed"
-            else "error"
-        ),
+        "quoteSource": quote_source_status,
         "redis": day_trading_cache.status,
         "database": "healthy",
         "stream": "healthy",
     }
     infrastructure_ok = all(
-        value in {"healthy", "closed", "memory_fallback"} for value in infrastructure.values()
+        value in {"healthy", "closed", "memory_fallback", "degraded"} for value in infrastructure.values()
     )
     session = trading_session_state(
         config,
         now,
         data_status=regime["dataStatus"],
+        data_quality_mode=str(regime.get("dataQualityMode") or "live"),
         quote_samples=day_trading_engine.sample_count,
         infrastructure_ok=infrastructure_ok,
     )
@@ -453,6 +456,7 @@ def _selection_fallback(
         config,
         current,
         data_status="source_error",
+        data_quality_mode="source_error",
         quote_samples=quote_samples,
         infrastructure_ok=False,
         recovering=True,
@@ -477,6 +481,12 @@ def _selection_fallback(
         ],
         "dataStatus": "source_error",
         "dataDelaySeconds": 999,
+        "dataQualityMode": "source_error",
+        "dataQualityWarning": None,
+        "formalBlockReason": "當沖核心資料暫時失敗；正式進場訊號已暫停。",
+        "quoteCoverageRatio": 0,
+        "quoteCoverageCount": 0,
+        "candidateUniverseCount": 0,
         "dataSource": "day-trading safe fallback",
         "marketOpen": session["phase"] in {"warmup", "scanning", "long_only", "entry_closed", "closing"},
         "session": "09:00～13:30",
@@ -622,7 +632,8 @@ def _automation_cached_selection(db: Session, user_id: str) -> dict[str, Any] | 
         "session": session,
         "infrastructure": {
             "quoteSource": (
-                "healthy" if regime.get("dataStatus") == "normal"
+                "degraded" if regime.get("dataQualityMode") == "index_delay"
+                else "healthy" if regime.get("dataStatus") == "normal"
                 else "closed" if regime.get("dataStatus") == "closed"
                 else "error"
             ),

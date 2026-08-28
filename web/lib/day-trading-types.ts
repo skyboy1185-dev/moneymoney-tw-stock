@@ -15,6 +15,7 @@ export interface TradingAutomationState {
   warmupMinutes: number;
   warmupUntil: string;
   quoteSamples: number;
+  dataQualityMode?: string;
   minimumLiveSamples: number;
   nextTransitionAt: string | null;
   schedule: {
@@ -49,6 +50,12 @@ export interface MarketRegime {
   reasons: string[];
   dataStatus: string;
   dataDelaySeconds: number;
+  dataQualityMode?: string;
+  dataQualityWarning?: string | null;
+  formalBlockReason?: string | null;
+  quoteCoverageRatio?: number;
+  quoteCoverageCount?: number;
+  candidateUniverseCount?: number;
   dataSource: string;
   marketOpen: boolean;
   session: string;

@@ -71,6 +71,7 @@ def trading_session_state(
     now: datetime | None = None,
     *,
     data_status: str = "normal",
+    data_quality_mode: str = "live",
     quote_samples: int = 0,
     infrastructure_ok: bool = True,
     recovering: bool = False,
@@ -149,7 +150,11 @@ def trading_session_state(
                 "summary", "今日掃描完成", "今日新訊號已停止，系統已產生交易摘要。",
             )
 
-    healthy = data_status == "normal" and infrastructure_ok
+    healthy = (
+        data_status == "normal"
+        and data_quality_mode in {"live", "index_delay", "demo"}
+        and infrastructure_ok
+    )
     formal_long_allowed = phase in {"scanning", "long_only"} and healthy
     formal_short_allowed = phase == "scanning" and healthy
     formal_allowed = formal_long_allowed or formal_short_allowed
@@ -174,6 +179,7 @@ def trading_session_state(
         "warmupMinutes": config.warmup_minutes,
         "warmupUntil": warmup_end.isoformat(),
         "quoteSamples": quote_samples,
+        "dataQualityMode": data_quality_mode,
         "minimumLiveSamples": config.minimum_live_samples,
         "nextTransitionAt": next_transition.isoformat() if next_transition else None,
         "schedule": {

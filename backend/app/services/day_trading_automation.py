@@ -215,6 +215,7 @@ class DayTradingAutomationSupervisor:
                 config,
                 self._started_at,
                 data_status=regime["dataStatus"],
+                data_quality_mode=str(regime.get("dataQualityMode") or "live"),
                 quote_samples=day_trading_engine.sample_count,
                 infrastructure_ok=day_trading_cache.ready_for_formal_signals,
             )
@@ -371,6 +372,7 @@ class DayTradingAutomationSupervisor:
                 config,
                 now,
                 data_status=regime["dataStatus"],
+                data_quality_mode=str(regime.get("dataQualityMode") or "live"),
                 quote_samples=day_trading_engine.sample_count,
                 infrastructure_ok=database_ok and day_trading_cache.ready_for_formal_signals,
                 recovering=recovering,
@@ -401,6 +403,7 @@ class DayTradingAutomationSupervisor:
                     config,
                     now,
                     data_status=regime["dataStatus"],
+                    data_quality_mode=str(regime.get("dataQualityMode") or "live"),
                     quote_samples=day_trading_engine.sample_count,
                     infrastructure_ok=database_ok and day_trading_cache.ready_for_formal_signals,
                     recovering=False,

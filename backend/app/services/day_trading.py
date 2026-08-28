@@ -22,6 +22,8 @@ DATA_NOTICE = "展示模式，非即時行情"
 LIVE_DATA_NOTICE = "價格與盤中技術條件由 TWSE MIS 實際行情樣本計算；僅供研究參考，不構成投資建議。"
 TAIPEI = ZoneInfo("Asia/Taipei")
 LIVE_QUOTE_MAX_DELAY_SECONDS = 20
+DEGRADED_INDEX_DELAY_SECONDS = 60
+MIN_DEGRADED_POOL_COVERAGE_RATIO = 0.80
 SOURCE_INTERRUPTION_SECONDS = 300
 EXTREME_RANGE_EDGE_PERCENT = 10.0
 RETEST_RANGE_EDGE_PERCENT = 25.0
@@ -52,6 +54,16 @@ THEME_REFERENCE_PRICES = {
     "3661": 3460.0,
     "5269": 1385.0,
 }
+
+
+def _quote_delay_seconds(now: datetime, quote: OfficialStockQuote) -> float:
+    try:
+        quote_time = datetime.fromisoformat(quote.quote_timestamp)
+    except (TypeError, ValueError):
+        return 999.0
+    if quote_time.tzinfo is None:
+        quote_time = quote_time.replace(tzinfo=TAIPEI)
+    return max(0.0, (now.astimezone(TAIPEI) - quote_time).total_seconds())
 
 
 def _stock_seed_signal(stock: ThemeStock, wave: float) -> dict[str, Any]:
@@ -1306,6 +1318,7 @@ class MockDayTradingEngine:
                 symbol: list(values)
                 for symbol, values in self._quote_history.items()
             }
+            stock_universe_symbols = tuple(stock.symbol for stock in self._stock_universe)
         has_official_quotes = bool(quotes)
         data_status = "normal"
         delay = 1.2
@@ -1321,23 +1334,60 @@ class MockDayTradingEngine:
             quote for symbol, quote in quotes.items()
             if symbol != "t00"
         ]
+        candidate_universe_count = len(stock_universe_symbols) or len(pool_quotes)
+        universe_pool_quotes = [
+            quotes[symbol]
+            for symbol in stock_universe_symbols
+            if symbol in quotes
+        ] if stock_universe_symbols else pool_quotes
+        fresh_pool_quotes = [
+            quote for quote in universe_pool_quotes
+            if quote.source == "TWSE MIS"
+            and quote.is_realtime
+            and _quote_delay_seconds(now, quote) <= DEGRADED_INDEX_DELAY_SECONDS
+        ]
+        quote_coverage_count = len(fresh_pool_quotes)
+        quote_coverage_ratio = quote_coverage_count / max(1, candidate_universe_count)
+        data_quality_mode = "live"
+        data_quality_warning: str | None = None
+        formal_block_reason: str | None = None
         if live_market and index_quote is not None:
-            try:
-                delay = max(0, (
-                    now.astimezone(TAIPEI)
-                    - datetime.fromisoformat(index_quote.quote_timestamp)
-                ).total_seconds())
-            except ValueError:
-                delay = 999
-            data_status = (
-                "normal"
-                if index_quote.source == "TWSE MIS" and index_quote.is_realtime and delay <= LIVE_QUOTE_MAX_DELAY_SECONDS
-                else "severe_delay"
-                if index_quote.source == "TWSE MIS" and delay <= SOURCE_INTERRUPTION_SECONDS
-                else "source_error"
-            )
+            delay = _quote_delay_seconds(now, index_quote)
+            if (
+                index_quote.source == "TWSE MIS"
+                and index_quote.is_realtime
+                and delay <= LIVE_QUOTE_MAX_DELAY_SECONDS
+            ):
+                data_status = "normal"
+                data_quality_mode = "live"
+            elif (
+                index_quote.source == "TWSE MIS"
+                and delay <= DEGRADED_INDEX_DELAY_SECONDS
+                and quote_coverage_ratio >= MIN_DEGRADED_POOL_COVERAGE_RATIO
+                and quote_coverage_count > 0
+            ):
+                data_status = "normal"
+                data_quality_mode = "index_delay"
+                data_quality_warning = (
+                    f"加權指數延遲 {delay:.0f} 秒；個股即時報價覆蓋 "
+                    f"{quote_coverage_count}/{candidate_universe_count}，正式訊號仍以個股逐檔風控。"
+                )
+            elif index_quote.source == "TWSE MIS" and delay <= SOURCE_INTERRUPTION_SECONDS:
+                data_status = "severe_delay"
+                data_quality_mode = "index_severe_delay"
+                formal_block_reason = (
+                    f"加權指數延遲 {delay:.0f} 秒，且個股即時報價覆蓋 "
+                    f"{quote_coverage_count}/{candidate_universe_count}；暫停正式訊號。"
+                )
+            else:
+                data_status = "source_error"
+                data_quality_mode = "source_error"
+                formal_block_reason = "TWSE MIS 行情來源異常；暫停正式訊號。"
             if not market_session_open:
                 data_status = "closed"
+                data_quality_mode = "closed"
+                data_quality_warning = None
+                formal_block_reason = None
             index_metrics = self._live_metrics(histories.get("t00", []))
             advancers = sum(quote.change > 0 for quote in pool_quotes)
             decliners = sum(quote.change < 0 for quote in pool_quotes)
@@ -1380,7 +1430,16 @@ class MockDayTradingEngine:
                 f"掃描股票上漲／下跌 {advancers}／{decliners}",
                 f"主動買賣力道為抽樣 Tick Rule 推估 {active_force:+.0f}",
             ]
-            environment_score = max(0, min(100, 70 + abs(score) * .2 - (0 if data_status == "normal" else 70)))
+            if data_quality_warning:
+                reasons.append(data_quality_warning)
+            data_quality_penalty = (
+                0
+                if data_quality_mode == "live"
+                else 12
+                if data_quality_mode == "index_delay"
+                else 70
+            )
+            environment_score = max(0, min(100, 70 + abs(score) * .2 - data_quality_penalty))
             live_metrics = {
                 "weightedIndex": round(index_quote.price, 2),
                 "otcIndex": "尚未串接",
@@ -1409,7 +1468,8 @@ class MockDayTradingEngine:
                 "score": score,
                 "environmentScore": round(environment_score),
                 "environmentLabel": (
-                    "適合交易" if data_status == "normal"
+                    "降級可用" if data_quality_mode == "index_delay"
+                    else "適合交易" if data_status == "normal"
                     else "今日已收盤" if data_status == "closed"
                     else "停止新訊號"
                 ),
@@ -1427,6 +1487,12 @@ class MockDayTradingEngine:
                 "reasons": reasons,
                 "dataStatus": data_status,
                 "dataDelaySeconds": round(delay, 1),
+                "dataQualityMode": data_quality_mode,
+                "dataQualityWarning": data_quality_warning,
+                "formalBlockReason": formal_block_reason,
+                "quoteCoverageRatio": round(quote_coverage_ratio, 4),
+                "quoteCoverageCount": quote_coverage_count,
+                "candidateUniverseCount": candidate_universe_count,
                 "dataSource": "TWSE MIS 實際行情＋抽樣 Tick Rule 推估",
                 "marketOpen": market_session_open,
                 "session": "09:00～13:30",
@@ -1455,6 +1521,12 @@ class MockDayTradingEngine:
             "reasons": ["指數站上 VWAP", "上漲家數高於下跌家數", "大單買盤增加", "5 分 K 均線偏多"],
             "dataStatus": "closed" if not market_session_open else data_status,
             "dataDelaySeconds": delay,
+            "dataQualityMode": "closed" if not market_session_open else "demo",
+            "dataQualityWarning": None,
+            "formalBlockReason": None if data_status == "normal" else "行情資料異常；暫停正式訊號。",
+            "quoteCoverageRatio": 0,
+            "quoteCoverageCount": 0,
+            "candidateUniverseCount": 0,
             "dataSource": (
                 "TWSE MIS 個股報價＋Mock 大盤策略"
                 if has_official_quotes
