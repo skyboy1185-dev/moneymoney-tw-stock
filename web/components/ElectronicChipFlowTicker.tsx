@@ -17,7 +17,7 @@ import type { MarketIndexDefenseResponse } from "@/lib/market-index-defense";
 import { evaluateThreeGateLevels } from "@/lib/three-gate-price";
 import { detectGroupResonances } from "@/lib/group-resonance";
 import { evaluateLargeOrderOutcomes } from "@/lib/large-order-outcome";
-import { selectLargeOrderRankings } from "@/lib/electronic-chip-flow-rankings";
+import { selectLargeOrderMomentumToastCandidates, selectLargeOrderRankings } from "@/lib/electronic-chip-flow-rankings";
 import { buildDingSelectionRows, type DingSelectionRow } from "@/lib/ding-selection";
 import { buildTaiwanIndexKeyLevels, formatIndexLevel } from "@/lib/taiwan-index-key-levels";
 
@@ -1162,15 +1162,7 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
         }
         const nextUrgentSignatures = new Map<string, string>();
         const freshToasts: MomentumToast[] = [];
-        payload.alerts.forEach((alert) => {
-          if (!alert.isWarning && !alert.reinforced && !alert.simultaneousIncrease && !alert.currentQualifies && alert.alertLevel !== "critical") return;
-          const kind = alert.isWarning || alert.alertLevel === "critical"
-            ? "warning"
-            : alert.simultaneousIncrease
-              ? "joint"
-              : alert.reinforced
-                ? "reinforced"
-                : "surge";
+        selectLargeOrderMomentumToastCandidates(payload).forEach(({ alert, kind }) => {
           const signature = [
             kind,
             kind === "warning" ? alert.trend : 1,

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { ElectronicChipFlowAlert, ElectronicChipFlowAlertsResponse } from "@/lib/electronic-chip-flow-alerts";
-import { selectLargeOrderRankings } from "@/lib/electronic-chip-flow-rankings";
+import { selectLargeOrderMomentumToastCandidates, selectLargeOrderRankings } from "@/lib/electronic-chip-flow-rankings";
 
-const alert = (symbol: string): ElectronicChipFlowAlert => ({
+const alert = (symbol: string, overrides: Partial<ElectronicChipFlowAlert> = {}): ElectronicChipFlowAlert => ({
   symbol,
   name: symbol,
   market: "上市",
@@ -42,6 +42,7 @@ const alert = (symbol: string): ElectronicChipFlowAlert => ({
   currentQualifies: false,
   message: "觀察中",
   history: [],
+  ...overrides,
 });
 
 const basePayload = (overrides: Partial<ElectronicChipFlowAlertsResponse>): ElectronicChipFlowAlertsResponse => ({
@@ -122,5 +123,76 @@ describe("selectLargeOrderRankings", () => {
       ["2330", 2],
     ]);
     expect(selectLargeOrderRankings(payload, "short").map((item) => [item.symbol, item.rank])).toEqual([["2303", 1]]);
+  });
+});
+
+describe("selectLargeOrderMomentumToastCandidates", () => {
+  it("keeps long-side fading warnings only when they are inside the visible Top10", () => {
+    const top10Warning = alert("2412", {
+      trend: "fading",
+      alertLevel: "critical",
+      isWarning: true,
+      rank: 10,
+    });
+    const outsideTop10Warning = alert("2603", {
+      trend: "fading",
+      alertLevel: "critical",
+      isWarning: true,
+      rank: 11,
+    });
+    const payload = basePayload({
+      rankingLimit: 10,
+      longRankings: [
+        ...Array.from({ length: 9 }, (_, index) => alert(`230${index}`, { rank: index + 1 })),
+        top10Warning,
+        outsideTop10Warning,
+      ],
+    });
+
+    expect(selectLargeOrderMomentumToastCandidates(payload)).toEqual([
+      { alert: top10Warning, kind: "warning" },
+    ]);
+  });
+
+  it("does not turn short-side fading rows into long-side urgent toasts", () => {
+    const shortWarning = alert("2303", {
+      direction: "short",
+      trend: "fading",
+      alertLevel: "critical",
+      isWarning: true,
+      rank: 1,
+    });
+    const payload = basePayload({
+      rankingLimit: 10,
+      shortRankings: [shortWarning],
+    });
+
+    expect(selectLargeOrderMomentumToastCandidates(payload)).toEqual([]);
+  });
+
+  it("keeps existing non-warning momentum toasts from strict alerts", () => {
+    const reinforced = alert("2330", {
+      reinforced: true,
+      trend: "strengthening",
+      alertLevel: "positive",
+      currentQualifies: true,
+    });
+    const joint = alert("2408", {
+      simultaneousIncrease: true,
+      currentQualifies: true,
+    });
+    const surge = alert("2454", {
+      currentQualifies: true,
+    });
+    const payload = basePayload({
+      alerts: [reinforced, joint, surge],
+      longRankings: [],
+    });
+
+    expect(selectLargeOrderMomentumToastCandidates(payload).map((item) => [item.alert.symbol, item.kind])).toEqual([
+      ["2330", "reinforced"],
+      ["2408", "joint"],
+      ["2454", "surge"],
+    ]);
   });
 });

@@ -23,3 +23,44 @@ export function selectLargeOrderRankings(
     : Array.isArray(data.alerts) ? data.alerts : [];
   return withDisplayRanks(rankings);
 }
+
+export type LargeOrderMomentumToastKind = "warning" | "reinforced" | "joint" | "surge";
+
+export interface LargeOrderMomentumToastCandidate {
+  alert: ElectronicChipFlowAlert;
+  kind: LargeOrderMomentumToastKind;
+}
+
+function momentumToastKind(alert: ElectronicChipFlowAlert): LargeOrderMomentumToastKind | null {
+  if (alert.isWarning || alert.trend === "weakening" || alert.trend === "fading" || alert.alertLevel === "critical") {
+    return "warning";
+  }
+  if (alert.simultaneousIncrease) return "joint";
+  if (alert.reinforced) return "reinforced";
+  if (alert.currentQualifies) return "surge";
+  return null;
+}
+
+export function selectLargeOrderMomentumToastCandidates(
+  data: ElectronicChipFlowAlertsResponse | null | undefined,
+): LargeOrderMomentumToastCandidate[] {
+  if (!data) return [];
+  const candidates = new Map<string, LargeOrderMomentumToastCandidate>();
+
+  data.alerts.forEach((alert) => {
+    const kind = momentumToastKind(alert);
+    if (!kind || kind === "warning") return;
+    candidates.set(alert.symbol, { alert, kind });
+  });
+
+  const rankingLimit = data.rankingLimit ?? 10;
+  selectLargeOrderRankings(data, "long")
+    .slice(0, rankingLimit)
+    .forEach((alert) => {
+      const kind = momentumToastKind(alert);
+      if (kind !== "warning") return;
+      candidates.set(alert.symbol, { alert, kind });
+    });
+
+  return [...candidates.values()];
+}
