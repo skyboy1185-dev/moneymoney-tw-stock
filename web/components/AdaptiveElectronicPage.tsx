@@ -573,7 +573,7 @@ export function AdaptiveElectronicPage({
         {entryPhase.message}
       </p>
       <p className="pattern-risk-notice">
-        <Bot />策略隔離：本頁是「超強AI當沖系統」，使用 SUPER_AI_DAYTRADE 來源、AI 評分、多空權重、R/R 與獨立模擬績效；可共用行情資料，但不沿用「當沖機器人」的三關價／原版當沖策略與績效。
+        <Bot />策略隔離：本頁是「超強AI當沖系統」，使用 SUPER_AI_DAYTRADE 來源、AI 評分、多空權重、R/R 與獨立模擬績效；可共用行情資料，但不沿用「當沖機器人」的 VWAP/5 分 K 原版當沖策略與績效。
       </p>
       {error && <div className="error-banner">{error}<button onClick={() => setError("")}><X /></button></div>}
       {toast && <div className="pattern-toast">{toast}</div>}

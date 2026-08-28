@@ -173,7 +173,7 @@ export function LiveSignalCard({
       <div><span>{long ? "第二停利" : "第二回補"}</span><strong>{number(signal.target2)}</strong></div>
     </div>
     {signal.threeGate && <div className="signal-three-gate">
-      <div><span>三關價進場計畫 · {signal.threeGate.sourceDate}</span><strong className={long ? "text-up" : "text-down"}>{signal.threeGateEntryStatus ?? signal.threeGateStatus}</strong></div>
+      <div><span>三關價參考（不作進場卡控） · {signal.threeGate.sourceDate}</span><strong className={long ? "text-up" : "text-down"}>{signal.threeGateEntryStatus ?? signal.threeGateStatus}</strong></div>
       <div><span>上關</span><strong>{number(signal.threeGate.upper)}</strong></div>
       <div><span>中關</span><strong>{number(signal.threeGate.middle)}</strong></div>
       <div><span>下關</span><strong>{number(signal.threeGate.lower)}</strong></div>
@@ -182,7 +182,7 @@ export function LiveSignalCard({
       <div><span>進場確認模式</span><strong>{signal.entryConfirmationModeLabel}</strong></div>
       <div><span>VWAP</span><strong>{signal.vwapStatus}</strong></div>
       <div><span>5 分 K</span><strong>{signal.threeGateFallback ? "已確認" : "等待確認"}</strong></div>
-      <div><span>三關價</span><strong>{signal.threeGateStatus ?? "資料載入中"}</strong></div>
+      <div><span>三關價參考</span><strong>{signal.threeGateStatus ?? "未載入也不阻擋"}</strong></div>
     </div>}
     <div className="signal-scores">
       <div><span>信心分數</span><strong>{signal.confidenceScore}</strong><i><b style={{ width: `${signal.confidenceScore}%` }} /></i></div>
@@ -202,7 +202,7 @@ export function LiveSignalCard({
     <div className="signal-actions">
       <button onClick={() => onAnalyze(signal.symbol)}><Eye size={14} />查看分析</button>
       <button onClick={() => onMonitor(signal)}><Bell size={14} />加入監控</button>
-      <button className={long ? "long-action" : "short-action"} disabled={expired || signal.status === "blocked" || signal.threeGateInvalidated} onClick={() => onSimulate(signal)}>
+      <button className={long ? "long-action" : "short-action"} disabled={expired || signal.status === "blocked"} onClick={() => onSimulate(signal)}>
         <Play size={14} />模擬{long ? "做多" : "放空"}
       </button>
     </div>
