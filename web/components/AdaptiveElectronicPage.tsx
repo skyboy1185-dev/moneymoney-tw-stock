@@ -371,18 +371,18 @@ function superAiEntryPhase() {
       message: "今天不開新當沖倉；系統只保留既有資料與觀察名單。",
     };
   }
-  if (minutes < 9 * 60 + 30) {
+  if (minutes < 9 * 60 + 15) {
     return {
       label: "開盤前",
       tone: "off",
-      message: "09:30 前不開新倉；先避開開盤亂流，只觀察不進場。",
+      message: "09:15 前不開新倉；先避開開盤亂流，只觀察不進場。",
     };
   }
   if (minutes < 12 * 60) {
     return {
       label: "可進場時段",
       tone: "on",
-      message: "09:30～12:00 允許符合少量精準突破風控的新進場。",
+      message: "09:15～12:00 允許符合少量精準突破風控的新進場。",
     };
   }
   if (minutes <= 13 * 60 + 30) {

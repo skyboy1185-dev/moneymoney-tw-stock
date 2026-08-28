@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 
 TAIPEI = ZoneInfo("Asia/Taipei")
-ENTRY_START = time(9, 30)
+ENTRY_START = time(9, 15)
 ENTRY_CUTOFF = time(12, 0)
 
 
@@ -26,7 +26,7 @@ def adaptive_entry_window_open(
     market_open: bool,
     trade_date: date | None = None,
 ) -> bool:
-    """Allow new AI entries only during the executable 09:00-12:00 window."""
+    """Allow new AI entries only during the executable 09:15-12:00 window."""
     if not market_open:
         return False
     local = taipei_datetime(at)

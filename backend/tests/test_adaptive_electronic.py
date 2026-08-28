@@ -211,13 +211,19 @@ def test_yahoo_fallback_quote_remains_observable() -> None:
 
 def test_new_entry_window_closes_exactly_at_noon() -> None:
     assert adaptive_entry_window_open(
-        datetime(2026, 7, 31, 9, 29, 59, tzinfo=TAIPEI), True, date(2026, 7, 31),
+        datetime(2026, 7, 31, 9, 14, 59, tzinfo=TAIPEI), True, date(2026, 7, 31),
     ) is False
     assert adaptive_entry_window_open(
-        datetime(2026, 7, 31, 9, 30, tzinfo=TAIPEI), True, date(2026, 7, 31),
+        datetime(2026, 7, 31, 9, 15, tzinfo=TAIPEI), True, date(2026, 7, 31),
     ) is True
     assert adaptive_entry_window_open(
         datetime(2026, 7, 31, 11, 59, 59, tzinfo=TAIPEI), True, date(2026, 7, 31),
+    ) is True
+    assert adaptive_entry_window_open(
+        datetime(2026, 7, 31, 1, 14, 59, tzinfo=UTC), True, date(2026, 7, 31),
+    ) is False
+    assert adaptive_entry_window_open(
+        datetime(2026, 7, 31, 1, 15, tzinfo=UTC), True, date(2026, 7, 31),
     ) is True
     assert adaptive_entry_window_open(
         datetime(2026, 7, 31, 3, 59, 59, tzinfo=UTC), True, date(2026, 7, 31),
