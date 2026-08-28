@@ -78,6 +78,7 @@ from ..services.line_messaging import line_notification_dispatcher
 router = APIRouter(prefix="/day-trading", tags=["day-trading"])
 logger = logging.getLogger(__name__)
 settings = get_settings()
+# Keep this module in the backend image when Railway deploys day-trading route-only changes.
 TAIPEI = ZoneInfo("Asia/Taipei")
 DAY_TRADING_COMMISSION_RATE = 0.001425
 DAY_TRADING_COMMISSION_DISCOUNT = 0.2
