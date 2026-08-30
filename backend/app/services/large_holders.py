@@ -165,9 +165,12 @@ class TdccOpenDataProvider:
             listed_response, otc_response = await asyncio.gather(
                 client.get(TWSE_STOCK_DIRECTORY_URL, headers={"Accept": "application/json"}),
                 client.get(TPEX_STOCK_DIRECTORY_URL, headers={"Accept": "application/json"}),
+                return_exceptions=True,
             )
         directory: dict[str, dict[str, Any]] = {}
         for response, market in ((listed_response, "上市"), (otc_response, "上櫃")):
+            if isinstance(response, Exception) or response.status_code >= 400:
+                continue
             response.raise_for_status()
             rows = response.json()
             for item in rows if isinstance(rows, list) else []:
@@ -189,6 +192,43 @@ class TdccOpenDataProvider:
                 }
         _directory_cache = (time.monotonic() + 60, directory)
         return directory
+
+
+def repair_large_holder_metadata(
+    db: Session,
+    directory: dict[str, dict[str, Any]],
+    report_date: date | None = None,
+) -> int:
+    """Backfill missing stock names/markets without overwriting valid metadata."""
+    if not directory:
+        return 0
+    query = select(LargeHolderWeeklySummary)
+    if report_date is not None:
+        query = query.where(LargeHolderWeeklySummary.report_date == report_date)
+    repaired = 0
+    for item in db.scalars(query).all():
+        stock = directory.get(item.stock_code)
+        if not stock:
+            continue
+        changed = False
+        stock_name = str(stock.get("name") or "").strip()
+        stock_market = str(stock.get("market") or "").strip()
+        stock_industry = str(stock.get("industry") or "").strip()
+        if stock_name and (not item.stock_name.strip() or item.stock_name == item.stock_code):
+            item.stock_name = stock_name
+            changed = True
+        if stock_market in KNOWN_MARKETS and item.market not in KNOWN_MARKETS:
+            item.market = stock_market
+            changed = True
+        if stock_industry and stock_industry != UNKNOWN_INDUSTRY and (
+            not item.industry.strip() or item.industry == UNKNOWN_INDUSTRY
+        ):
+            item.industry = stock_industry
+            changed = True
+        if changed:
+            item.updated_at = datetime.now(UTC)
+            repaired += 1
+    return repaired
 
 
 def aggregate_distribution(rows: list[DistributionRow]) -> list[DistributionSummary]:
@@ -274,10 +314,19 @@ def persist_latest_distribution(
     if not summaries:
         raise ValueError("集保資料無法產生任何週摘要")
     report_date = max(item.report_date for item in summaries)
+    metadata = directory or {}
     if db.scalar(select(LargeHolderWeeklySummary.id).where(
         LargeHolderWeeklySummary.report_date == report_date,
     ).limit(1)):
-        return {"status": "already_synced", "reportDate": report_date.isoformat(), "summaryCount": len(summaries)}
+        repair_count = repair_large_holder_metadata(db, metadata)
+        if repair_count:
+            db.commit()
+        return {
+            "status": "already_synced",
+            "reportDate": report_date.isoformat(),
+            "summaryCount": len(summaries),
+            "metadataRepairCount": repair_count,
+        }
 
     now = datetime.now(UTC)
     numeric_codes = {item.stock_code for item in summaries if item.stock_code.isdigit() and len(item.stock_code) == 4}
@@ -294,7 +343,6 @@ def persist_latest_distribution(
         for row in rows
         if row.stock_code in numeric_codes and row.holding_level in range(1, 18)
     ]
-    metadata = directory or {}
     summary_objects = []
     for item in summaries:
         if item.stock_code not in numeric_codes:
@@ -342,6 +390,7 @@ def persist_latest_distribution(
         "rawCount": len(raw_objects),
         "summaryCount": len(summary_objects),
         "changeCount": changes,
+        "metadataRepairCount": 0,
     }
 
 
@@ -737,6 +786,6 @@ async def fetch_latest_distribution_bundle() -> tuple[
     rows = await tdcc_large_holder_provider.fetch_latest()
     try:
         directory = await tdcc_large_holder_provider.fetch_stock_directory()
-    except httpx.HTTPError:
+    except (httpx.HTTPError, ValueError):
         directory = {}
     return rows, directory

@@ -3,7 +3,7 @@ from decimal import Decimal
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
@@ -16,6 +16,7 @@ from app.services.large_holders import (
     aggregate_distribution,
     calculate_weekly_change,
     get_large_holder_rankings,
+    persist_latest_distribution,
 )
 
 
@@ -210,3 +211,63 @@ def test_official_rankings_keep_raw_rows_when_summary_metadata_missing_for_all_m
     assert all_market["items"][0]["industry"] == "未分類"
     assert "部分股票名稱／市場別待補" in all_market["dataNotice"]
     assert listed_only["items"] == []
+
+
+def test_already_synced_distribution_repairs_missing_metadata_without_overwriting_valid_names() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    report_date = date(2026, 7, 24)
+    with Session(engine) as session:
+        session.add_all([
+            LargeHolderWeeklySummary(
+                stock_code="2330", stock_name="2330", market="未知", industry="未分類",
+                report_date=report_date, holders_over_400_count=100,
+                shares_over_400=60_000, ratio_over_400=Decimal("20"),
+                holders_over_1000_count=20, shares_over_1000=25_000,
+                ratio_over_1000=Decimal("10"), total_shareholders=1_000,
+                total_shares=100_000, updated_at=datetime(2026, 7, 24),
+            ),
+            LargeHolderWeeklySummary(
+                stock_code="2317", stock_name="鴻海", market="上市", industry="其他電子",
+                report_date=report_date, holders_over_400_count=100,
+                shares_over_400=60_000, ratio_over_400=Decimal("20"),
+                holders_over_1000_count=20, shares_over_1000=25_000,
+                ratio_over_1000=Decimal("10"), total_shareholders=1_000,
+                total_shares=100_000, updated_at=datetime(2026, 7, 24),
+            ),
+        ])
+        session.commit()
+
+        result = persist_latest_distribution(
+            session,
+            [
+                DistributionRow("2330", report_date, 12, 100, 60_000, Decimal("20")),
+                DistributionRow("2330", report_date, 15, 20, 25_000, Decimal("10")),
+            ],
+            {
+                "2330": {"name": "台積電", "market": "上市", "industry": "半導體"},
+                "2317": {"name": "錯誤名稱", "market": "上櫃", "industry": "錯誤產業"},
+            },
+        )
+
+        repaired = session.scalar(select(LargeHolderWeeklySummary).where(
+            LargeHolderWeeklySummary.stock_code == "2330",
+        ))
+        preserved = session.scalar(select(LargeHolderWeeklySummary).where(
+            LargeHolderWeeklySummary.stock_code == "2317",
+        ))
+
+    assert result["status"] == "already_synced"
+    assert result["metadataRepairCount"] == 1
+    assert repaired is not None
+    assert repaired.stock_name == "台積電"
+    assert repaired.market == "上市"
+    assert repaired.industry == "半導體"
+    assert preserved is not None
+    assert preserved.stock_name == "鴻海"
+    assert preserved.market == "上市"
+    assert preserved.industry == "其他電子"
