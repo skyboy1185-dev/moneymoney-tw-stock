@@ -20,6 +20,7 @@ from ..services.whale_market_data import fetch_whale_period_market_data
 from ..services.official_market_data import StockQuoteRequest, official_market_data_provider
 
 router = APIRouter(prefix="/large-holders", tags=["large-holders"])
+QUOTE_MARKETS = frozenset({"\u4e0a\u5e02", "\u4e0a\u6ac3"})
 
 
 def _iso_date(value: str, label: str) -> date:
@@ -69,6 +70,7 @@ async def rankings(
         requests = [
             StockQuoteRequest(item["stockCode"], item["stockName"], item["market"])
             for item in payload["items"]
+            if item["market"] in QUOTE_MARKETS
         ]
         quotes = await official_market_data_provider.get_quotes(requests)
         for item in payload["items"]:

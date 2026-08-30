@@ -18,6 +18,40 @@ BIG_400_LEVELS = frozenset({12, 13, 14, 15})
 BIG_1000_LEVELS = frozenset({15})
 RETAIL_LEVELS = frozenset({1, 2, 3})  # TDCC 10 張以下
 VALID_LEVELS = frozenset(range(1, 16))
+LISTED_MARKET = "\u4e0a\u5e02"
+OTC_MARKET = "\u4e0a\u6ac3"
+KNOWN_MARKETS = frozenset({LISTED_MARKET, OTC_MARKET})
+UNKNOWN_MARKET = "\u672a\u77e5"
+UNKNOWN_INDUSTRY = "\u672a\u5206\u985e"
+PARTIAL_METADATA_NOTICE = "\u90e8\u5206\u80a1\u7968\u540d\u7a31\uff0f\u5e02\u5834\u5225\u5f85\u88dc\uff0c\u4f46\u6301\u80a1\u6bd4\u4f8b\u63a1\u5b98\u65b9 TDCC\u3002"
+
+
+def _summary_stock_name(summary: LargeHolderWeeklySummary | None, stock_code: str) -> str:
+    name = (summary.stock_name if summary else "").strip()
+    return name or stock_code
+
+
+def _summary_market(summary: LargeHolderWeeklySummary | None) -> str:
+    market = (summary.market if summary else "").strip()
+    return market if market in KNOWN_MARKETS else UNKNOWN_MARKET
+
+
+def _summary_industry(summary: LargeHolderWeeklySummary | None) -> str:
+    industry = (summary.industry if summary else "").strip()
+    return industry or UNKNOWN_INDUSTRY
+
+
+def _has_partial_metadata(items: list[dict[str, Any]]) -> bool:
+    return any(
+        item["market"] == UNKNOWN_MARKET
+        or item["industry"] == UNKNOWN_INDUSTRY
+        or item["stockName"] == item["stockCode"]
+        for item in items
+    )
+
+
+def _is_common_stock_code(stock_code: str) -> bool:
+    return stock_code.isdigit() and len(stock_code) == 4 and not stock_code.startswith("00")
 
 
 def _nearest_start_date(dates: list[date], requested: date) -> date:
@@ -324,14 +358,12 @@ def _official_items(
             LargeHolderWeeklySummary.report_date == actual_end,
         )).all()
     }
-    stocks = sorted({stock_code for stock_code, report_date in grouped if report_date == actual_start} & {
-        stock_code for stock_code, report_date in grouped if report_date == actual_end
-    })
+    start_stocks = {stock_code for stock_code, report_date in grouped if report_date == actual_start}
+    end_stocks = {stock_code for stock_code, report_date in grouped if report_date == actual_end}
+    stocks = sorted(stock_code for stock_code in start_stocks & end_stocks if _is_common_stock_code(stock_code))
     items = []
     for stock_code in stocks:
         summary = metadata.get(stock_code)
-        if summary is None or summary.market not in {"上市", "上櫃"}:
-            continue
         points = []
         report_dates = sorted({report_date for code, report_date in grouped if code == stock_code})
         for report_date in report_dates:
@@ -346,7 +378,11 @@ def _official_items(
         if len(points) < 2:
             continue
         items.append(_build_item(
-            stock_code, summary.stock_name, summary.market, summary.industry, points,
+            stock_code,
+            _summary_stock_name(summary, stock_code),
+            _summary_market(summary),
+            _summary_industry(summary),
+            points,
             "TWSE／TPEx 實際比較日起迄收盤價；區間均價採可取得比較期價格平均",
         ))
     return items
@@ -420,6 +456,8 @@ def get_whale_accumulation(
         data_mode = "demo"
         data_source = "TDCC 區間分析展示 Adapter"
         notice = "尚未累積兩期官方資料，目前為可重現展示數據，不代表真實持股排名；日期、評分、篩選及趨勢分析流程均與正式模式相同。"
+    if data_mode == "official_tdcc" and _has_partial_metadata(items):
+        notice = f"{notice} {PARTIAL_METADATA_NOTICE}"
     _finalize_scores(items)
     industries = sorted({str(item["industry"]) for item in items})
     normalized_keyword = keyword.strip().lower()

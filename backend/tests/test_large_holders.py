@@ -173,3 +173,40 @@ def test_two_official_periods_publish_official_tdcc_ranking() -> None:
     assert response["items"][0]["currentLotCount"] == 66
     assert response["items"][0]["previousLotCount"] == 60
     assert response["items"][0]["lotCountChange"] == 6
+
+
+def test_official_rankings_keep_raw_rows_when_summary_metadata_missing_for_all_market() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    now = date(2026, 7, 24)
+    previous = date(2026, 7, 17)
+    with Session(engine) as session:
+        session.add_all([
+            ShareholderDistributionWeekly(
+                stock_code="2330", report_date=previous, holding_level=12,
+                holder_count=100, share_count=60_000, holding_ratio=Decimal("20"),
+                updated_at=datetime(2026, 7, 24),
+            ),
+            ShareholderDistributionWeekly(
+                stock_code="2330", report_date=now, holding_level=12,
+                holder_count=105, share_count=66_000, holding_ratio=Decimal("23"),
+                updated_at=datetime(2026, 7, 24),
+            ),
+        ])
+        session.commit()
+
+        all_market = get_large_holder_rankings(session, "over400", limit=20, market="all", min_average_turnover=0)
+        listed_only = get_large_holder_rankings(session, "over400", limit=20, market="listed", min_average_turnover=0)
+
+    assert all_market["dataMode"] == "official_tdcc"
+    assert len(all_market["items"]) == 1
+    assert all_market["items"][0]["stockCode"] == "2330"
+    assert all_market["items"][0]["stockName"] == "2330"
+    assert all_market["items"][0]["market"] == "未知"
+    assert all_market["items"][0]["industry"] == "未分類"
+    assert "部分股票名稱／市場別待補" in all_market["dataNotice"]
+    assert listed_only["items"] == []

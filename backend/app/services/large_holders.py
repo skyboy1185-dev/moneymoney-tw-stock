@@ -30,6 +30,40 @@ TPEX_STOCK_DIRECTORY_URL = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_da
 OVER_400_LEVELS = frozenset({12})
 OVER_1000_LEVELS = frozenset({15})
 VALID_DISTRIBUTION_LEVELS = frozenset(range(1, 16))
+LISTED_MARKET = "\u4e0a\u5e02"
+OTC_MARKET = "\u4e0a\u6ac3"
+KNOWN_MARKETS = frozenset({LISTED_MARKET, OTC_MARKET})
+UNKNOWN_MARKET = "\u672a\u77e5"
+UNKNOWN_INDUSTRY = "\u672a\u5206\u985e"
+PARTIAL_METADATA_NOTICE = "\u90e8\u5206\u80a1\u7968\u540d\u7a31\uff0f\u5e02\u5834\u5225\u5f85\u88dc\uff0c\u4f46\u6301\u80a1\u6bd4\u4f8b\u63a1\u5b98\u65b9 TDCC\u3002"
+
+
+def _summary_stock_name(summary: LargeHolderWeeklySummary | None, stock_code: str) -> str:
+    name = (summary.stock_name if summary else "").strip()
+    return name or stock_code
+
+
+def _summary_market(summary: LargeHolderWeeklySummary | None) -> str:
+    market = (summary.market if summary else "").strip()
+    return market if market in KNOWN_MARKETS else UNKNOWN_MARKET
+
+
+def _summary_industry(summary: LargeHolderWeeklySummary | None) -> str:
+    industry = (summary.industry if summary else "").strip()
+    return industry or UNKNOWN_INDUSTRY
+
+
+def _has_partial_metadata(items: list[dict[str, Any]]) -> bool:
+    return any(
+        item["market"] == UNKNOWN_MARKET
+        or item["industry"] == UNKNOWN_INDUSTRY
+        or item["stockName"] == item["stockCode"]
+        for item in items
+    )
+
+
+def _is_common_stock_code(stock_code: str) -> bool:
+    return stock_code.isdigit() and len(stock_code) == 4 and not stock_code.startswith("00")
 
 
 @dataclass(frozen=True)
@@ -550,21 +584,24 @@ def get_large_holder_rankings(
     items: list[dict[str, Any]] = []
     industries: set[str] = set()
     for stock_code, current_row in current_rows.items():
+        if not _is_common_stock_code(stock_code):
+            continue
         previous_row = previous_rows.get(stock_code)
         current = summaries.get(stock_code)
         if previous_row is None:
             continue
-        if current is None or current.market not in {"上市", "上櫃"}:
+        current_market = _summary_market(current)
+        stock_name = _summary_stock_name(current, stock_code)
+        current_industry = _summary_industry(current)
+        if market == "listed" and current_market != LISTED_MARKET:
             continue
-        if market == "listed" and current.market != "上市":
+        if market == "otc" and current_market != OTC_MARKET:
             continue
-        if market == "otc" and current.market != "上櫃":
+        if industry and current_industry != industry:
             continue
-        if industry and current.industry != industry:
+        if keyword and keyword not in stock_code and keyword not in stock_name:
             continue
-        if keyword and keyword not in current.stock_code and keyword not in current.stock_name:
-            continue
-        industries.add(current.industry)
+        industries.add(current_industry)
         ratio = float(current_row.holding_ratio)
         previous_ratio = float(previous_row.holding_ratio)
         change_pp = ratio - previous_ratio
@@ -574,7 +611,7 @@ def get_large_holder_rankings(
         holder_count = current_row.holder_count
         holder_change = current_row.holder_count - previous_row.holder_count
         history = db.scalars(select(ShareholderDistributionWeekly).where(
-            ShareholderDistributionWeekly.stock_code == current.stock_code,
+            ShareholderDistributionWeekly.stock_code == stock_code,
             ShareholderDistributionWeekly.holding_level == target_level,
         ).order_by(ShareholderDistributionWeekly.report_date.desc()).limit(5)).all()
         history_ratio = [float(point.holding_ratio) for point in history]
@@ -595,8 +632,8 @@ def get_large_holder_rankings(
         )
         warnings = [anomaly_reason] if anomaly_flag else []
         items.append({
-            "rank": 0, "stockCode": current.stock_code, "stockName": current.stock_name,
-            "market": current.market, "industry": current.industry,
+            "rank": 0, "stockCode": stock_code, "stockName": stock_name,
+            "market": current_market, "industry": current_industry,
             "latestPrice": None, "weeklyChangePct": None,
             "currentLargeHolderRatio": ratio, "previousLargeHolderRatio": previous_ratio,
             "changePercentagePoint": round(change_pp, 4),
@@ -617,15 +654,18 @@ def get_large_holder_rankings(
     items = items[:limit]
     for rank, item in enumerate(items, 1):
         item["rank"] = rank
+    notice = (
+        "400張榜採TDCC第12級（400,001～600,000股），千張榜採第15級"
+        "（1,000,001股以上）；比例、戶數與持股張數週增減均為官方集保資料。"
+        "尚未串接的20日均成交金額、法人與主力欄位不計分並顯示暫無資料。"
+    )
+    if _has_partial_metadata(items):
+        notice = f"{notice} {PARTIAL_METADATA_NOTICE}"
     return {
         "type": kind, "currentReportDate": current_date.isoformat(),
         "previousReportDate": previous_date.isoformat(), "updatedAt": datetime.now(UTC).isoformat(),
         "dataMode": "official_tdcc", "dataSource": "臺灣集中保管結算所官方 CSV",
-        "dataNotice": (
-            "400張榜採TDCC第12級（400,001～600,000股），千張榜採第15級"
-            "（1,000,001股以上）；比例、戶數與持股張數週增減均為官方集保資料。"
-            "尚未串接的20日均成交金額、法人與主力欄位不計分並顯示暫無資料。"
-        ),
+        "dataNotice": notice,
         "industries": sorted(industries), "items": items,
     }
 

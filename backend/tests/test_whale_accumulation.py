@@ -38,6 +38,15 @@ def _add_period(session: Session, report_date: date, values: dict[int, tuple[str
     ))
 
 
+def _add_raw_period(session: Session, report_date: date, values: dict[int, tuple[str, int, int]]) -> None:
+    for level, (ratio, holders, shares) in values.items():
+        session.add(ShareholderDistributionWeekly(
+            stock_code="2330", report_date=report_date, holding_level=level,
+            holder_count=holders, share_count=shares, holding_ratio=Decimal(ratio),
+            updated_at=datetime(2026, 8, 7),
+        ))
+
+
 def test_resolve_dates_uses_nearest_start_and_latest_end_not_after_request() -> None:
     dates = [date(2026, 7, 24), date(2026, 7, 31), date(2026, 8, 7)]
     assert resolve_comparison_dates(dates, date(2026, 7, 28), date(2026, 8, 9)) == (
@@ -81,6 +90,35 @@ def test_official_accumulation_sums_all_400_plus_levels_and_scores_middle_period
     assert item["estimatedAccumulationValue"] == 1_400_000
     assert item["whaleAccumulationScore"] >= 75
     assert "🔥 大戶強力卡位" in item["signals"]
+
+
+def test_official_accumulation_keeps_raw_rows_when_summary_metadata_missing() -> None:
+    engine = _engine()
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        _add_raw_period(session, date(2026, 7, 24), {
+            1: ("10", 500, 100_000), 2: ("10", 300, 100_000), 3: ("10", 200, 100_000),
+            12: ("3", 20, 100_000), 13: ("3", 15, 100_000),
+            14: ("4", 10, 100_000), 15: ("10", 5, 100_000),
+        })
+        _add_raw_period(session, date(2026, 8, 7), {
+            1: ("9", 450, 100_000), 2: ("9", 270, 100_000), 3: ("10", 180, 100_000),
+            12: ("4", 22, 100_000), 13: ("4", 17, 100_000),
+            14: ("4", 12, 100_000), 15: ("12", 7, 100_000),
+        })
+        session.commit()
+        payload = get_whale_accumulation(
+            session, date(2026, 7, 24), date(2026, 8, 7), prices={"2330": 50},
+        )
+
+    assert payload["dataMode"] == "official_tdcc"
+    assert payload["totalMatched"] == 1
+    item = payload["items"][0]
+    assert item["stockCode"] == "2330"
+    assert item["stockName"] == "2330"
+    assert item["market"] == "未知"
+    assert item["industry"] == "未分類"
+    assert "部分股票名稱／市場別待補" in payload["dataNotice"]
 
 
 def test_demo_accumulation_supports_filters_and_top_limit() -> None:
