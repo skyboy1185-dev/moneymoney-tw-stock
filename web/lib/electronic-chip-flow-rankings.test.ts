@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { ElectronicChipFlowAlert, ElectronicChipFlowAlertsResponse } from "@/lib/electronic-chip-flow-alerts";
-import { selectLargeOrderMomentumToastCandidates, selectLargeOrderRankings } from "@/lib/electronic-chip-flow-rankings";
+import {
+  annotateLargeOrderRankChanges,
+  selectLargeOrderMomentumToastCandidates,
+  selectLargeOrderRankings,
+  selectMajorLargeOrderRankChangeEvents,
+} from "@/lib/electronic-chip-flow-rankings";
 
 const alert = (symbol: string, overrides: Partial<ElectronicChipFlowAlert> = {}): ElectronicChipFlowAlert => ({
   symbol,
@@ -123,6 +128,59 @@ describe("selectLargeOrderRankings", () => {
       ["2330", 2],
     ]);
     expect(selectLargeOrderRankings(payload, "short").map((item) => [item.symbol, item.rank])).toEqual([["2303", 1]]);
+  });
+});
+
+describe("large-order ranking change detection", () => {
+  it("annotates new, up, down and same rows from the previous ranking", () => {
+    const previous = [
+      alert("2330", { rank: 1 }),
+      alert("2408", { rank: 2 }),
+      alert("6173", { rank: 5 }),
+    ];
+    const current = [
+      alert("6173", { rank: 2 }),
+      alert("2330", { rank: 3 }),
+      alert("2454", { rank: 4 }),
+    ];
+
+    expect(annotateLargeOrderRankChanges(current, previous).map((item) => [
+      item.symbol,
+      item.rankChangeType,
+      item.previousRank,
+      item.rankDelta,
+    ])).toEqual([
+      ["6173", "up", 5, 3],
+      ["2330", "down", 1, -2],
+      ["2454", "new", undefined, undefined],
+    ]);
+  });
+
+  it("selects only major rank-change events and top-five exits", () => {
+    const previous = [
+      alert("2330", { rank: 1 }),
+      alert("2408", { rank: 2 }),
+      alert("6173", { rank: 7 }),
+      alert("2454", { rank: 8 }),
+    ];
+    const current = [
+      alert("6173", { rank: 3 }),
+      alert("2408", { rank: 4 }),
+      alert("2317", { rank: 9 }),
+      alert("2454", { rank: 10 }),
+    ];
+
+    expect(selectMajorLargeOrderRankChangeEvents(current, previous, "long").map((event) => [
+      event.type,
+      event.symbol,
+      event.previousRank,
+      event.currentRank,
+      event.rankDelta,
+    ])).toEqual([
+      ["new", "2317", undefined, 9, 0],
+      ["up", "6173", 7, 3, 4],
+      ["out", "2330", 1, undefined, -999],
+    ]);
   });
 });
 

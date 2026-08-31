@@ -10,6 +10,9 @@ export interface ElectronicChipFlowAlert {
   direction?: "long" | "short";
   rank?: number;
   rankScore?: number;
+  previousRank?: number;
+  rankDelta?: number;
+  rankChangeType?: "new" | "up" | "down" | "out" | "same";
   symbol: string;
   name: string;
   market: "上市" | "上櫃";

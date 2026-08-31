@@ -91,6 +91,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .chip-alert-rank, .chip-signal-rank { min-width: 27px; padding: 2px 6px; display: inline-flex; justify-content: center; color: #151c28 !important; background: #f3c96a; border: 1px solid rgba(255, 218, 116, .72); border-radius: 7px; font-size: 10px !important; font-weight: 900; font-variant-numeric: tabular-nums; }
 .chip-alert-item .chip-alert-rank { margin-right: 5px; vertical-align: middle; }
 .chip-signal-rank { min-width: 24px; padding: 1px 5px; font-size: 9px !important; line-height: 1.2; }
+.chip-rank-change { min-width: 30px; padding: 1px 5px; display: inline-flex; justify-content: center; align-items: center; color: #121a27; background: #a8b6c8; border: 1px solid rgba(220,230,244,.5); border-radius: 7px; font-size: 9px; font-weight: 950; font-variant-numeric: tabular-nums; line-height: 1.25; white-space: nowrap; }
+.chip-rank-change.new { color: #201401; background: #ffbd55; border-color: rgba(255,207,116,.72); }
+.chip-rank-change.up { color: #230913; background: #ff8295; border-color: rgba(255,130,149,.72); }
+.chip-rank-change.down { color: #061827; background: #82c8f7; border-color: rgba(130,200,247,.72); }
+.chip-strength-rank .chip-rank-change { min-width: 42px; }
 .chip-layout-toggle { position: absolute; z-index: 5; top: 47px; right: max(18px, calc((100vw - 1680px) / 2)); display: inline-flex; gap: 2px; padding: 2px; background: rgba(7,16,29,.72); border: 1px solid rgba(101,121,148,.34); border-radius: 10px; backdrop-filter: blur(10px); }
 .chip-layout-toggle button { padding: 3px 7px; color: #8ea0b8; background: transparent; border: 0; border-radius: 8px; font-size: 10px; font-weight: 900; cursor: pointer; }
 .chip-layout-toggle button.active { color: #f2f6fc; background: rgba(105,124,153,.28); }
@@ -146,6 +151,10 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .chip-emergency-toast.reinforced { background: rgba(25,18,42,.98); border-color: rgba(157,119,255,.45); border-left-color: #9d77ff; }
 .chip-emergency-toast.joint { background: rgba(9,31,34,.98); border-color: rgba(66,211,191,.46); border-left-color: #42d3bf; }
 .chip-emergency-toast.surge { background: rgba(38,25,8,.98); border-color: rgba(255,184,76,.48); border-left-color: #ffb84c; }
+.chip-emergency-toast.rank-new { background: rgba(42,26,7,.98); border-color: rgba(255,184,76,.48); border-left-color: #ffb84c; }
+.chip-emergency-toast.rank-up { background: rgba(45,15,27,.98); border-color: rgba(255,111,136,.5); border-left-color: #ff6f88; }
+.chip-emergency-toast.rank-down { background: rgba(11,36,58,.98); border-color: rgba(82,174,239,.5); border-left-color: #52aeef; }
+.chip-emergency-toast.rank-out { background: rgba(34,39,48,.98); border-color: rgba(157,172,194,.46); border-left-color: #9dacc2; }
 .chip-emergency-toast.gate-up { background: rgba(49,14,25,.98); border-color: rgba(255,91,113,.58); border-left-color: #ff5b71; box-shadow: 0 18px 52px rgba(0,0,0,.54), 0 0 22px rgba(255,69,99,.14); }
 .chip-emergency-toast.gate-down { background: rgba(10,33,52,.98); border-color: rgba(73,169,224,.58); border-left-color: #49a9e0; box-shadow: 0 18px 52px rgba(0,0,0,.54), 0 0 22px rgba(57,155,219,.13); }
 .chip-emergency-body { width: 100%; padding: 13px 42px 13px 12px; display: grid; grid-template-columns: 38px minmax(0,1fr); gap: 10px; color: inherit; background: transparent; border: 0; text-align: left; cursor: pointer; }
@@ -153,6 +162,10 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .chip-emergency-toast.reinforced .chip-emergency-icon { color: #b79cff; background: rgba(151,108,255,.14); }
 .chip-emergency-toast.joint .chip-emergency-icon { color: #67e4d0; background: rgba(66,211,191,.14); }
 .chip-emergency-toast.surge .chip-emergency-icon { color: #ffc66d; background: rgba(255,184,76,.14); }
+.chip-emergency-toast.rank-new .chip-emergency-icon { color: #ffc66d; background: rgba(255,184,76,.14); }
+.chip-emergency-toast.rank-up .chip-emergency-icon { color: #ff8ea0; background: rgba(255,111,136,.14); }
+.chip-emergency-toast.rank-down .chip-emergency-icon { color: #82c8f7; background: rgba(82,174,239,.14); }
+.chip-emergency-toast.rank-out .chip-emergency-icon { color: #b9c4d5; background: rgba(157,172,194,.14); }
 .chip-emergency-toast.gate-up .chip-emergency-icon { color: #ff8293; background: rgba(255,91,113,.14); }
 .chip-emergency-toast.gate-down .chip-emergency-icon { color: #72bfff; background: rgba(73,169,224,.14); }
 .chip-emergency-icon svg { width: 19px; }
@@ -161,6 +174,10 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .chip-emergency-toast.reinforced strong { color: #c4b0ff; }
 .chip-emergency-toast.joint strong { color: #7be8d7; }
 .chip-emergency-toast.surge strong { color: #ffd18a; }
+.chip-emergency-toast.rank-new strong { color: #ffd18a; }
+.chip-emergency-toast.rank-up strong { color: #ff9dad; }
+.chip-emergency-toast.rank-down strong { color: #95d0ff; }
+.chip-emergency-toast.rank-out strong { color: #c5d0df; }
 .chip-emergency-toast.gate-up strong { color: #ff98a6; }
 .chip-emergency-toast.gate-down strong { color: #8bcbff; }
 .chip-emergency-body h4 { margin: 3px 0 5px; color: #f4f7fb; font-size: 13px; }

@@ -17,7 +17,13 @@ import type { MarketIndexDefenseResponse } from "@/lib/market-index-defense";
 import { evaluateThreeGateLevels } from "@/lib/three-gate-price";
 import { detectGroupResonances } from "@/lib/group-resonance";
 import { evaluateLargeOrderOutcomes } from "@/lib/large-order-outcome";
-import { selectLargeOrderMomentumToastCandidates, selectLargeOrderRankings } from "@/lib/electronic-chip-flow-rankings";
+import {
+  annotateLargeOrderRankChanges,
+  selectLargeOrderMomentumToastCandidates,
+  selectLargeOrderRankings,
+  selectMajorLargeOrderRankChangeEvents,
+  type LargeOrderRankChangeEvent,
+} from "@/lib/electronic-chip-flow-rankings";
 import { buildDingSelectionRows, type DingSelectionRow } from "@/lib/ding-selection";
 import { buildTaiwanIndexKeyLevels, formatIndexLevel } from "@/lib/taiwan-index-key-levels";
 import { futuresFlashDirection, type FuturesFlashDirection } from "@/lib/market-snapshot-refresh";
@@ -30,7 +36,8 @@ interface ElectronicChipFlowTickerProps {
 interface MomentumToast {
   id: string;
   alert: ElectronicChipFlowAlert;
-  kind: "reinforced" | "joint" | "surge";
+  kind: "reinforced" | "joint" | "surge" | "rank-new" | "rank-up" | "rank-down" | "rank-out";
+  rankChange?: LargeOrderRankChangeEvent;
 }
 
 interface ThreeGateToast {
@@ -51,6 +58,7 @@ const THREE_GATE_NOTIFICATION_SIGNATURES_KEY = "twse:pinned-three-gate-notificat
 const MOMENTUM_BAR_LAYOUT_KEY = "twse:momentum-bar-layout";
 const PINNED_TECHNICAL_REFRESH_MS = 5_000;
 const ACTIVE_MONITOR_QUOTE_REFRESH_MS = 2_000;
+const RANK_CHANGE_TOAST_COOLDOWN_MS = 180_000;
 
 type MomentumBarLayout = "compact" | "classic";
 type ExpandedMomentumPanel = "long" | "short" | "ding";
@@ -114,6 +122,54 @@ function TrendIcon({ alert }: { alert: ElectronicChipFlowAlert }) {
   if (alert.direction === "short") return <TrendingDown size={12} />;
   if (alert.reinforced || alert.simultaneousIncrease) return <TrendingUp size={12} />;
   return <Activity size={11} />;
+}
+
+function rankChangeText(alert: ElectronicChipFlowAlert): string {
+  const rankDelta = alert.rankDelta ?? 0;
+  if (alert.rankChangeType === "new") return "NEW";
+  if (alert.rankChangeType === "up" && rankDelta > 0) return `▲${rankDelta}`;
+  if (alert.rankChangeType === "down" && rankDelta < 0) return `▼${Math.abs(rankDelta)}`;
+  return "";
+}
+
+function RankChangeBadge({ alert }: { alert: ElectronicChipFlowAlert }) {
+  const text = rankChangeText(alert);
+  if (!text) return null;
+  const title = alert.rankChangeType === "new"
+    ? "新進 Top10"
+    : `前次 #${alert.previousRank ?? "?"}，目前 #${alert.rank ?? "?"}`;
+  return <span className={`chip-rank-change ${alert.rankChangeType}`} title={title}>{text}</span>;
+}
+
+function directionalMomentumLots(alert: ElectronicChipFlowAlert, direction: "long" | "short"): number {
+  return direction === "short"
+    ? alert.sessionNetSellLots ?? alert.recentNetSellLots ?? Math.max(0, -alert.recentNetBuyLots)
+    : alert.sessionNetBuyLots ?? Math.max(0, alert.recentNetBuyLots);
+}
+
+function rankChangeToastKind(event: LargeOrderRankChangeEvent): MomentumToast["kind"] {
+  return `rank-${event.type}` as MomentumToast["kind"];
+}
+
+function rankChangeToastTitle(event: LargeOrderRankChangeEvent): string {
+  const side = event.direction === "short" ? "空方賣壓" : "多方動能";
+  if (event.type === "new") return `新進${event.direction === "short" ? "空方" : "多方"}Top10`;
+  if (event.type === "up") return `${side}排名上升`;
+  if (event.type === "down") return `${side}排名下降`;
+  return `${side}掉出Top10`;
+}
+
+function rankChangeToastMessage(event: LargeOrderRankChangeEvent): string {
+  const forceLabel = event.direction === "short" ? "賣壓" : "買盤";
+  const forceLots = directionalMomentumLots(event.alert, event.direction);
+  if (event.type === "new") {
+    return `#${event.currentRank ?? "?"}・${forceLabel}累計 ${formatLots(forceLots)} 張`;
+  }
+  if (event.type === "out") {
+    return `原本 #${event.previousRank ?? "?"}，目前掉出 Top10，留意動能退潮。`;
+  }
+  const arrow = event.type === "up" ? "→" : "→";
+  return `#${event.previousRank ?? "?"} ${arrow} #${event.currentRank ?? "?"}・${forceLabel}累計 ${formatLots(forceLots)} 張`;
 }
 
 function TaiwanIndexPulseBar({
@@ -221,6 +277,7 @@ function AlertItems({
         title={`${alert.name} ${alert.symbol}｜${alert.message}｜大單資料為推估值`}
       >
         {alert.rank && <span className="chip-alert-rank">#{alert.rank}</span>}
+        <RankChangeBadge alert={alert} />
         <strong>{alert.name}</strong>
         <b>{alert.symbol}</b>
         <em><TrendIcon alert={alert} />{alert.simultaneousIncrease ? (direction === "short" ? "大小單同步偏空" : "大小單同步增加") : alert.trendLabel}</em>
@@ -257,7 +314,7 @@ function CompactSignalPills({
         onClick={() => onSelectStock(alert.symbol)}
         title={`${alert.name} ${alert.symbol}｜${alert.message}｜點擊查看個股`}
       >
-        <span>{alert.rank ? <b className="chip-signal-rank">#{alert.rank}</b> : (direction === "short" ? <TrendingDown size={11} /> : <TrendingUp size={11} />)}{direction === "short" ? "空" : "多"}</span>
+        <span>{alert.rank ? <b className="chip-signal-rank">#{alert.rank}</b> : (direction === "short" ? <TrendingDown size={11} /> : <TrendingUp size={11} />)}<RankChangeBadge alert={alert} />{direction === "short" ? "空" : "多"}</span>
         <strong>{alert.symbol} {alert.name}</strong>
         <b>{momentumLabel} {formatLots(momentumLots)} 張</b>
         <small>{alert.simultaneousIncrease ? "大小單同步" : alert.trendLabel}・{momentumCaption}・{alert.time}</small>
@@ -416,6 +473,7 @@ function Top10QuickRows({
           onClick={() => onSelectStock(alert.symbol)}
         >
           <i>#{alert.rank ?? index + 1}</i>
+          <RankChangeBadge alert={alert} />
           <b>{alert.symbol}</b>
           <span>{alert.name}</span>
           <em>{formatLots(forceLots(alert, row.direction))}張</em>
@@ -785,6 +843,7 @@ function MomentumPanel({
         >
           <div className="chip-strength-rank">
             <span>#{alert.rank}</span>
+            <RankChangeBadge alert={alert} />
             <strong>{strength.label}</strong>
           </div>
           <div className="chip-strength-main">
@@ -946,6 +1005,9 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
   const [threeGateToasts, setThreeGateToasts] = useState<ThreeGateToast[]>([]);
   const tickerSignature = useRef("");
   const urgentSignatures = useRef(new Map<string, string>());
+  const rankingBaselineReady = useRef({ long: false, short: false });
+  const previousRankings = useRef<{ long: ElectronicChipFlowAlert[]; short: ElectronicChipFlowAlert[] }>({ long: [], short: [] });
+  const rankChangeCooldowns = useRef(new Map<string, number>());
   const toastTimers = useRef<number[]>([]);
   const threeGateNotificationSignatures = useRef(new Set<string>());
   const threeGateLastPrices = useRef(new Map<string, number>());
@@ -1137,9 +1199,47 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
           setMomentumToasts([]);
           setThreeGateToasts([]);
           urgentSignatures.current.clear();
+          rankingBaselineReady.current = { long: false, short: false };
+          previousRankings.current = { long: [], short: [] };
+          rankChangeCooldowns.current.clear();
         }
+        const rankingLimit = payload.rankingLimit ?? 10;
+        const currentLongRankings = selectLargeOrderRankings(payload, "long").slice(0, rankingLimit);
+        const currentShortRankings = selectLargeOrderRankings(payload, "short").slice(0, rankingLimit);
+        const rankChangeEvents: LargeOrderRankChangeEvent[] = [];
+        let annotatedLongRankings: ElectronicChipFlowAlert[] = currentLongRankings.map((alert) => ({ ...alert, rankChangeType: "same" as const }));
+        let annotatedShortRankings: ElectronicChipFlowAlert[] = currentShortRankings.map((alert) => ({ ...alert, rankChangeType: "same" as const }));
+
+        if (payload.marketOpen) {
+          if (currentLongRankings.length) {
+            annotatedLongRankings = rankingBaselineReady.current.long
+              ? annotateLargeOrderRankChanges(currentLongRankings, previousRankings.current.long)
+              : annotatedLongRankings;
+            if (rankingBaselineReady.current.long) {
+              rankChangeEvents.push(...selectMajorLargeOrderRankChangeEvents(currentLongRankings, previousRankings.current.long, "long"));
+            }
+            rankingBaselineReady.current.long = true;
+            previousRankings.current.long = currentLongRankings;
+          }
+          if (currentShortRankings.length) {
+            annotatedShortRankings = rankingBaselineReady.current.short
+              ? annotateLargeOrderRankChanges(currentShortRankings, previousRankings.current.short)
+              : annotatedShortRankings;
+            if (rankingBaselineReady.current.short) {
+              rankChangeEvents.push(...selectMajorLargeOrderRankChangeEvents(currentShortRankings, previousRankings.current.short, "short"));
+            }
+            rankingBaselineReady.current.short = true;
+            previousRankings.current.short = currentShortRankings;
+          }
+        }
+
+        const payloadWithRankChanges: ElectronicChipFlowAlertsResponse = {
+          ...payload,
+          longRankings: annotatedLongRankings,
+          shortRankings: annotatedShortRankings,
+        };
         const nextTickerAlerts = Array.from(
-          new Map(selectLargeOrderRankings(payload, "long").map((alert) => [alert.symbol, alert])).values(),
+          new Map(selectLargeOrderRankings(payloadWithRankChanges, "long").map((alert) => [alert.symbol, alert])).values(),
         );
         // Counts and raw BAR values remain live in the expanded panel. The
         // marquee changes only when a stock enters/leaves or its trend state
@@ -1162,7 +1262,7 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
         }
         const nextUrgentSignatures = new Map<string, string>();
         const freshToasts: MomentumToast[] = [];
-        selectLargeOrderMomentumToastCandidates(payload).forEach(({ alert, kind }) => {
+        selectLargeOrderMomentumToastCandidates(payloadWithRankChanges).forEach(({ alert, kind }) => {
           const signature = `${kind}:1`;
           nextUrgentSignatures.set(alert.symbol, signature);
           if (urgentSignatures.current.get(alert.symbol) === signature) return;
@@ -1172,11 +1272,24 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
             kind,
           });
         });
+        const nowMs = Date.now();
+        rankChangeEvents.forEach((event) => {
+          const cooldownKey = `${payloadWithRankChanges.tradeDate}:${event.direction}:${event.symbol}:${event.type}`;
+          const lastSentAt = rankChangeCooldowns.current.get(cooldownKey) ?? 0;
+          if (nowMs - lastSentAt < RANK_CHANGE_TOAST_COOLDOWN_MS) return;
+          rankChangeCooldowns.current.set(cooldownKey, nowMs);
+          freshToasts.push({
+            id: `${cooldownKey}:${event.previousRank ?? "new"}:${event.currentRank ?? "out"}:${payloadWithRankChanges.updatedAt}`,
+            alert: event.alert,
+            kind: rankChangeToastKind(event),
+            rankChange: event,
+          });
+        });
         urgentSignatures.current = nextUrgentSignatures;
         if (freshToasts.length) {
           const prioritized = freshToasts
             .sort((left, right) => {
-              const priority = { joint: 3, reinforced: 2, surge: 1 } as const;
+              const priority = { joint: 7, reinforced: 6, surge: 5, "rank-new": 4, "rank-up": 3, "rank-out": 2, "rank-down": 1 } as const;
               return priority[right.kind] - priority[left.kind];
             })
             .slice(0, 3);
@@ -1192,7 +1305,7 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
             toastTimers.current.push(timer);
           });
         }
-        setData(payload);
+        setData(payloadWithRankChanges);
       } catch (error) {
         if ((error as Error).name !== "AbortError") {
           setData((current) => current ? { ...current, status: "disconnected" } : null);
@@ -1559,18 +1672,24 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
       </article>)}
       {momentumToasts.map((item) => {
         const flow = orderFlow(item.alert);
+        const rankChange = item.rankChange;
+        const isRankChange = Boolean(rankChange);
         return <article
         className={`chip-emergency-toast ${item.kind}`}
         key={item.id}
         role="alert"
       >
         <button type="button" className="chip-emergency-body" onClick={() => selectStock(item.alert.symbol)}>
-          <span className="chip-emergency-icon">{item.kind === "surge" ? <Zap /> : <TrendingUp />}</span>
+          <span className="chip-emergency-icon">{
+            item.kind === "surge" || item.kind === "rank-new" ? <Zap />
+              : item.kind === "rank-down" || item.kind === "rank-out" ? <TrendingDown />
+                : <TrendingUp />
+          }</span>
           <div>
-            <strong>{item.kind === "joint" ? "大小單同步增加" : item.kind === "reinforced" ? "大單急增・持續轉強" : "大單急增"}</strong>
+            <strong>{rankChange ? rankChangeToastTitle(rankChange) : item.kind === "joint" ? "大小單同步增加" : item.kind === "reinforced" ? "大單急增・持續轉強" : "大單急增"}</strong>
             <h4>{item.alert.symbol} {item.alert.name}</h4>
-            <p>{item.alert.message}</p>
-            <small>近 {data?.windowMinutes ?? 5} 分｜大單 多 {formatLots(flow.largeLong)}／空 {formatLots(flow.largeShort)}｜散戶 多 {formatLots(flow.retailLong)}／空 {formatLots(flow.retailShort)} 張・{item.alert.time}</small>
+            <p>{rankChange ? rankChangeToastMessage(rankChange) : item.alert.message}</p>
+            <small>{isRankChange ? `${rankChange?.direction === "short" ? "空方" : "多方"}Top10 排名變動` : `近 ${data?.windowMinutes ?? 5} 分`}｜大單 多 {formatLots(flow.largeLong)}／空 {formatLots(flow.largeShort)}｜散戶 多 {formatLots(flow.retailLong)}／空 {formatLots(flow.retailShort)} 張・{item.alert.time}</small>
           </div>
         </button>
         <button type="button" className="chip-emergency-close" aria-label="關閉緊急通知" onClick={() => closeMomentumToast(item.id)}><X /></button>
