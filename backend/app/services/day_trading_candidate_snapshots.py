@@ -6,7 +6,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ..models import DayTradingCandidateSnapshot
@@ -71,8 +71,14 @@ def save_candidate_snapshots(
     limit: int = CANDIDATE_SNAPSHOT_LIMIT,
 ) -> int:
     """Persist the ranked Top-N candidate list from one automation scan."""
-    current = snapshot_at.astimezone(UTC) if snapshot_at.tzinfo else snapshot_at.replace(tzinfo=UTC)
+    raw_current = snapshot_at.astimezone(UTC) if snapshot_at.tzinfo else snapshot_at.replace(tzinfo=UTC)
+    current = raw_current.replace(second=0, microsecond=0)
     trading_date = _trading_date(config, current)
+    if db.scalar(select(DayTradingCandidateSnapshot.id).where(
+        DayTradingCandidateSnapshot.trading_date == trading_date,
+        DayTradingCandidateSnapshot.snapshot_at == current,
+    ).limit(1)):
+        return 0
     saved = 0
     for fallback_rank, candidate in enumerate(candidates[:limit], start=1):
         signal_id = str(candidate.get("id") or "")
@@ -109,6 +115,9 @@ def save_candidate_snapshots(
     try:
         db.flush()
     except IntegrityError:
+        db.rollback()
+        return 0
+    except SQLAlchemyError:
         db.rollback()
         return 0
     return saved

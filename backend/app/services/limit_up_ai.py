@@ -8,7 +8,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ..models import LimitUpAiNotification, LimitUpAiPosition, LimitUpAiSettings, LimitUpAiSnapshot, LimitUpAiTrade
@@ -523,12 +523,18 @@ def scan_limit_up_candidates(
 
 def save_snapshots(db: Session, candidates: list[dict[str, Any]], now: datetime) -> int:
     trading_date = _trading_date(now)
+    snapshot_at = now.astimezone(UTC).replace(second=0, microsecond=0)
+    if db.scalar(select(LimitUpAiSnapshot.id).where(
+        LimitUpAiSnapshot.trading_date == trading_date,
+        LimitUpAiSnapshot.snapshot_at == snapshot_at,
+    ).limit(1)):
+        return 0
     saved = 0
     for candidate in candidates:
         db.add(LimitUpAiSnapshot(
             signal_id=str(candidate["id"])[:120],
             trading_date=trading_date,
-            snapshot_at=now.astimezone(UTC),
+            snapshot_at=snapshot_at,
             symbol=str(candidate["symbol"])[:12],
             stock_name=str(candidate["stockName"])[:80],
             market=str(candidate["market"])[:20],
@@ -547,6 +553,9 @@ def save_snapshots(db: Session, candidates: list[dict[str, Any]], now: datetime)
     try:
         db.flush()
     except IntegrityError:
+        db.rollback()
+        return 0
+    except SQLAlchemyError:
         db.rollback()
         return 0
     return saved

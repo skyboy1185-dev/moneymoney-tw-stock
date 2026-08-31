@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -37,12 +38,16 @@ from .services.pattern_robot_automation import pattern_robot_automation
 from .services.rocket_automation import rocket_radar_automation
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     create_tables()
-    cleanup_expired_operational_data(retention_days=7)
+    try:
+        cleanup_expired_operational_data(retention_days=3, intraday_snapshot_retention_hours=2)
+    except Exception:
+        logger.exception("operational database retention cleanup failed")
     await line_notification_dispatcher.start()
     await day_trading_automation.start()
     # 型態掃描必須先於原本 AI 選股偵測啟動；09:00 後重啟會由此立即補掃。

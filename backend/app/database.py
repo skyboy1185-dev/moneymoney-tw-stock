@@ -3,6 +3,7 @@ from datetime import date, timedelta
 import logging
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import get_settings
@@ -175,9 +176,17 @@ def create_tables() -> None:
         logger.warning("long-term portfolio overflow repaired: %s", repaired)
 
 
-def cleanup_expired_operational_data(retention_days: int = 7) -> dict[str, int]:
+def _rowcount(value) -> int:
+    return max(0, value.rowcount or 0)
+
+
+def cleanup_expired_operational_data(
+    retention_days: int = 3,
+    intraday_snapshot_retention_hours: int = 2,
+) -> dict[str, int]:
     """Prune reconstructable intraday data without touching user portfolios/trades."""
     cutoff = date.today() - timedelta(days=max(1, retention_days))
+    retention_hours = max(1, intraday_snapshot_retention_hours)
     with engine.begin() as connection:
         if engine.dialect.name == "postgresql":
             snapshot_result = connection.execute(
@@ -191,12 +200,20 @@ def cleanup_expired_operational_data(retention_days: int = 7) -> dict[str, int]:
                 )
             )
             candidate_snapshot_result = connection.execute(
-                text("DELETE FROM day_trading_candidate_snapshots WHERE trading_date < :cutoff"),
-                {"cutoff": cutoff},
+                text(
+                    "DELETE FROM day_trading_candidate_snapshots "
+                    "WHERE trading_date < :cutoff "
+                    "OR snapshot_at < CURRENT_TIMESTAMP - (:retention_hours * INTERVAL '1 hour')"
+                ),
+                {"cutoff": cutoff, "retention_hours": retention_hours},
             )
             limit_up_snapshot_result = connection.execute(
-                text("DELETE FROM limit_up_ai_snapshots WHERE trading_date < :cutoff"),
-                {"cutoff": cutoff},
+                text(
+                    "DELETE FROM limit_up_ai_snapshots "
+                    "WHERE trading_date < :cutoff "
+                    "OR snapshot_at < CURRENT_TIMESTAMP - (:retention_hours * INTERVAL '1 hour')"
+                ),
+                {"cutoff": cutoff, "retention_hours": retention_hours},
             )
         else:
             snapshot_result = connection.execute(
@@ -210,24 +227,36 @@ def cleanup_expired_operational_data(retention_days: int = 7) -> dict[str, int]:
                 )
             )
             candidate_snapshot_result = connection.execute(
-                text("DELETE FROM day_trading_candidate_snapshots WHERE trading_date < :cutoff"),
-                {"cutoff": cutoff.isoformat()},
+                text(
+                    "DELETE FROM day_trading_candidate_snapshots "
+                    "WHERE trading_date < :cutoff OR snapshot_at < datetime('now', :retention_modifier)"
+                ),
+                {"cutoff": cutoff.isoformat(), "retention_modifier": f"-{retention_hours} hours"},
             )
             limit_up_snapshot_result = connection.execute(
-                text("DELETE FROM limit_up_ai_snapshots WHERE trading_date < :cutoff"),
-                {"cutoff": cutoff.isoformat()},
+                text(
+                    "DELETE FROM limit_up_ai_snapshots "
+                    "WHERE trading_date < :cutoff OR snapshot_at < datetime('now', :retention_modifier)"
+                ),
+                {"cutoff": cutoff.isoformat(), "retention_modifier": f"-{retention_hours} hours"},
             )
     deleted = {
-        "chip_flow_snapshots": max(0, snapshot_result.rowcount or 0),
-        "day_trading_signals": max(0, signal_result.rowcount or 0),
-        "day_trading_candidate_snapshots": max(0, candidate_snapshot_result.rowcount or 0),
-        "limit_up_ai_snapshots": max(0, limit_up_snapshot_result.rowcount or 0),
+        "chip_flow_snapshots": _rowcount(snapshot_result),
+        "day_trading_signals": _rowcount(signal_result),
+        "day_trading_candidate_snapshots": _rowcount(candidate_snapshot_result),
+        "limit_up_ai_snapshots": _rowcount(limit_up_snapshot_result),
     }
     if engine.dialect.name == "postgresql":
         with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
-            connection.execute(text("VACUUM (ANALYZE) chip_flow_snapshots"))
-            connection.execute(text("VACUUM (ANALYZE) day_trading_signals"))
-            connection.execute(text("VACUUM (ANALYZE) day_trading_candidate_snapshots"))
-            connection.execute(text("VACUUM (ANALYZE) limit_up_ai_snapshots"))
+            for table in (
+                "chip_flow_snapshots",
+                "day_trading_signals",
+                "day_trading_candidate_snapshots",
+                "limit_up_ai_snapshots",
+            ):
+                try:
+                    connection.execute(text(f"VACUUM (ANALYZE) {table}"))
+                except SQLAlchemyError:
+                    logger.exception("operational database vacuum failed for %s", table)
     logger.warning("operational database retention cleanup completed: %s", deleted)
     return deleted
