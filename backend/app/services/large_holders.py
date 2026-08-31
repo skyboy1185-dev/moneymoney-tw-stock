@@ -370,7 +370,7 @@ def persist_latest_distribution(
     if db.scalar(select(LargeHolderWeeklySummary.id).where(
         LargeHolderWeeklySummary.report_date == report_date,
     ).limit(1)):
-        repair_count = repair_large_holder_metadata(db, metadata)
+        repair_count = repair_large_holder_metadata(db, metadata, report_date=report_date)
         if repair_count:
             db.commit()
         return {

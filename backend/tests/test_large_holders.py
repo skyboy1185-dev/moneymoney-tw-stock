@@ -241,6 +241,14 @@ def test_already_synced_distribution_repairs_missing_metadata_without_overwritin
                 ratio_over_1000=Decimal("10"), total_shareholders=1_000,
                 total_shares=100_000, updated_at=datetime(2026, 7, 24),
             ),
+            LargeHolderWeeklySummary(
+                stock_code="4150", stock_name="4150", market="未知", industry="未分類",
+                report_date=date(2026, 7, 17), holders_over_400_count=100,
+                shares_over_400=60_000, ratio_over_400=Decimal("20"),
+                holders_over_1000_count=20, shares_over_1000=25_000,
+                ratio_over_1000=Decimal("10"), total_shareholders=1_000,
+                total_shares=100_000, updated_at=datetime(2026, 7, 17),
+            ),
         ])
         session.commit()
 
@@ -253,6 +261,7 @@ def test_already_synced_distribution_repairs_missing_metadata_without_overwritin
             {
                 "2330": {"name": "台積電", "market": "上市", "industry": "半導體"},
                 "2317": {"name": "錯誤名稱", "market": "上櫃", "industry": "錯誤產業"},
+                "4150": {"name": "\u512a\u4f60\u5eb7", "market": "\u672a\u77e5", "industry": "\u672a\u5206\u985e"},
             },
         )
 
@@ -261,6 +270,9 @@ def test_already_synced_distribution_repairs_missing_metadata_without_overwritin
         ))
         preserved = session.scalar(select(LargeHolderWeeklySummary).where(
             LargeHolderWeeklySummary.stock_code == "2317",
+        ))
+        previous_period = session.scalar(select(LargeHolderWeeklySummary).where(
+            LargeHolderWeeklySummary.stock_code == "4150",
         ))
 
     assert result["status"] == "already_synced"
@@ -273,6 +285,8 @@ def test_already_synced_distribution_repairs_missing_metadata_without_overwritin
     assert preserved.stock_name == "鴻海"
     assert preserved.market == "上市"
     assert preserved.industry == "其他電子"
+    assert previous_period is not None
+    assert previous_period.stock_name == "4150"
 
 
 def test_stock_directory_includes_tpex_emerging_and_company_profile_fallbacks(monkeypatch) -> None:
