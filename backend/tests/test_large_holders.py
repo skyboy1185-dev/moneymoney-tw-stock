@@ -1,3 +1,4 @@
+import asyncio
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -13,6 +14,7 @@ from app.routers import large_holders
 from app.services.large_holders import (
     DistributionRow,
     DistributionSummary,
+    TdccOpenDataProvider,
     aggregate_distribution,
     calculate_weekly_change,
     get_large_holder_rankings,
@@ -271,3 +273,52 @@ def test_already_synced_distribution_repairs_missing_metadata_without_overwritin
     assert preserved.stock_name == "鴻海"
     assert preserved.market == "上市"
     assert preserved.industry == "其他電子"
+
+
+def test_stock_directory_includes_tpex_emerging_and_company_profile_fallbacks(monkeypatch) -> None:
+    class FakeResponse:
+        def __init__(self, rows: list[dict[str, str]], status_code: int = 200) -> None:
+            self._rows = rows
+            self.status_code = status_code
+
+        def json(self) -> list[dict[str, str]]:
+            return self._rows
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                raise AssertionError(f"unexpected failed response {self.status_code}")
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def get(self, url: str, **kwargs) -> FakeResponse:
+            if "STOCK_DAY_ALL" in url:
+                return FakeResponse([{"Code": "2330", "Name": "台積電", "ClosingPrice": "1200"}])
+            if "tpex_mainboard_daily_close_quotes" in url:
+                return FakeResponse([])
+            if "tpex_esb_latest_statistics" in url:
+                return FakeResponse([{"SecuritiesCompanyCode": "4150", "CompanyName": "優你康", "LatestPrice": "1.29"}])
+            if "mopsfin_t187ap03_O" in url:
+                return FakeResponse([{
+                    "SecuritiesCompanyCode": "4747",
+                    "CompanyName": "強生化學製藥廠股份有限公司",
+                    "CompanyAbbreviation": "強生製藥",
+                }])
+            raise AssertionError(f"unexpected url {url}")
+
+    monkeypatch.setattr("app.services.large_holders._directory_cache", None)
+    monkeypatch.setattr("app.services.large_holders.httpx.AsyncClient", FakeAsyncClient)
+
+    directory = asyncio.run(TdccOpenDataProvider().fetch_stock_directory())
+
+    assert directory["4150"]["name"] == "優你康"
+    assert directory["4150"]["market"] == "未知"
+    assert directory["4747"]["name"] == "強生製藥"
+    assert directory["4747"]["market"] == "上櫃"

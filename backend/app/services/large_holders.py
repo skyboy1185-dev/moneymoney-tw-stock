@@ -25,6 +25,8 @@ from ..models import (
 TDCC_DISTRIBUTION_URL = "https://smart.tdcc.com.tw/opendata/getOD.ashx"
 TWSE_STOCK_DIRECTORY_URL = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
 TPEX_STOCK_DIRECTORY_URL = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes"
+TPEX_EMERGING_STOCK_DIRECTORY_URL = "https://www.tpex.org.tw/openapi/v1/tpex_esb_latest_statistics"
+TPEX_OTC_COMPANY_PROFILE_URL = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"
 # TDCC does not publish a 400-499 lot band. Level 12 is the closest official
 # bucket: 400,001-600,000 shares (roughly 400-600 lots).
 OVER_400_LEVELS = frozenset({12})
@@ -64,6 +66,37 @@ def _has_partial_metadata(items: list[dict[str, Any]]) -> bool:
 
 def _is_common_stock_code(stock_code: str) -> bool:
     return stock_code.isdigit() and len(stock_code) == 4 and not stock_code.startswith("00")
+
+
+def _looks_like_common_stock_name(name: str) -> bool:
+    upper_name = name.upper()
+    return bool(name) and not any(marker in upper_name for marker in ("-DR", "特別", "特"))
+
+
+def _merge_directory_stock(
+    directory: dict[str, dict[str, Any]],
+    symbol: str,
+    name: str,
+    market: str,
+    industry: str = UNKNOWN_INDUSTRY,
+    price: Decimal | None = None,
+) -> None:
+    if not _is_common_stock_code(symbol) or not _looks_like_common_stock_name(name):
+        return
+    existing = directory.setdefault(symbol, {
+        "name": symbol,
+        "market": UNKNOWN_MARKET,
+        "industry": UNKNOWN_INDUSTRY,
+        "price": None,
+    })
+    if name and existing.get("name") in ("", symbol):
+        existing["name"] = name
+    if market in KNOWN_MARKETS and existing.get("market") not in KNOWN_MARKETS:
+        existing["market"] = market
+    if industry and industry != UNKNOWN_INDUSTRY and existing.get("industry") in ("", UNKNOWN_INDUSTRY):
+        existing["industry"] = industry
+    if price is not None and price > 0 and existing.get("price") is None:
+        existing["price"] = float(price)
 
 
 @dataclass(frozen=True)
@@ -162,34 +195,53 @@ class TdccOpenDataProvider:
         if _directory_cache is not None and _directory_cache[0] > time.monotonic():
             return _directory_cache[1]
         async with httpx.AsyncClient(timeout=20.0) as client:
-            listed_response, otc_response = await asyncio.gather(
+            listed_response, otc_response, emerging_response, otc_profile_response = await asyncio.gather(
                 client.get(TWSE_STOCK_DIRECTORY_URL, headers={"Accept": "application/json"}),
                 client.get(TPEX_STOCK_DIRECTORY_URL, headers={"Accept": "application/json"}),
+                client.get(TPEX_EMERGING_STOCK_DIRECTORY_URL, headers={"Accept": "application/json"}),
+                client.get(TPEX_OTC_COMPANY_PROFILE_URL, headers={"Accept": "application/json"}),
                 return_exceptions=True,
             )
         directory: dict[str, dict[str, Any]] = {}
-        for response, market in ((listed_response, "上市"), (otc_response, "上櫃")):
+        for response, market, symbol_fields, name_fields, price_fields in (
+            (
+                listed_response,
+                LISTED_MARKET,
+                ("Code", "證券代號"),
+                ("Name", "證券名稱"),
+                ("ClosingPrice", "收盤價"),
+            ),
+            (
+                otc_response,
+                OTC_MARKET,
+                ("SecuritiesCompanyCode", "Code"),
+                ("CompanyName", "Name"),
+                ("Close", "收盤價"),
+            ),
+            (
+                emerging_response,
+                UNKNOWN_MARKET,
+                ("SecuritiesCompanyCode", "Code"),
+                ("CompanyName", "Name"),
+                ("LatestPrice", "Average"),
+            ),
+            (
+                otc_profile_response,
+                OTC_MARKET,
+                ("SecuritiesCompanyCode", "Code"),
+                ("CompanyAbbreviation", "CompanyName", "Name"),
+                (),
+            ),
+        ):
             if isinstance(response, Exception) or response.status_code >= 400:
                 continue
             response.raise_for_status()
             rows = response.json()
             for item in rows if isinstance(rows, list) else []:
-                if market == "上市":
-                    symbol = str(item.get("Code") or item.get("證券代號") or "").strip()
-                    name = str(item.get("Name") or item.get("證券名稱") or "").strip()
-                    close_price = _decimal(item.get("ClosingPrice") or item.get("收盤價"))
-                else:
-                    symbol = str(item.get("SecuritiesCompanyCode") or item.get("Code") or "").strip()
-                    name = str(item.get("CompanyName") or item.get("Name") or "").strip()
-                    close_price = _decimal(item.get("Close") or item.get("收盤價"))
-                if not symbol.isdigit() or len(symbol) != 4 or symbol.startswith("00"):
-                    continue
-                if any(marker in name.upper() for marker in ("-DR", "特別", "特")):
-                    continue
-                directory[symbol] = {
-                    "name": name or symbol, "market": market, "industry": "未分類",
-                    "price": float(close_price) if close_price > 0 else None,
-                }
+                symbol = next((str(item.get(field) or "").strip() for field in symbol_fields if item.get(field)), "")
+                name = next((str(item.get(field) or "").strip() for field in name_fields if item.get(field)), "")
+                close_price = next((_decimal(item.get(field)) for field in price_fields if item.get(field)), None)
+                _merge_directory_stock(directory, symbol, name, market, price=close_price)
         _directory_cache = (time.monotonic() + 60, directory)
         return directory
 
