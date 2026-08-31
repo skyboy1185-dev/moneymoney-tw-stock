@@ -1,5 +1,5 @@
 from app.services.indicators import calculate_indicators, generate_macd_signals
-from app.services.mock_market import industry_hotspots, stock_payload
+from app.services.mock_market import find_stock, industry_hotspots, stock_payload
 from app.config import Settings
 
 
@@ -43,6 +43,17 @@ def test_mock_stock_and_industry_payloads_are_complete() -> None:
     hotspots = industry_hotspots()
     assert hotspots
     assert {"industry", "changePercent", "momentum", "leaders"} <= hotspots[0].keys()
+
+
+def test_mock_market_includes_6173_fallback_stock() -> None:
+    stock = find_stock("6173")
+    assert stock is not None
+    assert stock["name"] == "信昌電"
+    payload = stock_payload("6173")
+    assert payload is not None
+    assert payload["meta"]["symbol"] == "6173"
+    assert payload["meta"]["name"] == "信昌電"
+    assert len(payload["prices"]) == len(payload["indicators"]) == 5280
 
 
 def test_railway_postgres_url_uses_psycopg3_driver() -> None:

@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { StockMeta } from "@/lib/types";
-import { findStockInDirectory } from "./stock-directory";
+import {
+  findStockInDirectory,
+  getOfficialStockDirectory,
+  resetStockDirectoryCacheForTests,
+} from "./stock-directory";
 
 const stocks: StockMeta[] = [
   {
@@ -28,6 +32,11 @@ const stocks: StockMeta[] = [
 ];
 
 describe("findStockInDirectory", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    resetStockDirectoryCacheForTests();
+  });
+
   it("resolves an exact Chinese stock name", () => {
     expect(findStockInDirectory(stocks, "台達電")?.symbol).toBe("2308");
   });
@@ -38,5 +47,14 @@ describe("findStockInDirectory", () => {
 
   it("keeps stock-symbol lookup working", () => {
     expect(findStockInDirectory(stocks, "2308")?.name).toBe("台達電");
+  });
+
+  it("keeps 6173 available when official directories fail", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("directory timeout"));
+
+    const directory = await getOfficialStockDirectory();
+
+    expect(findStockInDirectory(directory, "6173")?.name).toBe("信昌電");
+    expect(findStockInDirectory(directory, "信昌")?.symbol).toBe("6173");
   });
 });

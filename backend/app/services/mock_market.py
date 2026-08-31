@@ -44,6 +44,18 @@ EXTRA_STOCKS = [
         "eps": None,
         "marketCap": None,
     },
+    {
+        "symbol": "6173",
+        "name": "信昌電",
+        "industry": "電子零組件",
+        "market": "上櫃",
+        "base": 239,
+        "peRatio": None,
+        "dividendYield": None,
+        "priceToBook": None,
+        "eps": None,
+        "marketCap": None,
+    },
 ]
 
 
