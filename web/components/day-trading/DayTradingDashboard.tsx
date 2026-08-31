@@ -429,7 +429,7 @@ export function DayTradingDashboard() {
     {indexDelayWarning && <div className="automation-banner phase-warmup"><Activity /><div><strong>大盤指數延遲，個股報價足夠，AI 當沖仍運作</strong><span>{indexDelayWarning}</span></div></div>}
     {!indexDelayWarning && formalBlockReason && regime.marketOpen && regime.dataStatus !== "normal" && <div className="data-anomaly-banner"><ShieldAlert /><div><strong>AI 當沖暫停正式訊號</strong><span>{formalBlockReason}</span></div></div>}
     {!formalBlockReason && !regime.degraded && regime.marketOpen && regime.dataStatus !== "normal" && <div className="data-anomaly-banner"><ShieldAlert /><div><strong>行情已延遲 {regime.dataDelaySeconds} 秒</strong><span>目前停止產生新進場訊號，請勿依賴舊報價進行交易；既有持倉仍持續檢查出場風險。</span></div></div>}
-    {(regime.automation.phase === "warmup" || (regime.automation.phase === "scanning" && (regime.supervisor?.warmedSymbolCount ?? 0) === 0)) && <div className="automation-banner phase-warmup"><Activity /><div><strong>多空動能掃描中</strong><span>09:00 開盤即開始多空、量能與大單掃描；09:05 起取得首根完整 5 分 K，通過風控才通知正式買進或放空。</span></div></div>}
+    {(regime.automation.phase === "warmup" || (regime.automation.phase === "scanning" && (regime.supervisor?.warmedSymbolCount ?? 0) === 0)) && <div className="automation-banner phase-warmup"><Activity /><div><strong>多空動能掃描中</strong><span>09:00 開盤即開始多空、量能與大單掃描；09:15 起才通知正式買進或放空。</span></div></div>}
     {regime.automation.phase === "long_only" && <div className="automation-banner phase-long-only"><Activity /><div><strong>12:00 後停止新進場</strong><span>多空都不再新增部位；既有持倉仍依 VWAP、5 分 K、量能、大單與停損停利持續管理。</span></div></div>}
     <section className={`regime-hero day-trading-regime ${regimeTone}`}>
       <div className="regime-light" />
@@ -442,8 +442,8 @@ export function DayTradingDashboard() {
     </section>
 
     <section className="dt-direction-policy">
-      <article className="long"><div><span>多方進場時段</span><strong>09:05～{regime.automation.schedule.longEntryCutoffTime}</strong></div><b>12:00 後不新增</b><p>12:00 前才接受符合風控的做多訊號。既有多單仍可即時停損、停利、減碼；符合隔夜條件時依原規則管理。</p></article>
-      <article className="short"><div><span>空方進場時段</span><strong>09:05～{regime.automation.schedule.shortEntryCutoffTime}</strong></div><b>12:00 後不新增</b><p>12:00 後禁止新增空單；既有空單仍持續停損與停利監控，並於收盤前完成回補。</p></article>
+      <article className="long"><div><span>多方進場時段</span><strong>{regime.automation.schedule.signalStartTime}～{regime.automation.schedule.longEntryCutoffTime}</strong></div><b>12:00 後不新增</b><p>12:00 前才接受符合風控的做多訊號。既有多單仍可即時停損、停利、減碼；符合隔夜條件時依原規則管理。</p></article>
+      <article className="short"><div><span>空方進場時段</span><strong>{regime.automation.schedule.signalStartTime}～{regime.automation.schedule.shortEntryCutoffTime}</strong></div><b>12:00 後不新增</b><p>12:00 後禁止新增空單；既有空單仍持續停損與停利監控，並於收盤前完成回補。</p></article>
       <article className="overnight"><div><span>隔日多單規則</span><strong>最多持有至下一交易日</strong></div><b>只開放多方</b><p>隔夜期間停損照常有效；下一交易日若未先觸發停損或目標價，收盤前自動賣出，不允許空單轉隔夜。</p></article>
     </section>
 

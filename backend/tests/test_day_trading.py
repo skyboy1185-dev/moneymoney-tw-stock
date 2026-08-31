@@ -365,19 +365,19 @@ def test_opening_schedule_and_warmup_use_taipei_time() -> None:
     assert "09:00 已開始多空動能掃描" in at_open["statusMessage"]
     assert not at_open["formalSignalsAllowed"]
     before_signal_start = trading_session_state(
-        config, datetime(2026, 7, 21, 9, 4, tzinfo=TAIPEI),
+        config, datetime(2026, 7, 21, 9, 14, tzinfo=TAIPEI),
         quote_samples=3, infrastructure_ok=True,
     )
     assert before_signal_start["phase"] == "warmup"
     assert not before_signal_start["formalSignalsAllowed"]
     after_warmup = trading_session_state(
-        config, datetime(2026, 7, 21, 9, 5, tzinfo=TAIPEI),
+        config, datetime(2026, 7, 21, 9, 15, tzinfo=TAIPEI),
         quote_samples=3, infrastructure_ok=True,
     )
     assert after_warmup["phase"] == "scanning"
     assert after_warmup["robotStatus"] == "5 分 K 強勢股掃描中"
     assert after_warmup["formalSignalsAllowed"]
-    assert after_warmup["schedule"]["signalStartTime"] == "09:05"
+    assert after_warmup["schedule"]["signalStartTime"] == "09:15"
 
 
 def test_zero_minute_warmup_still_requires_enough_ticks() -> None:

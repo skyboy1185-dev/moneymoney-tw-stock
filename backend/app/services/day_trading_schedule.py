@@ -17,7 +17,7 @@ MIN_OFFICIAL_HEALTH_SCORE = 65
 MIN_DAY_TRADING_VOLUME_SHARES = 1_000_000
 MIN_DAY_TRADING_TURNOVER = 100_000_000
 MIN_LIQUIDITY_PROGRESS = 0.10
-DAY_TRADING_SIGNAL_START = "09:05"
+DAY_TRADING_SIGNAL_START = "09:15"
 # All new intraday entries stop at noon. Existing positions keep running
 # stop-loss, take-profit, reduction, cover and forced-exit workflows afterward.
 DAY_TRADING_ENTRY_CUTOFF = "12:00"
