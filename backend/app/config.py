@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     app_runtime_mode: Literal["auto", "local", "railway"] = "auto"
     api_prefix: str = "/api/v1"
     database_url: str = "postgresql+psycopg://moneymoney:moneymoney@localhost:5432/moneymoney"
+    expected_database_host: str = ""
     cors_origins: str = "http://localhost:3000"
     mock_data_enabled: bool = True
     redis_url: str | None = None

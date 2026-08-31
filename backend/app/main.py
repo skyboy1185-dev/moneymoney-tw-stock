@@ -4,10 +4,16 @@ import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text
 
 from .config import get_settings
-from .database import SessionLocal, cleanup_expired_operational_data, create_tables
+from .database import (
+    SessionLocal,
+    cleanup_expired_operational_data,
+    create_tables,
+    database_connection_info,
+    database_runtime_status,
+    log_database_target,
+)
 from .routers import (
     adaptive_electronic,
     ai_stock,
@@ -43,6 +49,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    log_database_target(settings.expected_database_host)
     create_tables()
     try:
         cleanup_expired_operational_data(retention_days=3, intraday_snapshot_retention_hours=2)
@@ -115,17 +122,24 @@ def root() -> dict:
 @app.get(f"{settings.api_prefix}/health")
 def health() -> dict:
     database_status = "connected"
+    database_details: dict[str, object] = database_connection_info(settings.expected_database_host)
     try:
         with SessionLocal() as session:
-            session.execute(text("SELECT 1"))
-    except Exception:
+            database_details = database_runtime_status(session, settings.expected_database_host)
+    except Exception as exc:
         database_status = "unavailable"
+        database_details = {
+            **database_details,
+            "connected": False,
+            "errorType": type(exc).__name__,
+        }
     return {
         "status": "ok" if database_status == "connected" else "degraded",
         "app": settings.app_name,
         "environment": settings.app_env,
         "runtime_mode": settings.runtime_mode,
         "database": database_status,
+        "databaseDetails": database_details,
         "mock_data": settings.mock_data_enabled,
         "checked_at": datetime.now(UTC),
     }

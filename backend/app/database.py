@@ -1,8 +1,10 @@
 from collections.abc import Generator
 from datetime import date, timedelta
 import logging
+from pathlib import Path
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -15,6 +17,12 @@ class Base(DeclarativeBase):
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+OPERATIONAL_TABLES = (
+    "chip_flow_snapshots",
+    "day_trading_signals",
+    "day_trading_candidate_snapshots",
+    "limit_up_ai_snapshots",
+)
 connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
 pool_options = {} if settings.database_url.startswith("sqlite") else {
     # The dashboard has several independent polling panels. Keep enough steady
@@ -63,6 +71,85 @@ def get_db() -> Generator[Session, None, None]:
         yield session
     finally:
         session.close()
+
+
+def database_connection_info(expected_host: str = "") -> dict[str, object]:
+    """Return non-secret database target metadata for logs and health checks."""
+    url = make_url(settings.database_url)
+    backend = url.get_backend_name()
+    host = url.host or ("local-file" if backend == "sqlite" else "")
+    database = url.database or ""
+    expected = expected_host.strip()
+    return {
+        "dialect": backend,
+        "driver": url.get_driver_name(),
+        "host": host,
+        "port": url.port,
+        "database": Path(database).name if backend == "sqlite" else database,
+        "expectedHost": expected or None,
+        "matchesExpectedHost": (host == expected) if expected else None,
+    }
+
+
+def log_database_target(expected_host: str = "") -> None:
+    info = database_connection_info(expected_host)
+    logger.warning(
+        "database target: dialect=%s driver=%s host=%s port=%s database=%s expectedHost=%s matchesExpectedHost=%s",
+        info["dialect"],
+        info["driver"],
+        info["host"],
+        info["port"],
+        info["database"],
+        info["expectedHost"],
+        info["matchesExpectedHost"],
+    )
+
+
+def database_runtime_status(session: Session, expected_host: str = "") -> dict[str, object]:
+    """Return lightweight database health and storage metadata without secrets."""
+    session.execute(text("SELECT 1"))
+    info = database_connection_info(expected_host)
+    status: dict[str, object] = {
+        **info,
+        "connected": True,
+        "databaseSizeMB": None,
+        "operationalTables": [],
+    }
+    if engine.dialect.name == "postgresql":
+        size_bytes = session.execute(
+            text("SELECT pg_database_size(current_database())")
+        ).scalar_one()
+        status["databaseSizeMB"] = round(float(size_bytes) / 1024 / 1024, 3)
+        table_names = "', '".join(OPERATIONAL_TABLES)
+        rows = session.execute(text(
+            "SELECT c.relname, pg_total_relation_size(c.oid), "
+            "GREATEST(COALESCE(s.n_live_tup, c.reltuples), 0) "
+            "FROM pg_class c "
+            "LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid "
+            f"WHERE c.relkind = 'r' AND c.relname IN ('{table_names}') "
+            "ORDER BY c.relname"
+        )).all()
+        status["operationalTables"] = [
+            {
+                "name": name,
+                "estimatedRows": int(estimated_rows),
+                "sizeMB": round(float(size_bytes) / 1024 / 1024, 3),
+            }
+            for name, size_bytes, estimated_rows in rows
+        ]
+    elif engine.dialect.name == "sqlite":
+        database = make_url(settings.database_url).database
+        if database and Path(database).exists():
+            status["databaseSizeMB"] = round(Path(database).stat().st_size / 1024 / 1024, 3)
+        tables = []
+        for table in OPERATIONAL_TABLES:
+            try:
+                count = session.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar_one()
+            except SQLAlchemyError:
+                continue
+            tables.append({"name": table, "estimatedRows": int(count), "sizeMB": None})
+        status["operationalTables"] = tables
+    return status
 
 
 def create_tables() -> None:
