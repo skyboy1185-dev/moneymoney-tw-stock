@@ -158,8 +158,23 @@ def create_tables() -> None:
                 "ADD COLUMN IF NOT EXISTS max_stop_distance_pct NUMERIC(7,4) NOT NULL DEFAULT 1.0"
             ))
             connection.execute(text(
-                "INSERT INTO super_ai_daytrade_settings (id, updated_at) "
-                "VALUES (1, CURRENT_TIMESTAMP) ON CONFLICT (id) DO NOTHING"
+                "INSERT INTO super_ai_daytrade_settings ("
+                "id, system_name, enabled, trading_mode, max_capital, "
+                "available_capital, risk_per_trade_pct, daily_max_loss_pct, "
+                "weekly_drawdown_pct, min_ai_score_to_trade, min_ai_score_to_watch, "
+                "min_risk_reward, max_positions, max_position_pct, "
+                "max_stop_distance_pct, commission_discount, email_enabled, "
+                "email_buy_enabled, email_sell_enabled, email_add_enabled, "
+                "email_stop_loss_enabled, email_take_profit_enabled, "
+                "email_risk_enabled, email_daily_summary_enabled, email_error_enabled, "
+                "stop_new_trades, consecutive_stop_losses, settings_version, "
+                "updated_by, updated_at"
+                ") VALUES ("
+                "1, 'Super AI Daytrade', TRUE, 'PAPER', 5000000, "
+                "5000000, 0.25, 1.0, 3.0, 80, 70, 2, 5, 20, "
+                "1.0, 0.2, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, "
+                "FALSE, 0, 1, 'system', CURRENT_TIMESTAMP"
+                ") ON CONFLICT (id) DO NOTHING"
             ))
     # Database synchronization can merge two independently created portfolio
     # batches. Quarantine overflow before enforcing one open row per symbol.
