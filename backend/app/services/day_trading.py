@@ -1266,7 +1266,6 @@ class MockDayTradingEngine:
             quote for quote in universe_pool_quotes
             if quote.source == "TWSE MIS"
             and quote.is_realtime
-            and _quote_delay_seconds(now, quote) <= DEGRADED_INDEX_DELAY_SECONDS
         ]
         quote_coverage_count = len(fresh_pool_quotes)
         quote_coverage_ratio = quote_coverage_count / max(1, candidate_universe_count)
