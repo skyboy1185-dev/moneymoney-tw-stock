@@ -26,6 +26,7 @@ from app.services.chip_flow_alerts import (
     ChipFlowAlertRules,
     ElectronicChipFlowAlertMonitor,
     _momentum_rank_score,
+    analyze_large_order_ranking,
     analyze_large_order_momentum,
     analyze_large_order_short_momentum,
     build_market_order_pulse,
@@ -311,6 +312,82 @@ def test_large_order_short_surge_requires_persistent_net_selling() -> None:
     assert result is not None
     assert result["recentNetSellLots"] == 25
     assert result["negativeSteps"] == 3
+
+
+def test_large_order_ranking_assigns_stock_to_net_buy_side_only() -> None:
+    rows = [
+        alert_snapshot(0, buy_shares=30_000, sell_shares=10_000),
+        alert_snapshot(5, buy_shares=80_000, sell_shares=30_000),
+    ]
+
+    long_result = analyze_large_order_ranking(
+        ALERT_STOCK,
+        rows,
+        ChipFlowAlertRules(),
+        direction="long",
+        as_of=datetime(2026, 7, 29, 10, 6, tzinfo=TAIPEI),
+    )
+    short_result = analyze_large_order_ranking(
+        ALERT_STOCK,
+        rows,
+        ChipFlowAlertRules(),
+        direction="short",
+        as_of=datetime(2026, 7, 29, 10, 6, tzinfo=TAIPEI),
+    )
+
+    assert long_result is not None
+    assert long_result["rankingFillReason"] == "net"
+    assert long_result["sessionNetBuyLots"] == 50
+    assert short_result is None
+
+
+def test_large_order_ranking_assigns_stock_to_net_sell_side_only() -> None:
+    rows = [
+        alert_snapshot(0, buy_shares=10_000, sell_shares=30_000),
+        alert_snapshot(5, buy_shares=30_000, sell_shares=80_000),
+    ]
+
+    long_result = analyze_large_order_ranking(
+        ALERT_STOCK,
+        rows,
+        ChipFlowAlertRules(),
+        direction="long",
+        as_of=datetime(2026, 7, 29, 10, 6, tzinfo=TAIPEI),
+    )
+    short_result = analyze_large_order_ranking(
+        ALERT_STOCK,
+        rows,
+        ChipFlowAlertRules(),
+        direction="short",
+        as_of=datetime(2026, 7, 29, 10, 6, tzinfo=TAIPEI),
+    )
+
+    assert long_result is None
+    assert short_result is not None
+    assert short_result["rankingFillReason"] == "net"
+    assert short_result["sessionNetSellLots"] == 50
+
+
+def test_large_order_ranking_rejects_offsetting_two_way_flow() -> None:
+    rows = [
+        alert_snapshot(0, buy_shares=40_000, sell_shares=38_000),
+        alert_snapshot(5, buy_shares=100_000, sell_shares=90_000),
+    ]
+
+    assert analyze_large_order_ranking(
+        ALERT_STOCK,
+        rows,
+        ChipFlowAlertRules(),
+        direction="long",
+        as_of=datetime(2026, 7, 29, 10, 6, tzinfo=TAIPEI),
+    ) is None
+    assert analyze_large_order_ranking(
+        ALERT_STOCK,
+        rows,
+        ChipFlowAlertRules(),
+        direction="short",
+        as_of=datetime(2026, 7, 29, 10, 6, tzinfo=TAIPEI),
+    ) is None
 
 
 def test_large_order_threshold_adapts_to_gross_flow_and_exposes_freshness() -> None:
@@ -794,18 +871,12 @@ def test_payload_keeps_long_top_ten_rankings_when_no_strict_alerts() -> None:
     )
 
     def rows(force_lots: int) -> list[SimpleNamespace]:
+        buy_shares = 20_000 + force_lots * 1_000
+        sell_shares = 20_000
         return [
-            alert_snapshot(0, buy_shares=20_000, sell_shares=20_000),
-            alert_snapshot(
-                2,
-                buy_shares=20_000 + force_lots * 500,
-                sell_shares=20_000 + force_lots * 470,
-            ),
-            alert_snapshot(
-                5,
-                buy_shares=20_000 + force_lots * 1_000,
-                sell_shares=20_000 + force_lots * 940,
-            ),
+            alert_snapshot(0, buy_shares=buy_shares, sell_shares=sell_shares),
+            alert_snapshot(2, buy_shares=buy_shares, sell_shares=sell_shares),
+            alert_snapshot(5, buy_shares=buy_shares, sell_shares=sell_shares),
         ]
 
     class ServiceStub:
@@ -979,18 +1050,12 @@ def test_payload_keeps_short_top_ten_rankings_when_no_strict_alerts() -> None:
     )
 
     def rows(force_lots: int) -> list[SimpleNamespace]:
+        buy_shares = 20_000
+        sell_shares = 20_000 + force_lots * 1_000
         return [
-            alert_snapshot(0, buy_shares=20_000, sell_shares=20_000),
-            alert_snapshot(
-                2,
-                buy_shares=20_000 + force_lots * 470,
-                sell_shares=20_000 + force_lots * 500,
-            ),
-            alert_snapshot(
-                5,
-                buy_shares=20_000 + force_lots * 940,
-                sell_shares=20_000 + force_lots * 1_000,
-            ),
+            alert_snapshot(0, buy_shares=buy_shares, sell_shares=sell_shares),
+            alert_snapshot(2, buy_shares=buy_shares, sell_shares=sell_shares),
+            alert_snapshot(5, buy_shares=buy_shares, sell_shares=sell_shares),
         ]
 
     class ServiceStub:

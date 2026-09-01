@@ -24,62 +24,82 @@ function text(value: unknown): string {
   return typeof value === "string" && value.trim() ? value : "";
 }
 
+function numeric(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 function record(value: unknown): LooseRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? value as LooseRecord : {};
 }
 
 function formatTime(value?: string | null): string {
-  if (!value) return "尚無";
+  if (!value) return "未更新";
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
   return parsed.toLocaleTimeString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" });
+}
+
+function robotLabel(id: RobotTarget): string {
+  if (id === "day-trading") return "AI 當沖";
+  if (id === "limit-up-ai") return "漲停機器人";
+  return "超強 AI 當沖";
 }
 
 export function dayTradingHealth(payload: unknown, error?: string): RobotHealth {
   const body = record(payload);
   const automation = record(body.automation);
   const supervisor = record(body.supervisor);
-  const session = Object.keys(record(supervisor.session)).length ? record(supervisor.session) : automation;
+  const supervisorSession = record(supervisor.session);
+  const session = Object.keys(supervisorSession).length ? supervisorSession : automation;
   const phase = text(session.phase);
-  const statusMessage = text(session.statusMessage) || text(body.recommendationSummary) || text(body.dataNotice);
   const supervisorStatus = text(supervisor.status);
   const dataStatus = text(body.dataStatus);
+  const dataQualityMode = text(body.dataQualityMode);
+  const formalBlockReason = text(body.formalBlockReason);
+  const statusMessage = text(session.statusMessage) || text(body.recommendationSummary) || text(body.dataNotice);
+  const quoteCoverageCount = numeric(body.quoteCoverageCount) ?? numeric(supervisor.quoteCoverageCount);
+  const candidateUniverseCount = numeric(body.candidateUniverseCount) ?? numeric(supervisor.candidateUniverseCount);
   const latest = text(session.localTime) || text(body.updatedAt);
-  const badDataStatus = dataStatus === "disconnected" || dataStatus === "source_error" || dataStatus === "severe_delay";
   const runningSupervisor = supervisorStatus === "running";
-  const activePhase = ["warmup", "scanning"].includes(phase);
+  const activePhase = ["warmup", "scanning", "long_only"].includes(phase);
   const completedPhase = ["summary", "entry_closed", "closing", "non_trading"].includes(phase);
+  const badDataStatus = dataStatus === "disconnected" || dataStatus === "source_error" || dataStatus === "severe_delay";
+  const degradedButUsable = dataQualityMode === "index_delay";
+
   let tone: HealthTone = "warming";
-  let status = "等待啟動";
+  let status = "待啟動";
 
   if (error) {
     tone = "error";
     status = "連線異常";
   } else if (runningSupervisor && completedPhase) {
     tone = "paused";
-    status = phase === "summary"
-      ? "今日掃描完成"
-      : phase === "entry_closed" || phase === "closing"
-        ? "停止新進場"
-        : "盤後待機";
+    status = phase === "summary" ? "盤後完成" : phase === "entry_closed" || phase === "closing" ? "停止進場" : "非交易時段";
+  } else if (degradedButUsable && activePhase) {
+    tone = "warming";
+    status = "資料降級";
   } else if (badDataStatus && activePhase) {
     tone = "error";
     status = "資料異常";
   } else if (badDataStatus && !runningSupervisor) {
     tone = "error";
     status = "資料異常";
-  } else if (runningSupervisor || ["warmup", "scanning", "entry_closed", "closing", "summary"].includes(phase)) {
-    tone = phase === "scanning" ? "ok" : "warming";
-    status = phase === "scanning" ? "盤中掃描" : phase === "entry_closed" ? "停止新進場" : "排程運作";
+  } else if (runningSupervisor || ["warmup", "scanning", "long_only", "entry_closed", "closing", "summary"].includes(phase)) {
+    tone = phase === "scanning" || phase === "long_only" ? "ok" : "warming";
+    status = phase === "scanning" || phase === "long_only" ? "掃描中" : phase === "entry_closed" ? "停止進場" : "準備中";
   }
+
+  const coverageDetail = quoteCoverageCount !== null && candidateUniverseCount !== null
+    ? `報價覆蓋 ${quoteCoverageCount}/${candidateUniverseCount}`
+    : "";
 
   return {
     id: "day-trading",
-    title: "當沖機器人",
-    subtitle: "多空正式訊號",
+    title: "AI 當沖多空",
+    subtitle: "盤中訊號 / 持倉監控",
     tone,
     status,
-    detail: error || statusMessage || "讀取排程與資料新鮮度中",
+    detail: error || formalBlockReason || (badDataStatus ? coverageDetail : "") || statusMessage || coverageDetail || "等待盤中資料更新",
     updatedAt: latest,
   };
 }
@@ -90,14 +110,14 @@ function limitUpHealth(payload: unknown, error?: string): RobotHealth {
   const lastError = text(body.lastError);
   const marketSessionActive = body.marketSessionActive === true;
   let tone: HealthTone = "warming";
-  let status = "等待盤中";
+  let status = "待啟動";
 
   if (error || lastError) {
     tone = "error";
     status = "偵測異常";
   } else if (statusValue === "running") {
     tone = marketSessionActive ? "ok" : "warming";
-    status = marketSessionActive ? "背景偵測中" : "保留最後結果";
+    status = marketSessionActive ? "偵測中" : "盤後待命";
   } else if (statusValue) {
     tone = "paused";
     status = statusValue;
@@ -106,10 +126,10 @@ function limitUpHealth(payload: unknown, error?: string): RobotHealth {
   return {
     id: "limit-up-ai",
     title: "漲停機器人",
-    subtitle: "飆股 / 近漲停",
+    subtitle: "鎖漲停 / 雷達通知",
     tone,
     status,
-    detail: error || lastError || (marketSessionActive ? "盤中每 15 秒掃描候選" : "非盤中，等待下一次市場時段"),
+    detail: error || lastError || (marketSessionActive ? "盤中每 15 秒自動偵測" : "非盤中，保留最後結果"),
     updatedAt: text(body.lastSuccessAt) || text(body.lastRunAt) || null,
   };
 }
@@ -123,23 +143,23 @@ function superAiHealth(payload: unknown, error?: string): RobotHealth {
   const stopReason = text(risk.stopReason) || text(settings.stopReason);
   const stopNewTrades = risk.stopNewTrades === true || settings.stopNewTrades === true;
   let tone: HealthTone = running ? "ok" : "paused";
-  let status = running ? "模型運作中" : "未啟動";
+  let status = running ? "運作中" : "暫停";
 
   if (error || lastError) {
     tone = "error";
     status = "偵測異常";
   } else if (stopNewTrades) {
     tone = "paused";
-    status = "風控暫停新單";
+    status = "風控暫停";
   }
 
   return {
     id: "adaptive-electronic",
-    title: "超強 AI 當沖機器人",
+    title: "超強 AI 當沖",
     subtitle: "電子股 AI 風控",
     tone,
     status,
-    detail: error || lastError || stopReason || text(record(body.marketState).label) || "監控候選、持倉與風控狀態",
+    detail: error || lastError || stopReason || text(record(body.marketState).label) || "依風控與 AI 評分自動調整",
     updatedAt: text(body.lastSuccessAt) || text(body.lastRunAt) || null,
   };
 }
@@ -180,13 +200,13 @@ export function RobotHealthPanel({
     setItems([
       day.status === "fulfilled"
         ? dayTradingHealth(day.value)
-        : dayTradingHealth(null, day.reason instanceof Error ? day.reason.message : "當沖狀態讀取失敗"),
+        : dayTradingHealth(null, day.reason instanceof Error ? day.reason.message : "AI 當沖狀態讀取失敗"),
       limitUp.status === "fulfilled"
         ? limitUpHealth(limitUp.value)
-        : limitUpHealth(null, limitUp.reason instanceof Error ? limitUp.reason.message : "漲停狀態讀取失敗"),
+        : limitUpHealth(null, limitUp.reason instanceof Error ? limitUp.reason.message : "漲停機器人狀態讀取失敗"),
       superAi.status === "fulfilled"
         ? superAiHealth(superAi.value)
-        : superAiHealth(null, superAi.reason instanceof Error ? superAi.reason.message : "超強 AI 狀態讀取失敗"),
+        : superAiHealth(null, superAi.reason instanceof Error ? superAi.reason.message : "超強 AI 當沖狀態讀取失敗"),
     ]);
     setLastChecked(new Date().toISOString());
     setLoading(false);
@@ -198,7 +218,12 @@ export function RobotHealthPanel({
     return () => window.clearInterval(timer);
   }, [load]);
 
-  return <section className="robot-health-strip" aria-label="機器人即時狀態">
+  const errorSummary = items
+    .filter((item) => item.tone === "error")
+    .map((item) => `${robotLabel(item.id)}：${item.detail || item.status}`)
+    .join("；");
+
+  return <section className="robot-health-strip" aria-label="機器人狀態總覽">
     <div className="robot-health-heading">
       <strong><Bot size={15} />機器人狀態</strong>
       <span>{loading ? "更新中" : `最後檢查 ${formatTime(lastChecked)}`}</span>
@@ -225,8 +250,8 @@ export function RobotHealthPanel({
     <button className="robot-health-refresh" type="button" onClick={() => void load()} disabled={loading} aria-label="重新整理機器人狀態">
       {loading ? <span className="spinner small" /> : <RefreshCw size={13} />}
     </button>
-    {items.some((item) => item.tone === "error") && <div className="robot-health-alert" role="status">
-      <ShieldAlert size={13} />至少一個機器人狀態異常；點卡片進入該頁看詳細錯誤。
+    {errorSummary && <div className="robot-health-alert" role="status">
+      <ShieldAlert size={13} />{errorSummary}
     </div>}
   </section>;
 }

@@ -4,7 +4,7 @@ import asyncio
 from contextlib import suppress
 from datetime import UTC, date, datetime, timedelta
 import logging
-from typing import Any
+from typing import Any, Iterable
 
 from sqlalchemy import func, select, text
 
@@ -49,9 +49,32 @@ AUTOMATION_SELECTION_CACHE_KEY = "automation-selection"
 AUTOMATION_RANKED_CANDIDATES_CACHE_KEY = "automation-ranked-candidates"
 BASELINE_QUOTE_REFRESH_SECONDS = 30
 PRIORITY_QUOTE_REFRESH_SECONDS = 5
+BASELINE_QUOTE_BATCH_SIZE = 80
 ACTIVE_QUOTE_PHASES = frozenset({
     "loading", "health_check", "warmup", "scanning", "long_only", "entry_closed", "closing",
 })
+
+
+def _dedupe_stocks_by_symbol(stocks: Iterable[Any]) -> tuple[Any, ...]:
+    deduped: dict[str, Any] = {}
+    for stock in stocks:
+        symbol = str(getattr(stock, "symbol", "") or "")
+        if symbol and symbol not in deduped:
+            deduped[symbol] = stock
+    return tuple(deduped.values())
+
+
+def _quote_requests_for_stocks(stocks: Iterable[Any]) -> list[StockQuoteRequest]:
+    return [
+        StockQuoteRequest(
+            symbol=str(stock.symbol),
+            name=str(stock.name),
+            market=str(stock.market),
+        )
+        for stock in _dedupe_stocks_by_symbol(stocks)
+        if not day_trading_restrictions.is_disposed(str(stock.symbol))
+        and day_trading_restrictions.market_restrictions_available(str(stock.market))
+    ]
 
 
 class DayTradingAutomationSupervisor:
@@ -75,6 +98,7 @@ class DayTradingAutomationSupervisor:
         self._quote_coverage_count = 0
         self._warmed_symbol_count = 0
         self._universe_signature: tuple[str, ...] = ()
+        self._baseline_quote_cursor = 0
         self._state: dict[str, Any] = {"status": "stopped"}
 
     def _config(self) -> TradingScheduleConfig:
@@ -103,6 +127,20 @@ class DayTradingAutomationSupervisor:
         except Exception:
             logger.exception("Failed to enrich day-trading large-order confirmation")
             return candidates
+
+    def _baseline_quote_slice(self, stocks: tuple[Any, ...]) -> tuple[Any, ...]:
+        if len(stocks) <= BASELINE_QUOTE_BATCH_SIZE:
+            self._baseline_quote_cursor = 0
+            return stocks
+        start = self._baseline_quote_cursor % len(stocks)
+        end = start + BASELINE_QUOTE_BATCH_SIZE
+        selected = (
+            stocks[start:end]
+            if end <= len(stocks)
+            else (*stocks[start:], *stocks[:end - len(stocks)])
+        )
+        self._baseline_quote_cursor = end % len(stocks)
+        return tuple(selected)
 
     async def _send_recommendations_and_track(
         self,
@@ -240,7 +278,9 @@ class DayTradingAutomationSupervisor:
         while True:
             now = datetime.now(UTC)
             config = self._config()
-            momentum_universe = electronic_chip_flow_alert_monitor.stock_universe_snapshot()
+            momentum_universe = _dedupe_stocks_by_symbol(
+                electronic_chip_flow_alert_monitor.stock_universe_snapshot()
+            )
             day_trading_engine.set_stock_universe(momentum_universe)
             universe_signature = day_trading_engine.stock_universe_symbols
             if universe_signature != self._universe_signature:
@@ -309,24 +349,22 @@ class DayTradingAutomationSupervisor:
             quote_refresh_due = baseline_quote_due or priority_quote_due
             if quote_refresh_due:
                 try:
-                    selected_stocks = (
-                        momentum_universe
-                        if baseline_quote_due
-                        else tuple(
-                            stock for stock in momentum_universe
-                            if stock.symbol in priority_symbols
-                        )
+                    priority_stocks = tuple(
+                        stock for stock in momentum_universe
+                        if stock.symbol in priority_symbols
                     )
-                    quote_requests = [
-                        StockQuoteRequest(
-                            symbol=stock.symbol,
-                            name=stock.name,
-                            market=stock.market,
+                    if baseline_quote_due:
+                        baseline_pool = tuple(
+                            stock for stock in momentum_universe
+                            if stock.symbol not in priority_symbols
                         )
-                        for stock in selected_stocks
-                        if not day_trading_restrictions.is_disposed(stock.symbol)
-                        and day_trading_restrictions.market_restrictions_available(stock.market)
-                    ]
+                        selected_stocks = _dedupe_stocks_by_symbol((
+                            *priority_stocks,
+                            *self._baseline_quote_slice(baseline_pool),
+                        ))
+                    else:
+                        selected_stocks = priority_stocks
+                    quote_requests = _quote_requests_for_stocks(selected_stocks)
                     quote_requests.append(StockQuoteRequest(
                         symbol="t00",
                         name="加權指數",

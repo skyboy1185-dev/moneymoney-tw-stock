@@ -20,6 +20,17 @@ function withDisplayRanks(alerts: ElectronicChipFlowAlert[]): ElectronicChipFlow
   });
 }
 
+function numeric(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function matchesNetDirection(alert: ElectronicChipFlowAlert, direction: "long" | "short"): boolean {
+  if (alert.largeOrderOffsetting) return false;
+  const sessionNet = numeric(alert.sessionNetBuyLots) - numeric(alert.sessionNetSellLots);
+  const netLots = sessionNet !== 0 ? sessionNet : numeric(alert.largeNetLots);
+  return direction === "short" ? netLots < 0 : netLots > 0;
+}
+
 export function selectLargeOrderRankings(
   data: ElectronicChipFlowAlertsResponse | null | undefined,
   direction: "long" | "short",
@@ -29,12 +40,12 @@ export function selectLargeOrderRankings(
     const rankings = Array.isArray(data.shortRankings)
       ? data.shortRankings
       : Array.isArray(data.shortAlerts) ? data.shortAlerts : [];
-    return withDisplayRanks(rankings);
+    return withDisplayRanks(rankings.filter((alert) => matchesNetDirection(alert, "short")));
   }
   const rankings = Array.isArray(data.longRankings)
     ? data.longRankings
     : Array.isArray(data.alerts) ? data.alerts : [];
-  return withDisplayRanks(rankings);
+  return withDisplayRanks(rankings.filter((alert) => matchesNetDirection(alert, "long")));
 }
 
 function rankMap(alerts: ElectronicChipFlowAlert[]): Map<string, ElectronicChipFlowAlert> {

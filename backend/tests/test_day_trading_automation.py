@@ -21,7 +21,32 @@ class FakeSession:
 
 def test_web_entry_is_persisted_when_line_delivery_fails(monkeypatch: Any) -> None:
     events: list[str] = []
-    recommendation = {"id": "2330-long", "symbol": "2330"}
+    recommendation = {
+        "id": "2330-long",
+        "symbol": "2330",
+        "direction": "long",
+        "status": "confirmed",
+        "action": "buy",
+        "expiresAt": (automation_module.datetime.now(automation_module.UTC) + automation_module.timedelta(minutes=5)).isoformat(),
+        "isOfficialRecommendation": True,
+        "momentumUniverseMember": True,
+        "dataStatus": "normal",
+        "dataMode": "official",
+        "quoteIsRealtime": True,
+        "confidenceScore": 90,
+        "confirmationScore": 90,
+        "healthScore": 90,
+        "riskRewardRatio": 2,
+        "spreadPercentage": 0.1,
+        "volume": automation_module.TradingScheduleConfig().minimum_volume,
+        "turnover": automation_module.TradingScheduleConfig().minimum_turnover,
+        "stopDistancePercent": 1,
+        "largeOrderDataAvailable": True,
+        "largeOrderContinuousBuy": True,
+        "largeOrderContinuousSell": False,
+        "tradingEligible": True,
+        "marketAlignment": 80,
+    }
     monkeypatch.setattr(automation_module, "SessionLocal", lambda: FakeSession(events))
     monkeypatch.setattr(
         automation_module.day_trading_restrictions,
@@ -31,12 +56,12 @@ def test_web_entry_is_persisted_when_line_delivery_fails(monkeypatch: Any) -> No
     monkeypatch.setattr(
         automation_module,
         "record_official_recommendations",
-        lambda _db, _items: events.append("web-entry"),
+        lambda _db, _items, **_kwargs: events.append("web-entry"),
     )
     monkeypatch.setattr(
         automation_module,
         "ensure_positions_for_official_recommendations",
-        lambda _db, _items: [],
+        lambda _db, _items, **_kwargs: [],
     )
 
     async def fail_line(_items: list[dict[str, Any]]) -> int:
@@ -52,6 +77,9 @@ def test_web_entry_is_persisted_when_line_delivery_fails(monkeypatch: Any) -> No
     sent = asyncio.run(
         automation_module.DayTradingAutomationSupervisor()._send_recommendations_and_track(
             [recommendation],
+            automation_module.TradingScheduleConfig(),
+            {"formalSignalsAllowed": True, "formalLongSignalsAllowed": True, "phase": "scanning", "statusMessage": ""},
+            automation_module.datetime.now(automation_module.UTC),
         )
     )
 
@@ -102,3 +130,41 @@ def test_web_exit_is_persisted_before_line_delivery(monkeypatch: Any) -> None:
 
     assert (evaluated, sent) == (1, 0)
     assert events == ["commit", "web-exit", "commit", "line-exit"]
+
+
+def test_quote_requests_are_deduped_before_refresh(monkeypatch: Any) -> None:
+    monkeypatch.setattr(
+        automation_module.day_trading_restrictions,
+        "is_disposed",
+        lambda _symbol: False,
+    )
+    monkeypatch.setattr(
+        automation_module.day_trading_restrictions,
+        "market_restrictions_available",
+        lambda _market: True,
+    )
+    stocks = [
+        SimpleNamespace(symbol="2330", name="台積電", market="上市"),
+        SimpleNamespace(symbol="2330", name="台積電 duplicate", market="上市"),
+        SimpleNamespace(symbol="2354", name="鴻準", market="上市"),
+    ]
+
+    requests = automation_module._quote_requests_for_stocks(stocks)
+
+    assert [request.symbol for request in requests] == ["2330", "2354"]
+
+
+def test_baseline_quote_slice_rotates_without_refreshing_full_universe() -> None:
+    supervisor = automation_module.DayTradingAutomationSupervisor()
+    stocks = tuple(
+        SimpleNamespace(symbol=str(1000 + index), name=f"Stock {index}", market="上市")
+        for index in range(automation_module.BASELINE_QUOTE_BATCH_SIZE + 5)
+    )
+
+    first = supervisor._baseline_quote_slice(stocks)
+    second = supervisor._baseline_quote_slice(stocks)
+
+    assert len(first) == automation_module.BASELINE_QUOTE_BATCH_SIZE
+    assert len(second) == automation_module.BASELINE_QUOTE_BATCH_SIZE
+    assert first[0].symbol == "1000"
+    assert second[0].symbol == str(1000 + automation_module.BASELINE_QUOTE_BATCH_SIZE)

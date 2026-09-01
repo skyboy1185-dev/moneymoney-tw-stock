@@ -720,10 +720,13 @@ def analyze_large_order_ranking(
     session_net_lots = round(latest_snapshot.large_net_shares / 1_000, 2)
     session_net_buy_lots = max(0.0, session_net_lots)
     session_net_sell_lots = max(0.0, -session_net_lots)
+    if short_side:
+        if session_net_sell_lots <= 0:
+            return None
+    elif session_net_buy_lots <= 0:
+        return None
     session_side_net_lots = session_net_sell_lots if short_side else session_net_buy_lots
     session_side_gross_lots = session_sell_lots if short_side else session_buy_lots
-    if session_side_net_lots <= 0 and session_side_gross_lots <= 0:
-        return None
     previous_session_net_lots = previous_snapshot.large_net_shares / 1_000
     previous_side_net_lots = (
         max(0.0, -previous_session_net_lots)
@@ -736,6 +739,8 @@ def analyze_large_order_ranking(
         and session_gross_lots >= rules.min_recent_net_lots * 2
         and abs(session_net_lots) / session_gross_lots <= 0.2
     )
+    if session_offsetting:
+        return None
     session_buy_sell_ratio = (
         session_buy_lots / session_sell_lots
         if session_sell_lots > 0

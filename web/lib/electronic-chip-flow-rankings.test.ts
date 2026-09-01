@@ -50,6 +50,20 @@ const alert = (symbol: string, overrides: Partial<ElectronicChipFlowAlert> = {})
   ...overrides,
 });
 
+const shortAlert = (symbol: string, overrides: Partial<ElectronicChipFlowAlert> = {}): ElectronicChipFlowAlert =>
+  alert(symbol, {
+    direction: "short",
+    largeNetLots: -1,
+    recentNetBuyLots: -1,
+    recentNetSellLots: 1,
+    combinedNetBuyLots: -1,
+    dayLargeBuyLots: 0,
+    dayLargeSellLots: 1,
+    sessionNetBuyLots: 0,
+    sessionNetSellLots: 1,
+    ...overrides,
+  });
+
 const basePayload = (overrides: Partial<ElectronicChipFlowAlertsResponse>): ElectronicChipFlowAlertsResponse => ({
   tradeDate: "2026-07-29",
   status: "realtime",
@@ -99,8 +113,8 @@ describe("selectLargeOrderRankings", () => {
     const payload = basePayload({
       alerts: [alert("2330")],
       longRankings: [alert("2408")],
-      shortAlerts: [alert("2303")],
-      shortRankings: [alert("2317")],
+      shortAlerts: [shortAlert("2303")],
+      shortRankings: [shortAlert("2317")],
     });
 
     expect(selectLargeOrderRankings(payload, "long").map((item) => item.symbol)).toEqual(["2408"]);
@@ -110,7 +124,7 @@ describe("selectLargeOrderRankings", () => {
   it("falls back to strict alert fields for old backend payloads", () => {
     const payload = basePayload({
       alerts: [alert("2330")],
-      shortAlerts: [alert("2303")],
+      shortAlerts: [shortAlert("2303")],
     });
 
     expect(selectLargeOrderRankings(payload, "long").map((item) => item.symbol)).toEqual(["2330"]);
@@ -120,7 +134,7 @@ describe("selectLargeOrderRankings", () => {
   it("adds display ranks when ranking rows do not include rank values", () => {
     const payload = basePayload({
       longRankings: [alert("2408"), alert("2330")],
-      shortRankings: [alert("2303")],
+      shortRankings: [shortAlert("2303")],
     });
 
     expect(selectLargeOrderRankings(payload, "long").map((item) => [item.symbol, item.rank])).toEqual([
@@ -128,6 +142,26 @@ describe("selectLargeOrderRankings", () => {
       ["2330", 2],
     ]);
     expect(selectLargeOrderRankings(payload, "short").map((item) => [item.symbol, item.rank])).toEqual([["2303", 1]]);
+  });
+
+  it("keeps a duplicated symbol on the net-flow side only", () => {
+    const netBuy = alert("2354", {
+      largeNetLots: 30,
+      sessionNetBuyLots: 30,
+      sessionNetSellLots: 0,
+    });
+    const netSell = shortAlert("2317", {
+      largeNetLots: -25,
+      sessionNetBuyLots: 0,
+      sessionNetSellLots: 25,
+    });
+    const payload = basePayload({
+      longRankings: [netBuy, netSell],
+      shortRankings: [netBuy, netSell],
+    });
+
+    expect(selectLargeOrderRankings(payload, "long").map((item) => item.symbol)).toEqual(["2354"]);
+    expect(selectLargeOrderRankings(payload, "short").map((item) => item.symbol)).toEqual(["2317"]);
   });
 });
 
