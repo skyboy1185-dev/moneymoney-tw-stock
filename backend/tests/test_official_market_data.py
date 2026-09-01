@@ -61,6 +61,40 @@ def test_force_refresh_retains_verified_quote_when_twse_mis_temporarily_fails(
     assert result == {"2330": quote}
 
 
+def test_locked_refresh_returns_verified_cache_without_waiting() -> None:
+    provider = TwseMisMarketDataProvider()
+    quote = OfficialStockQuote(
+        symbol="2330",
+        name="TSMC",
+        price=1000,
+        previous_close=995,
+        open=996,
+        high=1002,
+        low=994,
+        volume=10_000_000,
+        change=5,
+        change_percent=0.5,
+        quote_timestamp="2026-08-11T10:20:00+08:00",
+        source="TWSE MIS",
+        is_realtime=True,
+    )
+    provider._cache[quote.symbol] = (quote, datetime.now(UTC) - timedelta(seconds=1))
+
+    async def locked_lookup() -> dict[str, OfficialStockQuote]:
+        await provider._lock.acquire()
+        try:
+            return await provider.get_quotes(
+                [StockQuoteRequest("2330", "TSMC", "上市")],
+                force_refresh=False,
+            )
+        finally:
+            provider._lock.release()
+
+    result = asyncio.run(locked_lookup())
+
+    assert result == {"2330": quote}
+
+
 def test_quote_history_for_returns_only_today_and_respects_limit() -> None:
     engine = MockDayTradingEngine()
     now = engine._now().astimezone(official_market_data.TAIPEI)
@@ -141,10 +175,75 @@ def test_twse_mis_requests_large_pools_in_batches_and_retries_invalid_json(
     result = asyncio.run(provider.get_quotes(stocks, force_refresh=True))
 
     assert result == {}
-    assert len(calls) == 3
-    assert len(calls[0].split("|")) == 35
+    expected_batches = 1 + ((len(stocks) + official_market_data.MIS_BATCH_SIZE - 1) // official_market_data.MIS_BATCH_SIZE)
+    assert len(calls) == expected_batches
+    assert len(calls[0].split("|")) == official_market_data.MIS_BATCH_SIZE
     assert calls[1] == calls[0]
-    assert len(calls[2].split("|")) == 1
+    assert len(calls[-1].split("|")) == len(stocks) % official_market_data.MIS_BATCH_SIZE
+
+
+def test_twse_mis_splits_failed_batches_and_keeps_recovered_quotes(monkeypatch) -> None:
+    provider = TwseMisMarketDataProvider()
+    calls: list[str] = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, symbols: list[str]) -> None:
+            self.symbols = symbols
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {
+                "msgArray": [
+                    {
+                        "c": symbol,
+                        "n": f"Stock {symbol}",
+                        "z": "100.0000",
+                        "y": "99.0000",
+                        "o": "99.5000",
+                        "h": "101.0000",
+                        "l": "98.5000",
+                        "v": "1000",
+                        "d": "20260727",
+                        "t": "11:06:40",
+                    }
+                    for symbol in self.symbols
+                ]
+            }
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def get(self, *args, **kwargs):
+            channels = kwargs["params"]["ex_ch"]
+            calls.append(channels)
+            symbols = [channel.split("_", 1)[1].split(".", 1)[0] for channel in channels.split("|")]
+            if len(symbols) > official_market_data.MIS_FALLBACK_BATCH_SIZE:
+                request = httpx.Request("GET", "https://mis.twse.com.tw")
+                raise httpx.RemoteProtocolError("server disconnected", request=request)
+            return FakeResponse(symbols)
+
+    monkeypatch.setattr(
+        official_market_data.httpx,
+        "AsyncClient",
+        lambda **kwargs: FakeClient(),
+    )
+    stocks = [
+        StockQuoteRequest(str(2000 + index), f"Stock {index}", "銝?")
+        for index in range(official_market_data.MIS_BATCH_SIZE)
+    ]
+
+    result = asyncio.run(provider.get_quotes(stocks, force_refresh=True))
+
+    assert set(result) == {stock.symbol for stock in stocks}
+    assert any(len(call.split("|")) == official_market_data.MIS_FALLBACK_BATCH_SIZE for call in calls)
 
 
 def test_parse_twse_mis_quote_uses_latest_trade_and_converts_lots_to_shares() -> None:

@@ -25,7 +25,7 @@ DISCLAIMER = "僅供研究參考，不構成投資建議。所有交易均須由
 DATA_NOTICE = "展示模式，非即時行情"
 LIVE_DATA_NOTICE = "價格與盤中技術條件由 TWSE MIS 實際行情樣本計算；僅供研究參考，不構成投資建議。"
 TAIPEI = ZoneInfo("Asia/Taipei")
-LIVE_QUOTE_MAX_DELAY_SECONDS = 20
+LIVE_QUOTE_MAX_DELAY_SECONDS = 30
 DEGRADED_INDEX_DELAY_SECONDS = 60
 MIN_DEGRADED_POOL_COVERAGE_RATIO = 0.80
 SOURCE_INTERRUPTION_SECONDS = 300
@@ -1284,7 +1284,6 @@ class MockDayTradingEngine:
                 data_quality_mode = "live"
             elif (
                 index_quote.source == "TWSE MIS"
-                and delay <= DEGRADED_INDEX_DELAY_SECONDS
                 and quote_coverage_ratio >= MIN_DEGRADED_POOL_COVERAGE_RATIO
                 and quote_coverage_count > 0
             ):

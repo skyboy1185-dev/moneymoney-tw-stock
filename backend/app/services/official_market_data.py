@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -14,8 +15,11 @@ TAIPEI = ZoneInfo("Asia/Taipei")
 logger = logging.getLogger(__name__)
 LIVE_QUOTE_CACHE_SECONDS = 5
 MIS_ENDPOINT = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
-MIS_BATCH_SIZE = 35
+MIS_BATCH_SIZE = 10
+MIS_FALLBACK_BATCH_SIZE = 3
 MIS_REQUEST_ATTEMPTS = 3
+MIS_REQUEST_TIMEOUT_SECONDS = 3.0
+MIS_TOTAL_REFRESH_TIMEOUT_SECONDS = 12.0
 
 
 @dataclass(frozen=True)
@@ -201,6 +205,112 @@ class TwseMisMarketDataProvider:
         self._last_trades: dict[str, OfficialStockQuote] = {}
         self._lock = asyncio.Lock()
 
+    @staticmethod
+    def _channel(stock: StockQuoteRequest) -> str:
+        return f"{'tse' if stock.market in {'上市', '銝?'} else 'otc'}_{stock.symbol}.tw"
+
+    async def _fetch_batch(
+        self,
+        client: httpx.AsyncClient,
+        batch: list[StockQuoteRequest],
+        *,
+        deadline: float,
+    ) -> tuple[list[dict[str, Any]] | None, Exception | None]:
+        channels = "|".join(self._channel(stock) for stock in batch)
+        request_params = {
+            "ex_ch": channels,
+            "json": "1",
+            "delay": "0",
+            "_": str(round(datetime.now(UTC).timestamp() * 1000)),
+        }
+        request_headers = {
+            "Accept": "application/json",
+            "Referer": "https://mis.twse.com.tw/stock/fibest.jsp",
+            "User-Agent": "Mozilla/5.0 Moneymoney-TWSE-Dashboard",
+            "Cache-Control": "no-cache",
+        }
+        last_error: Exception | None = None
+        for attempt in range(MIS_REQUEST_ATTEMPTS):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None, TimeoutError("TWSE MIS quote refresh deadline exceeded")
+            try:
+                request_params["_"] = str(round(datetime.now(UTC).timestamp() * 1000))
+                response = await asyncio.wait_for(
+                    client.get(
+                        MIS_ENDPOINT,
+                        params=request_params,
+                        headers=request_headers,
+                    ),
+                    timeout=min(MIS_REQUEST_TIMEOUT_SECONDS, remaining),
+                )
+                response.raise_for_status()
+                payload = response.json()
+                parsed_rows = payload.get("msgArray", [])
+                if not isinstance(parsed_rows, list):
+                    raise TypeError("TWSE MIS msgArray is not a list")
+                return parsed_rows, None
+            except (asyncio.TimeoutError, httpx.HTTPError, ValueError, TypeError) as error:
+                last_error = error
+                if attempt + 1 < MIS_REQUEST_ATTEMPTS:
+                    await asyncio.sleep(0.25 * (attempt + 1))
+        return None, last_error
+
+    async def _fetch_batch_with_fallback(
+        self,
+        client: httpx.AsyncClient,
+        batch: list[StockQuoteRequest],
+        *,
+        deadline: float,
+    ) -> list[dict[str, Any]]:
+        rows, error = await self._fetch_batch(client, batch, deadline=deadline)
+        if rows is not None:
+            return rows
+        if len(batch) <= 1 or deadline - time.monotonic() <= 0:
+            logger.warning(
+                "TWSE MIS quote batch 1-%s failed after %s attempts; retaining verified cache: %s",
+                len(batch),
+                MIS_REQUEST_ATTEMPTS,
+                error,
+            )
+            return []
+
+        recovered: list[dict[str, Any]] = []
+        failed_symbols: list[str] = []
+        chunk_size = MIS_FALLBACK_BATCH_SIZE if len(batch) > MIS_FALLBACK_BATCH_SIZE else 1
+        for chunk_start in range(0, len(batch), chunk_size):
+            if deadline - time.monotonic() <= 0:
+                failed_symbols.extend(stock.symbol for stock in batch[chunk_start:])
+                break
+            chunk = batch[chunk_start:chunk_start + chunk_size]
+            chunk_rows, chunk_error = await self._fetch_batch(client, chunk, deadline=deadline)
+            if chunk_rows is not None:
+                recovered.extend(chunk_rows)
+                continue
+            if len(chunk) == 1:
+                failed_symbols.extend(stock.symbol for stock in chunk)
+                error = chunk_error
+                continue
+            for stock in chunk:
+                if deadline - time.monotonic() <= 0:
+                    failed_symbols.append(stock.symbol)
+                    continue
+                single_rows, single_error = await self._fetch_batch(client, [stock], deadline=deadline)
+                if single_rows is None:
+                    failed_symbols.append(stock.symbol)
+                    error = single_error
+                else:
+                    recovered.extend(single_rows)
+        if failed_symbols:
+            logger.warning(
+                "TWSE MIS quote fallback missed %s/%s symbols after batch split; retaining verified cache for: %s. Last error: %s",
+                len(failed_symbols),
+                len(batch),
+                ",".join(failed_symbols[:12]),
+                error,
+            )
+        return recovered
+
     async def get_quotes(
         self,
         stocks: list[StockQuoteRequest],
@@ -226,6 +336,8 @@ class TwseMisMarketDataProvider:
         missing = [stock for stock in stocks if stock.symbol not in cached]
         if not missing:
             return cached
+        if self._lock.locked() and verified_cache:
+            return {**verified_cache, **cached}
         async with self._lock:
             now = datetime.now(UTC)
             for stock in missing:
@@ -236,13 +348,18 @@ class TwseMisMarketDataProvider:
             if not missing:
                 return cached
             rows: list[dict[str, Any]] = []
-            async with httpx.AsyncClient(timeout=8.0) as client:
+            deadline = time.monotonic() + MIS_TOTAL_REFRESH_TIMEOUT_SECONDS
+            async with httpx.AsyncClient(timeout=MIS_REQUEST_TIMEOUT_SECONDS) as client:
                 for batch_start in range(0, len(missing), MIS_BATCH_SIZE):
+                    if deadline - time.monotonic() <= 0:
+                        logger.warning(
+                            "TWSE MIS quote refresh deadline reached after %s/%s requested symbols; retaining verified cache for the rest",
+                            batch_start,
+                            len(missing),
+                        )
+                        break
                     batch = missing[batch_start:batch_start + MIS_BATCH_SIZE]
-                    channels = "|".join(
-                        f"{'tse' if stock.market == '上市' else 'otc'}_{stock.symbol}.tw"
-                        for stock in batch
-                    )
+                    channels = "|".join(self._channel(stock) for stock in batch)
                     request_params = {
                         "ex_ch": channels,
                         "json": "1",
@@ -272,7 +389,7 @@ class TwseMisMarketDataProvider:
                                 raise TypeError("TWSE MIS msgArray is not a list")
                             batch_rows = parsed_rows
                             break
-                        except (httpx.HTTPError, ValueError, TypeError) as error:
+                        except (asyncio.TimeoutError, httpx.HTTPError, ValueError, TypeError) as error:
                             last_error = error
                             if attempt + 1 < MIS_REQUEST_ATTEMPTS:
                                 await asyncio.sleep(0.25 * (attempt + 1))
@@ -284,6 +401,13 @@ class TwseMisMarketDataProvider:
                             MIS_REQUEST_ATTEMPTS,
                             last_error,
                         )
+                        batch_rows = await self._fetch_batch_with_fallback(
+                            client,
+                            batch,
+                            deadline=deadline,
+                        )
+                        if batch_rows:
+                            rows.extend(batch_rows)
                     else:
                         rows.extend(batch_rows)
                     if batch_start + MIS_BATCH_SIZE < len(missing):

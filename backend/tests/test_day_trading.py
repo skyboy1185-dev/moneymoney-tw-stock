@@ -160,7 +160,7 @@ def test_index_delay_degrades_but_allows_formal_signals_when_pool_quotes_are_fre
     )
     engine = FixedClockEngine()
     engine.set_stock_universe(stocks)
-    quotes = {"t00": quote("t00", 25)}
+    quotes = {"t00": quote("t00", 35)}
     quotes.update({stock.symbol: quote(stock.symbol, 5) for stock in stocks[:8]})
     engine.update_official_quotes(quotes)
 
@@ -180,6 +180,60 @@ def test_index_delay_degrades_but_allows_formal_signals_when_pool_quotes_are_fre
     assert regime["candidateUniverseCount"] == 10
     assert regime["quoteCoverageRatio"] == 0.8
     assert regime["dataQualityWarning"]
+    assert regime["formalBlockReason"] is None
+    assert session["formalSignalsAllowed"] is True
+
+
+def test_stale_index_still_allows_formal_signals_when_pool_quotes_are_fresh() -> None:
+    now = datetime(2026, 8, 3, 10, 20, tzinfo=TAIPEI)
+
+    class FixedClockEngine(MockDayTradingEngine):
+        def _now(self) -> datetime:
+            return now
+
+    def quote(symbol: str, seconds_old: int, *, realtime: bool = True) -> OfficialStockQuote:
+        quote_time = now - timedelta(seconds=seconds_old)
+        price = 100 + int(symbol[-2:]) if symbol != "t00" else 43_700
+        return OfficialStockQuote(
+            symbol=symbol,
+            name=f"Stock {symbol}",
+            price=price,
+            previous_close=price - 1,
+            open=price - 0.5,
+            high=price + 1,
+            low=price - 1,
+            volume=1_000_000,
+            change=1,
+            change_percent=1.0,
+            quote_timestamp=quote_time.isoformat(),
+            source="TWSE MIS",
+            is_realtime=realtime,
+        )
+
+    stocks = tuple(
+        ThemeStock(f"32{index:02d}", f"Stock {index}", "銝?", "Test", ("AI",))
+        for index in range(10)
+    )
+    engine = FixedClockEngine()
+    engine.set_stock_universe(stocks)
+    quotes = {"t00": quote("t00", 390, realtime=False)}
+    quotes.update({stock.symbol: quote(stock.symbol, 5) for stock in stocks[:8]})
+    engine.update_official_quotes(quotes)
+
+    regime = engine.market_regime()
+    session = trading_session_state(
+        TradingScheduleConfig(signal_start_time="09:15", minimum_live_samples=0),
+        now,
+        data_status=regime["dataStatus"],
+        data_quality_mode=regime["dataQualityMode"],
+        quote_samples=10,
+        infrastructure_ok=True,
+    )
+
+    assert regime["dataStatus"] == "normal"
+    assert regime["dataQualityMode"] == "index_delay"
+    assert regime["quoteCoverageCount"] == 8
+    assert regime["candidateUniverseCount"] == 10
     assert regime["formalBlockReason"] is None
     assert session["formalSignalsAllowed"] is True
 
@@ -216,7 +270,7 @@ def test_index_delay_still_blocks_formal_signals_when_pool_coverage_is_sparse() 
     )
     engine = FixedClockEngine()
     engine.set_stock_universe(stocks)
-    quotes = {"t00": quote("t00", 25)}
+    quotes = {"t00": quote("t00", 35)}
     quotes.update({stock.symbol: quote(stock.symbol, 5) for stock in stocks[:7]})
     engine.update_official_quotes(quotes)
 
