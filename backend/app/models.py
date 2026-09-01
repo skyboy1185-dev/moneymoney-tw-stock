@@ -225,7 +225,7 @@ class DayTradingSettings(Base):
     maximum_spread: Mapped[float] = mapped_column(Float, default=0.5)
     minimum_volume: Mapped[float] = mapped_column(Float, default=1_000_000)
     minimum_turnover: Mapped[float] = mapped_column(Float, default=100_000_000)
-    latest_entry_time: Mapped[str] = mapped_column(String(5), default="12:00")
+    latest_entry_time: Mapped[str] = mapped_column(String(5), default="12:30")
     close_reminder_time: Mapped[str] = mapped_column(String(5), default="13:25")
     notification_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     sound_enabled: Mapped[bool] = mapped_column(Boolean, default=True)

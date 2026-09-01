@@ -18,12 +18,20 @@ MIN_DAY_TRADING_VOLUME_SHARES = 1_000_000
 MIN_DAY_TRADING_TURNOVER = 100_000_000
 MIN_LIQUIDITY_PROGRESS = 0.10
 DAY_TRADING_SIGNAL_START = "09:15"
-# All new intraday entries stop at noon. Existing positions keep running
-# stop-loss, take-profit, reduction, cover and forced-exit workflows afterward.
-DAY_TRADING_ENTRY_CUTOFF = "12:00"
-DAY_TRADING_LONG_ENTRY_CUTOFF = "12:00"
+# New intraday entries use a balanced trial-entry window. Existing positions
+# keep running stop-loss, take-profit, reduction, cover and forced-exit workflows afterward.
+DAY_TRADING_ENTRY_CUTOFF = "12:30"
+DAY_TRADING_LONG_ENTRY_CUTOFF = "12:30"
 DAY_TRADING_CLOSE_REMINDER = "13:25"
 DAY_TRADING_FORCED_EXIT = "13:30"
+STARTER_ENTRY_MODE = "starter"
+STARTER_MAX_RECOMMENDATIONS = 2
+STARTER_MIN_CONFIDENCE_SCORE = 85
+STARTER_MIN_CONFIRMATION_SCORE = 60
+STARTER_MIN_HEALTH_SCORE = 70
+STARTER_MIN_MARKET_ALIGNMENT = 45
+STARTER_MIN_MOMENTUM_FORCE = 45
+STARTER_MAX_CHANGE_PERCENT = 9.0
 
 
 @dataclass(frozen=True)
@@ -126,12 +134,12 @@ def trading_session_state(
                 next_transition = None
         elif local_now < latest_entry:
             phase, robot_status, message, next_transition = (
-                "scanning", "5 分 K 強勢股掃描中", "多空正式新進場只開放至 12:00；之後只管理既有持倉。", latest_entry,
+                "scanning", "5 分 K 強勢股掃描中", f"多空正式新進場開放至 {config.latest_entry_time}；之後只管理既有持倉。", latest_entry,
             )
         elif local_now < long_entry_cutoff:
             phase, robot_status, message, next_transition = (
                 "long_only", "停止新進場",
-                "12:00 後停止所有新進場；既有持倉仍持續監控。",
+                f"{config.latest_entry_time} 後停止所有新進場；既有持倉仍持續監控。",
                 long_entry_cutoff,
             )
         elif local_now < close_reminder:
@@ -201,6 +209,102 @@ def _expired(candidate: dict[str, Any], now: datetime) -> bool:
     return expires_at <= now.astimezone(UTC)
 
 
+def _candidate_float(candidate: dict[str, Any], key: str, default: float = 0.0) -> float:
+    try:
+        return float(candidate.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _starter_momentum_ok(candidate: dict[str, Any]) -> bool:
+    directional_force = abs(_candidate_float(candidate, "largeOrderForce"))
+    active_force = abs(_candidate_float(candidate, "activeForce"))
+    confidence = _candidate_float(candidate, "confidenceScore")
+    confirmation = _candidate_float(candidate, "confirmationScore")
+    return (
+        directional_force >= STARTER_MIN_MOMENTUM_FORCE
+        or active_force >= STARTER_MIN_MOMENTUM_FORCE
+        or (confidence >= 90 and confirmation >= 70)
+    )
+
+
+def starter_recommendation_qualification(
+    candidate: dict[str, Any],
+    config: TradingScheduleConfig,
+    session: dict[str, Any],
+    now: datetime | None = None,
+) -> tuple[bool, list[str], str]:
+    """Balanced starter-entry gate used only when no strict official signal exists."""
+    current = now or datetime.now(UTC)
+    failures: list[str] = []
+    direction = str(candidate.get("direction", ""))
+    direction_allowed = (
+        bool(session.get("formalLongSignalsAllowed", session["formalSignalsAllowed"]))
+        if direction == "long"
+        else bool(session.get("formalShortSignalsAllowed", session["formalSignalsAllowed"]))
+        if direction == "short"
+        else False
+    )
+    if not direction_allowed:
+        if str(session.get("phase", "")) in {"entry_closed", "closing", "summary"}:
+            failures.append(f"已超過 {config.latest_entry_time} 新進場截止時間")
+        else:
+            failures.append(str(session["statusMessage"]))
+    if candidate.get("dataStatus", "normal") != "normal" or candidate.get("dataMode") != "official":
+        failures.append("行情或策略來源尚未達正式試單標準")
+    if candidate.get("quoteIsRealtime") is not True:
+        failures.append("缺少可驗證的盤中即時行情")
+    if _expired(candidate, current):
+        failures.append("訊號已失效")
+    if not bool(candidate.get(
+        "momentumUniverseMember",
+        is_target_theme_symbol(str(candidate.get("symbol", ""))),
+    )):
+        failures.append("不屬於大單動能雷達股票池")
+    if candidate.get("isDisposed") or candidate.get("tradeRestricted"):
+        failures.append("處置股或交易受限股票禁止列入當沖")
+    if not candidate.get("tradingEligible", False):
+        failures.append("不符合當沖交易資格")
+    if direction == "short":
+        if not candidate.get("shortAvailabilityKnown", False):
+            failures.append("放空資格待確認")
+        elif not candidate.get("shortEligible", False):
+            failures.append("無放空資格或有交易限制")
+        if candidate.get("nearLimitDown") or candidate.get("excessiveNegativeDeviation"):
+            failures.append("接近跌停或負乖離過大")
+    if _candidate_float(candidate, "confidenceScore") < STARTER_MIN_CONFIDENCE_SCORE:
+        failures.append(f"試單信心分數未達 {STARTER_MIN_CONFIDENCE_SCORE}")
+    if _candidate_float(candidate, "confirmationScore") < STARTER_MIN_CONFIRMATION_SCORE:
+        failures.append(f"試單確認分數未達 {STARTER_MIN_CONFIRMATION_SCORE}")
+    if _candidate_float(candidate, "healthScore") < STARTER_MIN_HEALTH_SCORE:
+        failures.append(f"試單健康度未達 {STARTER_MIN_HEALTH_SCORE}")
+    if _candidate_float(candidate, "riskRewardRatio") < config.minimum_risk_reward:
+        failures.append(f"風險報酬比未達 1：{config.minimum_risk_reward:g}")
+    required_volume, required_turnover = intraday_liquidity_minimums(config, current)
+    if _candidate_float(candidate, "volume") < required_volume:
+        failures.append(f"成交量未達盤中最低門檻 {config.minimum_volume / 1000:,.0f} 張")
+    if _candidate_float(candidate, "turnover") < required_turnover:
+        failures.append(f"成交值未達盤中最低門檻 {config.minimum_turnover / 100_000_000:g} 億元")
+    if _candidate_float(candidate, "spreadPercentage", 999) > config.maximum_spread:
+        failures.append("買賣價差超過允許範圍")
+    if _candidate_float(candidate, "stopDistancePercent", 999) > config.maximum_stop_distance:
+        failures.append("停損距離超過風控上限")
+    if _candidate_float(candidate, "marketAlignment") < STARTER_MIN_MARKET_ALIGNMENT:
+        failures.append("方向與大盤環境衝突")
+    if direction == "long" and _candidate_float(candidate, "changePercent") >= STARTER_MAX_CHANGE_PERCENT:
+        failures.append(f"漲幅已達 {STARTER_MAX_CHANGE_PERCENT:g}%，不做試單追價")
+    if direction == "short" and _candidate_float(candidate, "changePercent") <= -STARTER_MAX_CHANGE_PERCENT:
+        failures.append(f"跌幅已達 {STARTER_MAX_CHANGE_PERCENT:g}%，不做試單追空")
+    if not _starter_momentum_ok(candidate):
+        failures.append("試單動能不足")
+
+    starter_reason = (
+        "平衡試單：嚴格正式單為 0，但此標的分數、即時報價、流動性與動能達標；"
+        "5 分 K 拉回與大單逐筆不足改列警告，不作硬擋。"
+    )
+    return not failures, failures, starter_reason
+
+
 def intraday_liquidity_minimums(
     config: TradingScheduleConfig,
     now: datetime | None = None,
@@ -223,6 +327,7 @@ def recommendation_qualification(
     now: datetime | None = None,
 ) -> tuple[bool, list[str]]:
     current = now or datetime.now(UTC)
+    starter_mode = candidate.get("entryMode") == STARTER_ENTRY_MODE
     failures: list[str] = []
     in_momentum_universe = bool(candidate.get(
         "momentumUniverseMember",
@@ -240,7 +345,7 @@ def recommendation_qualification(
     )
     if not direction_allowed:
         failures.append(
-            "已超過 12:00 新進場截止時間"
+            f"已超過 {config.latest_entry_time} 新進場截止時間"
             if direction == "short" and session.get("phase") == "long_only"
             else str(session["statusMessage"])
         )
@@ -254,7 +359,7 @@ def recommendation_qualification(
         )
     if candidate.get("quoteIsRealtime") is not True:
         failures.append("缺少可驗證的盤中行情")
-    if candidate.get("status") != "confirmed" or _expired(candidate, current):
+    if (not starter_mode and candidate.get("status") != "confirmed") or _expired(candidate, current):
         failures.append("訊號已失效或尚未確認")
     if str(candidate.get("action", "")).startswith(("等待", "觀望", "禁止", "行情異常")):
         failures.append("尚未形成正式進場指令")
@@ -267,7 +372,8 @@ def recommendation_qualification(
     five_minute_structure = str(candidate.get("fiveMinuteStructure", ""))
     five_minute_setup = str(candidate.get("fiveMinuteSetup", ""))
     if (
-        candidate.get("direction") == "long"
+        not starter_mode
+        and candidate.get("direction") == "long"
         and "突破" in five_minute_setup
         and ("未確認" in five_minute_structure or "尚未" in five_minute_structure)
     ):
@@ -288,23 +394,24 @@ def recommendation_qualification(
     if float(candidate.get("spreadPercentage", 999)) > config.maximum_spread:
         failures.append("買賣價差超過允許範圍")
     if (
-        candidate.get("direction") == "long"
+        not starter_mode
+        and candidate.get("direction") == "long"
         and float(candidate.get("changePercent", 0)) >= MAX_LONG_CHASE_CHANGE_PERCENT
         and float(candidate.get("rangePositionPercent", 50)) >= 90
     ):
         failures.append(
             f"今日漲幅已達 {MAX_LONG_CHASE_CHANGE_PERCENT:g}%，禁止追價"
         )
-    if candidate.get("chaseBlocked"):
+    if candidate.get("chaseBlocked") and not starter_mode:
         failures.append("已觸發禁止追多／追空")
     if candidate.get("isDisposed") or candidate.get("tradeRestricted"):
         failures.append("處置股或交易受限股票禁止列入當沖")
-    if not candidate.get("largeOrderDataAvailable", False):
+    if not candidate.get("largeOrderDataAvailable", False) and not starter_mode:
         failures.append("等待逐筆成交大單資料完成暖機")
-    elif candidate.get("direction") == "short":
+    elif candidate.get("direction") == "short" and not starter_mode:
         if not candidate.get("largeOrderContinuousSell", False):
             failures.append("大戶尚未持續加空")
-    elif not candidate.get("largeOrderContinuousBuy", False):
+    elif not starter_mode and not candidate.get("largeOrderContinuousBuy", False):
         failures.append("大戶尚未持續加多")
     if not candidate.get("tradingEligible", False):
         failures.append("不符合當沖交易資格")
@@ -363,6 +470,8 @@ class StableRecommendationSelector:
         self._last_ranked_at: dict[str, datetime] = {}
         self._hour_buckets: dict[str, str] = {}
         self._hourly_admitted: dict[str, set[str]] = {}
+        self._day_buckets: dict[str, str] = {}
+        self._daily_starter_symbols: dict[str, set[str]] = {}
 
     def select(
         self,
@@ -378,8 +487,15 @@ class StableRecommendationSelector:
         open_ids = open_signal_ids or set()
         prepared: list[dict[str, Any]] = []
         eligible: list[dict[str, Any]] = []
+        starter_eligible: list[dict[str, Any]] = []
         for candidate in candidates:
             passed, failures = recommendation_qualification(candidate, config, session, current_time)
+            starter_passed, starter_failures, starter_reason = starter_recommendation_qualification(
+                candidate,
+                config,
+                session,
+                current_time,
+            )
             if candidate["id"] in open_ids:
                 passed = False
                 failures = [*failures, "已轉入持倉監控"]
@@ -388,13 +504,31 @@ class StableRecommendationSelector:
                 "isOfficialRecommendation": False,
                 "recommendationLabel": "市場掃描候選",
                 "qualificationFailures": failures,
+                "starterQualificationFailures": starter_failures,
             }
             if candidate.get("direction") == "short" and "放空資格待確認" in failures:
                 row["action"] = "放空資格待確認"
             prepared.append(row)
             if passed:
                 eligible.append(row)
+            elif starter_passed and candidate["id"] not in open_ids:
+                starter_eligible.append({
+                    **row,
+                    "entryMode": STARTER_ENTRY_MODE,
+                    "status": "confirmed",
+                    "action": "平衡試單：強動能小量進場",
+                    "starterReason": starter_reason,
+                    "starterRelaxations": [
+                        "chase_blocked_warning_only",
+                        "five_minute_retest_warning_only",
+                        "large_order_warmup_warning_only",
+                    ],
+                    "recommendationLabel": "AI 平衡試單",
+                    "qualificationFailures": [],
+                    "blockedWarnings": failures,
+                })
         eligible.sort(key=_ranking_key, reverse=True)
+        starter_eligible.sort(key=_ranking_key, reverse=True)
 
         with self._lock:
             hour_bucket = current_time.astimezone(ZoneInfo(config.timezone)).strftime("%Y-%m-%dT%H")
@@ -403,14 +537,22 @@ class StableRecommendationSelector:
                 self._active[user_id] = {}
                 self._hourly_admitted[user_id] = set()
                 self._last_ranked_at.pop(user_id, None)
+            day_bucket = current_time.astimezone(ZoneInfo(config.timezone)).strftime("%Y-%m-%d")
+            if self._day_buckets.get(user_id) != day_bucket:
+                self._day_buckets[user_id] = day_bucket
+                self._daily_starter_symbols[user_id] = set()
             active = self._active.setdefault(user_id, {})
             admitted = self._hourly_admitted.setdefault(user_id, set())
+            daily_starter_symbols = self._daily_starter_symbols.setdefault(user_id, set())
             last_ranked = self._last_ranked_at.get(user_id)
             refresh_due = (
                 last_ranked is None
                 or current_time - last_ranked >= timedelta(seconds=config.recommendation_refresh_seconds)
             )
-            eligible_by_id = {row["id"]: row for row in eligible}
+            eligible_by_id = {
+                row["id"]: row
+                for row in (*eligible, *starter_eligible)
+            }
             for signal_id in list(active):
                 if signal_id not in eligible_by_id:
                     del active[signal_id]
@@ -456,6 +598,27 @@ class StableRecommendationSelector:
                 self._last_ranked_at[user_id] = current_time
 
             selected = sorted(selected, key=_ranking_key, reverse=True)[: config.maximum_recommendations]
+
+            if not selected and session["formalSignalsAllowed"]:
+                starter_selected: list[dict[str, Any]] = [
+                    row for row in starter_eligible
+                    if row["id"] in active
+                ]
+                starter_selected.sort(key=_ranking_key, reverse=True)
+                for row in starter_eligible:
+                    if row["id"] in active:
+                        continue
+                    symbol = str(row.get("symbol", ""))
+                    if not symbol or symbol in daily_starter_symbols:
+                        continue
+                    if len(starter_selected) >= STARTER_MAX_RECOMMENDATIONS:
+                        break
+                    starter_selected.append(row)
+                    active[row["id"]] = current_time
+                    admitted.add(row["id"])
+                    daily_starter_symbols.add(symbol)
+                selected = sorted(starter_selected, key=_ranking_key, reverse=True)[:STARTER_MAX_RECOMMENDATIONS]
+
             selected_ids = {row["id"] for row in selected}
             for signal_id in list(active):
                 if signal_id not in selected_ids:
@@ -471,6 +634,9 @@ class StableRecommendationSelector:
             }
             for index, row in enumerate(selected)
         ]
+        for item in official:
+            if item.get("entryMode") == STARTER_ENTRY_MODE:
+                item["recommendationLabel"] = "AI 平衡試單"
         official_by_id = {row["id"]: row for row in official}
         candidate_rows = [
             official_by_id.get(row["id"], {**row, "rank": index + 1})

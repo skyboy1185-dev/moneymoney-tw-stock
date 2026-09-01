@@ -19,6 +19,7 @@ from app.services.day_trading_schedule import (
     MIN_OFFICIAL_CONFIDENCE_SCORE,
     MIN_OFFICIAL_CONFIRMATION_SCORE,
     MIN_OFFICIAL_HEALTH_SCORE,
+    STARTER_MAX_RECOMMENDATIONS,
     StableRecommendationSelector,
     TradingScheduleConfig,
     _ranking_key,
@@ -488,38 +489,38 @@ def test_zero_minute_warmup_still_requires_enough_ticks() -> None:
     assert not state["formalSignalsAllowed"]
 
 
-def test_new_entries_stop_at_noon_for_long_and_short() -> None:
+def test_new_entries_stop_at_1230_for_long_and_short() -> None:
     config = TradingScheduleConfig()
     saturday = trading_session_state(
         config, datetime(2026, 7, 25, 10, 0, tzinfo=TAIPEI),
         quote_samples=10, infrastructure_ok=True,
     )
-    before_noon = trading_session_state(
-        config, datetime(2026, 7, 21, 11, 59, 59, tzinfo=TAIPEI),
+    before_cutoff = trading_session_state(
+        config, datetime(2026, 7, 21, 12, 29, 59, tzinfo=TAIPEI),
         quote_samples=10, infrastructure_ok=True,
     )
-    noon = trading_session_state(
-        config, datetime(2026, 7, 21, 12, 0, tzinfo=TAIPEI),
-        quote_samples=10, infrastructure_ok=True,
-    )
-    after_noon = trading_session_state(
+    at_cutoff = trading_session_state(
         config, datetime(2026, 7, 21, 12, 30, tzinfo=TAIPEI),
         quote_samples=10, infrastructure_ok=True,
     )
+    after_cutoff = trading_session_state(
+        config, datetime(2026, 7, 21, 12, 30, 1, tzinfo=TAIPEI),
+        quote_samples=10, infrastructure_ok=True,
+    )
     assert saturday["phase"] == "non_trading"
-    assert before_noon["phase"] == "scanning"
-    assert before_noon["formalSignalsAllowed"]
-    assert before_noon["formalLongSignalsAllowed"]
-    assert before_noon["formalShortSignalsAllowed"]
-    assert noon["phase"] == "entry_closed"
+    assert before_cutoff["phase"] == "scanning"
+    assert before_cutoff["formalSignalsAllowed"]
+    assert before_cutoff["formalLongSignalsAllowed"]
+    assert before_cutoff["formalShortSignalsAllowed"]
+    assert at_cutoff["phase"] == "entry_closed"
     assert not saturday["formalSignalsAllowed"]
-    assert not noon["formalSignalsAllowed"]
-    assert not noon["formalLongSignalsAllowed"]
-    assert not noon["formalShortSignalsAllowed"]
-    assert noon["schedule"]["shortEntryCutoffTime"] == "12:00"
-    assert noon["schedule"]["longEntryCutoffTime"] == "12:00"
-    assert after_noon["phase"] == "entry_closed"
-    assert not after_noon["formalSignalsAllowed"]
+    assert not at_cutoff["formalSignalsAllowed"]
+    assert not at_cutoff["formalLongSignalsAllowed"]
+    assert not at_cutoff["formalShortSignalsAllowed"]
+    assert at_cutoff["schedule"]["shortEntryCutoffTime"] == "12:30"
+    assert at_cutoff["schedule"]["longEntryCutoffTime"] == "12:30"
+    assert after_cutoff["phase"] == "entry_closed"
+    assert not after_cutoff["formalSignalsAllowed"]
 
 
 def _five_minute_quotes(prices: list[float], *, opening: float) -> list[OfficialStockQuote]:
@@ -786,8 +787,8 @@ def test_three_gate_alignment_does_not_adjust_ranking_when_scores_match() -> Non
     assert _ranking_key(aligned) == _ranking_key(fallback)
 
 
-def test_noon_qualification_blocks_new_long_and_short() -> None:
-    now = datetime(2026, 7, 21, 12, 0, tzinfo=TAIPEI)
+def test_after_cutoff_qualification_blocks_new_long_and_short() -> None:
+    now = datetime(2026, 7, 21, 12, 30, 1, tzinfo=TAIPEI)
     config = TradingScheduleConfig()
     session = trading_session_state(config, now, quote_samples=10, infrastructure_ok=True)
     timing = {
@@ -909,6 +910,104 @@ def test_selector_recommends_at_most_ten_without_lowering_thresholds() -> None:
     assert [item["id"] for item in official] == ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]
     assert len(official) == 10
     assert next(item for item in candidates if item["id"] == "k")["isOfficialRecommendation"] is False
+
+
+def test_selector_adds_limited_starter_entries_when_strict_recommendations_are_empty() -> None:
+    now = datetime(2026, 7, 21, 9, 20, tzinfo=TAIPEI)
+    config = TradingScheduleConfig()
+    session = trading_session_state(config, now, quote_samples=10, infrastructure_ok=True)
+    selector = StableRecommendationSelector()
+    blocked_but_strong = {
+        "status": "watching",
+        "chaseBlocked": True,
+        "largeOrderDataAvailable": False,
+        "largeOrderContinuousBuy": False,
+        "confidenceScore": 92,
+        "confirmationScore": 75,
+        "healthScore": 88,
+        "marketAlignment": 70,
+        "activeForce": 72,
+        "largeOrderForce": 66,
+        "changePercent": 4.8,
+        "momentumUniverseMember": True,
+        "generatedAt": now.isoformat(),
+        "expiresAt": (now + timedelta(minutes=20)).isoformat(),
+    }
+
+    official, candidates = selector.select(
+        "starter-user",
+        [
+            _candidate("starter-a", symbol="2330", **blocked_but_strong),
+            _candidate("starter-b", symbol="2317", **blocked_but_strong),
+            _candidate("starter-c", symbol="2454", **blocked_but_strong),
+        ],
+        config,
+        session,
+        now=now,
+    )
+
+    assert len(official) == STARTER_MAX_RECOMMENDATIONS
+    assert {item["entryMode"] for item in official} == {"starter"}
+    assert all(item["isOfficialRecommendation"] for item in official)
+    assert all(item["recommendationLabel"] == "AI 平衡試單" for item in official)
+    assert all(item["starterReason"] for item in official)
+    assert all(item["qualificationFailures"] == [] for item in official)
+    assert all(item["blockedWarnings"] for item in official)
+    assert sum(1 for item in candidates if item["isOfficialRecommendation"]) == STARTER_MAX_RECOMMENDATIONS
+
+    retained, _ = selector.select(
+        "starter-user",
+        [
+            _candidate("starter-a", symbol="2330", **blocked_but_strong),
+            _candidate("starter-b", symbol="2317", **blocked_but_strong),
+            _candidate("starter-c", symbol="2454", **blocked_but_strong),
+        ],
+        config,
+        trading_session_state(config, now + timedelta(minutes=1), quote_samples=10, infrastructure_ok=True),
+        now=now + timedelta(minutes=1),
+    )
+
+    assert [item["id"] for item in retained] == [item["id"] for item in official]
+
+
+def test_selector_does_not_add_starter_entries_after_cutoff() -> None:
+    now = datetime(2026, 7, 21, 12, 30, 1, tzinfo=TAIPEI)
+    config = TradingScheduleConfig()
+    session = trading_session_state(config, now, quote_samples=10, infrastructure_ok=True)
+    selector = StableRecommendationSelector()
+    timing = {
+        "generatedAt": now.isoformat(),
+        "expiresAt": (now + timedelta(minutes=20)).isoformat(),
+    }
+
+    official, candidates = selector.select(
+        "starter-after-cutoff-user",
+        [
+            _candidate(
+                "starter-after-cutoff",
+                confidence=92,
+                status="watching",
+                chaseBlocked=True,
+                largeOrderDataAvailable=False,
+                largeOrderContinuousBuy=False,
+                confirmationScore=75,
+                healthScore=88,
+                marketAlignment=70,
+                activeForce=72,
+                largeOrderForce=66,
+                changePercent=4.8,
+                momentumUniverseMember=True,
+                **timing,
+            ),
+        ],
+        config,
+        session,
+        now=now,
+    )
+
+    assert official == []
+    assert not candidates[0]["isOfficialRecommendation"]
+    assert any("12:30" in failure for failure in candidates[0]["starterQualificationFailures"])
 
 
 def test_selector_ranks_intraday_confirmation_before_health() -> None:

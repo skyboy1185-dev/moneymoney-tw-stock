@@ -187,7 +187,11 @@ export interface DayTradingSignal {
   marketAlignment: number;
   confirmationScore: number;
   isOfficialRecommendation: boolean;
+  entryMode?: "starter" | string;
   recommendationLabel: string;
+  starterReason?: string;
+  blockedWarnings?: string[];
+  starterQualificationFailures?: string[];
   recommendedQuantityLots?: number;
   trackedQuantityLots?: number;
   trackingStatus?: string;

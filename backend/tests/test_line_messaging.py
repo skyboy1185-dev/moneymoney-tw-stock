@@ -181,7 +181,7 @@ def test_signal_and_emergency_messages_follow_required_format() -> None:
     combined = format_signal_message(signal, include_session_status=True)
     assert combined.startswith("【AI當沖機器人｜今日首次進場】")
     assert "啟動：09:15 正式訊號掃描已啟動" in combined
-    assert "結束：12:00 停止新進場，13:30 完成當沖部位處理" in combined
+    assert "結束：12:30 停止新進場，13:30 完成當沖部位處理" in combined
     assert "【個人策略模擬測試】" in combined
 
     demo_message = format_signal_message({

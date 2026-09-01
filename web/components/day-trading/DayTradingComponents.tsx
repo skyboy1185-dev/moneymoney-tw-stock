@@ -253,7 +253,7 @@ export function DayTradingRankingTable({
       <td><strong>{number(item.price)}</strong><small className={item.changePercent >= 0 ? "text-up" : "text-down"}>{number(item.changePercent)}%</small></td>
       <td>{compact(item.volume)}<small>{compact(item.turnover)}</small></td>
       <td><span className={`direction-tag ${item.direction}`}>{item.directionLabel}</span></td>
-      <td><span className={`recommendation-tag ${item.isOfficialRecommendation ? "official" : "candidate"}`}>{item.recommendationLabel}</span><strong>{item.isOfficialRecommendation ? item.action : item.action === "放空資格待確認" ? item.action : `候選觀察：${item.action}`}</strong><small>{[item.entryConfirmationModeLabel, item.qualificationFailures?.slice(0, 2).join(" · ") || time(item.generatedAt)].filter(Boolean).join(" · ")}</small></td>
+      <td><span className={`recommendation-tag ${item.isOfficialRecommendation ? "official" : "candidate"}`}>{item.recommendationLabel}</span><strong>{item.isOfficialRecommendation ? item.action : item.action === "放空資格待確認" ? item.action : `候選觀察：${item.action}`}</strong><small>{[item.starterReason, item.entryConfirmationModeLabel, item.qualificationFailures?.slice(0, 2).join(" · ") || time(item.generatedAt)].filter(Boolean).join(" · ")}</small></td>
       <td><span>{item.confidenceScore}／{item.healthScore}</span><small>R:R 1:{number(item.riskRewardRatio, 1)}</small></td>
       <td>{item.vwapStatus}<small>{item.volumeStatus}</small></td>
       <td className={item.largeOrderContinuousBuy ? "text-up" : item.largeOrderContinuousSell ? "text-down" : ""}>
