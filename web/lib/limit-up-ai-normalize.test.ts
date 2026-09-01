@@ -14,8 +14,30 @@ describe("limit-up AI normalizers", () => {
     expect(dashboard.settings.capital).toBe(3_000_000);
     expect(dashboard.candidates[0].score).toBe(88.5);
     expect(dashboard.candidates[0].failures).toEqual([]);
+    expect(dashboard.candidates[0].largeOrderSource).toBe("unavailable");
+    expect(dashboard.summary.alertableCount).toBe(0);
+    expect(dashboard.summary.limitBoardCount).toBe(0);
+    expect(dashboard.limitBoard).toEqual([]);
+    expect(dashboard.alerts).toEqual([]);
     expect(dashboard.positions).toEqual([]);
     expect(dashboard.trades).toEqual([]);
+  });
+
+  it("normalizes limit-up board and alert metadata", () => {
+    const dashboard = normalizeLimitUpDashboard({
+      summary: { alertableCount: 1, limitBoardCount: 1 },
+      limitBoard: [{ symbol: "1709", alertable: true, isLockedLimitUp: true, largeOrderSource: "quote_proxy", entryBlockReason: "只通知不買" }],
+      alerts: [{ symbol: "1709", alertable: true }],
+    });
+
+    expect(dashboard.limitBoard[0].symbol).toBe("1709");
+    expect(dashboard.limitBoard[0].alertable).toBe(true);
+    expect(dashboard.limitBoard[0].isLockedLimitUp).toBe(true);
+    expect(dashboard.limitBoard[0].largeOrderSource).toBe("quote_proxy");
+    expect(dashboard.limitBoard[0].entryBlockReason).toBe("只通知不買");
+    expect(dashboard.alerts).toHaveLength(1);
+    expect(dashboard.summary.alertableCount).toBe(1);
+    expect(dashboard.summary.limitBoardCount).toBe(1);
   });
 
   it("keeps large-order Top10 safe when the API returns an error object", () => {

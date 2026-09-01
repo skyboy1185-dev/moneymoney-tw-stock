@@ -79,8 +79,9 @@ function CandidateTable({ title, subtitle, items, compact = false }: { title: st
       <b>{items.length} 檔</b>
     </div>
     {items.length ? <div className="rocket-table-wrap"><table><thead><tr><th>排名</th><th>股票</th><th>現價 / 距漲停</th><th>強度分</th><th>型態</th><th>量比 / 大單</th><th>VWAP / 分時</th><th>判斷</th></tr></thead><tbody>{items.map((item) => {
-      const blocker = item.failures[0] ?? item.warnings[0] ?? item.reasons[0] ?? "條件正常";
-      return <tr key={`${item.snapshotAt}-${item.id}`}><td>#{item.rank}</td><td><strong>{item.symbol} {item.stockName}</strong><small>{item.market}</small></td><td><b>{price(item.price)}</b><small className={item.limitDistancePercent <= 3 ? "profit" : ""}>距漲停 {item.limitDistancePercent.toFixed(2)}%</small></td><td><strong className="rocket-score">{item.score.toFixed(1)}</strong><small>{item.categoryLabel}</small></td><td>{item.setupLabel}<small>{item.actionable ? "正式可進場" : "等待確認"}</small></td><td>{item.estimatedVolumeRatio20d.toFixed(2)}X<small>大單力道 {item.largeOrderForce.toFixed(0)}</small></td><td>{item.vwapStatus ?? "無資料"}<small>{item.fiveMinuteStructure ?? "等待分時"}</small></td><td><span className={`rocket-status ${item.actionable ? "can_enter" : item.category === "attack" ? "strong_breakout" : "waiting"}`}>{item.actionable ? "正式買進" : item.categoryLabel}</span>{!compact && <small>{blocker}</small>}</td></tr>;
+      const blocker = item.entryBlockReason || item.failures[0] || item.warnings[0] || item.reasons[0] || "條件正常";
+      const largeOrderSource = item.largeOrderSource === "real_tick" ? "真實大單" : item.largeOrderSource === "quote_proxy" ? "量價估算" : "大單待補";
+      return <tr key={`${item.snapshotAt}-${item.id}`}><td>#{item.rank}</td><td><strong>{item.symbol} {item.stockName}</strong><small>{item.market}</small></td><td><b>{price(item.price)}</b><small className={item.limitDistancePercent <= 3 ? "profit" : ""}>距漲停 {item.limitDistancePercent.toFixed(2)}%</small></td><td><strong className="rocket-score">{item.score.toFixed(1)}</strong><small>{item.categoryLabel}</small></td><td>{item.setupLabel}<small>{item.actionable ? "正式可進場" : item.alertable ? "通知觀察" : "等待確認"}</small></td><td>{item.estimatedVolumeRatio20d.toFixed(2)}X<small>{largeOrderSource} {item.largeOrderForce.toFixed(0)}</small></td><td>{item.vwapStatus ?? "無資料"}<small>{item.fiveMinuteStructure ?? "等待分時"}</small></td><td><span className={`rocket-status ${item.actionable ? "can_enter" : item.alertable ? "strong_breakout" : "waiting"}`}>{item.actionable ? "正式買進" : item.alertable ? "通知觀察" : item.categoryLabel}</span>{!compact && <small>{blocker}</small>}</td></tr>;
     })}</tbody></table></div> : <div className="rocket-empty compact">目前沒有符合條件的標的。</div>}
   </section>;
 }
@@ -145,8 +146,7 @@ function SettingsPanel({ settings, onChange, onSave }: { settings: LimitUpAiSett
   </section>;
 }
 
-export function LimitUpAiPage() {
-  const [userId, setUserId] = useState("");
+export function LimitUpAiPage({ userId }: { userId: string }) {
   const [data, setData] = useState<LimitUpDashboard>(() => normalizeLimitUpDashboard({
     dataNotice: "漲停機器人頁面已啟動；等待背景掃描或手動掃描寫入最新候選。",
   }));
@@ -161,15 +161,6 @@ export function LimitUpAiPage() {
   const [error, setError] = useState("");
   const initializedMessages = useRef(false);
   const lastNotificationId = useRef(0);
-
-  useEffect(() => {
-    let id = localStorage.getItem("moneymoney-user-id");
-    if (!id) {
-      id = globalThis.crypto?.randomUUID?.() ?? `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      localStorage.setItem("moneymoney-user-id", id);
-    }
-    setUserId(id);
-  }, []);
 
   const playTone = useCallback(() => {
     const audioContext = new AudioContext();
@@ -326,12 +317,12 @@ export function LimitUpAiPage() {
 
     <section className="rocket-dashboard">
       <article><span>機器人狀態</span><strong>{robotStatusLabel(robotStatus?.status)}</strong><small>{robotStatus?.marketSessionActive ? "盤中每 15 秒自動偵測" : "非盤中，保留最後結果"}</small></article>
-      <article><span>候選股</span><strong>{data.summary.candidateCount}</strong><small>攻擊 {data.summary.attackCount} / 可進場 {data.summary.actionableCount}</small></article>
+      <article><span>候選股</span><strong>{data.summary.candidateCount}</strong><small>通知 {data.summary.alertableCount} / 可進場 {data.summary.actionableCount}</small></article>
       <article><span>模擬持倉</span><strong>{data.summary.openPositionCount}</strong><small>最多 {data.settings.maxPositions} 檔</small></article>
       <article><span>今日績效</span><strong className={pnlClass(data.performance.today.totalPnl)}>{signedMoney(data.performance.today.totalPnl)}</strong><small>勝率 {data.performance.today.winRate.toFixed(1)}%</small></article>
       <article><span>本月績效</span><strong className={pnlClass(data.performance.month.totalPnl)}>{signedMoney(data.performance.month.totalPnl)}</strong><small>{data.performance.period}</small></article>
       <article><span>買賣通知</span><strong>{data.unreadCount}</strong><small>未讀訊息</small></article>
-      <article><span>今日回推</span><strong>{replay?.attackTotal ?? 0}</strong><small>可進場 {replay?.actionableTotal ?? 0} / {replay?.total ?? 0}</small></article>
+      <article><span>今日回推</span><strong>{replay?.alertableTotal ?? 0}</strong><small>可進場 {replay?.actionableTotal ?? 0} / {replay?.total ?? 0}</small></article>
       <article><span>最後掃描</span><strong>{robotStatus?.lastSuccessAt ? time(robotStatus.lastSuccessAt) : "尚未成功"}</strong><small>{robotStatus?.lastError ? `錯誤：${robotStatus.lastError}` : `累計 ${robotStatus?.cycleCount ?? 0} 輪`}</small></article>
     </section>
 
@@ -342,6 +333,7 @@ export function LimitUpAiPage() {
     </section>
 
     <NotificationCenter items={visibleMessages} unreadCount={data.unreadCount} filter={messageFilter} onFilterChange={setMessageFilter} onRead={(id) => void markRead(id)} onReadAll={() => void markAllRead()} />
+    <CandidateTable title="今日漲停／近漲停榜" subtitle="鎖漲停或距漲停 3% 內會列在這裡；鎖住只通知，不模擬買進。" items={data.limitBoard} />
 
     <CandidateTable title="強勢候選區" subtitle="依 100 分模型排序；85 分以上為漲停攻擊候選。" items={data.candidates} />
     <CandidateTable title="接近買點區" subtitle="符合 A/B/C 型態或已達漲停攻擊等級，才會列入正式觀察。" items={data.nearEntries} />

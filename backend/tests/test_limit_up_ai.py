@@ -68,12 +68,23 @@ def _signal(**overrides: object) -> dict[str, object]:
 
 
 def test_pre_limit_attack_becomes_actionable_candidate() -> None:
-    item = score_limit_up_candidate(_signal(), _settings(), now=NOW)
+    item = score_limit_up_candidate(
+        _signal(
+            confirmationScore=100,
+            industryScore=100,
+            marketAlignment=100,
+            largeOrderForce=360,
+            bidVolumes=[700_000, 600_000, 500_000],
+            askVolumes=[100_000, 100_000, 100_000],
+        ),
+        _settings(),
+        now=NOW,
+    )
 
     assert item["category"] == "attack"
     assert item["setupType"] == "pre_limit_attack"
     assert item["actionable"] is True
-    assert item["score"] >= 85
+    assert item["score"] >= 86
 
 
 def test_locked_limit_up_is_not_chased_by_default() -> None:
@@ -84,7 +95,32 @@ def test_locked_limit_up_is_not_chased_by_default() -> None:
     )
 
     assert item["actionable"] is False
+    assert item["alertable"] is True
+    assert item["isLockedLimitUp"] is True
+    assert "只通知" in item["entryBlockReason"]
     assert any("鎖住漲停" in reason for reason in item["failures"])
+
+
+def test_near_limit_stock_can_alert_without_large_order_tick_data() -> None:
+    item = score_limit_up_candidate(
+        _signal(
+            price=108.8,
+            changePercent=8.8,
+            largeOrderForce=0,
+            largeOrderContinuousBuy=False,
+            largeOrderDataAvailable=False,
+            largeOrderSource="quote_proxy",
+            bidVolumes=[500_000, 420_000, 300_000],
+            askVolumes=[150_000, 120_000, 100_000],
+        ),
+        _settings(),
+        now=NOW,
+    )
+
+    assert item["alertable"] is True
+    assert item["largeOrderSource"] == "quote_proxy"
+    assert item["largeOrderForce"] == 0
+    assert item["entryBlockReason"]
 
 
 def test_price_filter_blocks_out_of_range_stock() -> None:

@@ -368,7 +368,7 @@ export default function Home() {
         ) : tab === "day-trading" ? (
           <DayTradingDashboard />
         ) : tab === "limit-up-ai" ? (
-          <LimitUpAiPage />
+          <LimitUpAiPage userId={userId} />
         ) : tab === "pattern-robot" ? (
           <PatternRobotPage userId={userId} onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }} />
         ) : tab === "adaptive-electronic" ? (

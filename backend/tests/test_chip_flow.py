@@ -561,6 +561,32 @@ def test_day_trading_candidate_requires_fresh_continuous_large_order_buying() ->
     assert "近 5 分鐘大單淨買超 +25 張" in candidates[0]["reasons"][0]
 
 
+def test_large_order_enrichment_keeps_quote_proxy_force_when_tick_data_is_missing() -> None:
+    class RepositoryStub:
+        def list_for_day(self, stock_id: str, trade_date: date) -> list[SimpleNamespace]:
+            return []
+
+    candidates = enrich_day_trading_large_order_confirmation(
+        [{
+            "symbol": "2330",
+            "reasons": [],
+            "warnings": [],
+            "largeOrderForce": 130,
+            "largeOrderContinuousBuy": True,
+            "largeOrderSource": "quote_proxy",
+            "largeOrderIsEstimate": True,
+        }],
+        cast(ChipFlowRepository, RepositoryStub()),
+        ChipFlowAlertRules(),
+        as_of=datetime(2026, 7, 29, 10, 6, tzinfo=TAIPEI),
+    )
+
+    assert candidates[0]["largeOrderDataAvailable"] is False
+    assert candidates[0]["largeOrderForce"] == 130
+    assert candidates[0]["largeOrderContinuousBuy"] is True
+    assert candidates[0]["largeOrderSource"] == "quote_proxy"
+
+
 def test_dynamic_momentum_stock_can_confirm_for_day_trading() -> None:
     rows = [
         alert_snapshot(0, buy_shares=20_000, sell_shares=10_000),

@@ -145,6 +145,9 @@ export function normalizeLimitUpCandidate(value: unknown, index = 0): LimitUpCan
     setupType: text(source.setupType),
     setupLabel: text(source.setupLabel, "等待資料"),
     actionable: bool(source.actionable),
+    alertable: bool(source.alertable),
+    isLockedLimitUp: bool(source.isLockedLimitUp),
+    entryBlockReason: text(source.entryBlockReason),
     stopLoss: finiteNumber(source.stopLoss),
     target1: finiteNumber(source.target1),
     target2: finiteNumber(source.target2),
@@ -153,6 +156,7 @@ export function normalizeLimitUpCandidate(value: unknown, index = 0): LimitUpCan
     riskDeduction: finiteNumber(source.riskDeduction),
     largeOrderForce: finiteNumber(source.largeOrderForce),
     largeOrderContinuousBuy: bool(source.largeOrderContinuousBuy),
+    largeOrderSource: text(source.largeOrderSource, "unavailable"),
     largeOrderStatus: text(source.largeOrderStatus) || null,
     vwapStatus: text(source.vwapStatus) || null,
     fiveMinuteStructure: text(source.fiveMinuteStructure) || null,
@@ -252,6 +256,8 @@ export function normalizeLimitUpDashboard(value: unknown): LimitUpDashboard {
   const source = record(value);
   const summary = record(source.summary);
   const candidates = list(source.candidates, normalizeLimitUpCandidate);
+  const limitBoard = list(source.limitBoard, normalizeLimitUpCandidate);
+  const alerts = list(source.alerts, normalizeLimitUpCandidate);
   const nearEntries = list(source.nearEntries, normalizeLimitUpCandidate);
   const positions = list(source.positions, normalizePosition);
   const notifications = list(source.notifications, normalizeNotification);
@@ -262,7 +268,9 @@ export function normalizeLimitUpDashboard(value: unknown): LimitUpDashboard {
     summary: {
       candidateCount: finiteNumber(summary.candidateCount, candidates.length),
       attackCount: finiteNumber(summary.attackCount, candidates.filter((item) => item.category === "attack").length),
+      alertableCount: finiteNumber(summary.alertableCount, candidates.filter((item) => item.alertable).length),
       actionableCount: finiteNumber(summary.actionableCount, candidates.filter((item) => item.actionable).length),
+      limitBoardCount: finiteNumber(summary.limitBoardCount, limitBoard.length),
       openPositionCount: finiteNumber(summary.openPositionCount, positions.filter((item) => item.status === "open").length),
       realizedPnl: finiteNumber(summary.realizedPnl),
       unrealizedPnl: finiteNumber(summary.unrealizedPnl),
@@ -270,6 +278,8 @@ export function normalizeLimitUpDashboard(value: unknown): LimitUpDashboard {
       winRate: finiteNumber(summary.winRate),
     },
     candidates,
+    limitBoard,
+    alerts,
     nearEntries,
     watchlist: list(source.watchlist, normalizeLimitUpCandidate),
     positions,
@@ -309,6 +319,7 @@ export function normalizeLimitUpReplay(value: unknown): LimitUpReplay {
     items,
     total: finiteNumber(source.total, items.length),
     attackTotal: finiteNumber(source.attackTotal, items.filter((item) => item.category === "attack").length),
+    alertableTotal: finiteNumber(source.alertableTotal, items.filter((item) => item.alertable).length),
     actionableTotal: finiteNumber(source.actionableTotal, items.filter((item) => item.actionable).length),
     updatedAt: text(source.updatedAt, currentIso()),
   };

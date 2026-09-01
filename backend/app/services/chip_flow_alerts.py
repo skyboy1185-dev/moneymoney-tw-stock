@@ -930,6 +930,14 @@ def enrich_day_trading_large_order_confirmation(
             and current - latest_time <= timedelta(minutes=rules.max_stale_minutes)
         )
         data_available = len(rows) >= 3 and fresh
+        try:
+            fallback_force = float(item.get("largeOrderForce") or 0)
+        except (TypeError, ValueError):
+            fallback_force = 0.0
+        fallback_continuous_buy = bool(item.get("largeOrderContinuousBuy"))
+        fallback_source = str(item.get("largeOrderSource") or (
+            "quote_proxy" if item.get("largeOrderIsEstimate") else "unavailable"
+        ))
         direction = str(item.get("direction") or "long")
         alert = (
             (evaluate_large_order_short_surge if direction == "short" else evaluate_large_order_surge)(
@@ -941,7 +949,13 @@ def enrich_day_trading_large_order_confirmation(
             if stock is not None and data_available else None
         )
         continuous = alert is not None
-        continuous_buy = continuous and direction != "short"
+        continuous_buy = (
+            continuous and direction != "short"
+        ) or (
+            not data_available
+            and direction != "short"
+            and (fallback_continuous_buy or fallback_force >= 80)
+        )
         continuous_sell = continuous and direction == "short"
         latest_net_lots = (
             round(float(latest.large_net_shares) / 1_000, 2)
@@ -950,7 +964,9 @@ def enrich_day_trading_large_order_confirmation(
         recent_net_lots = (
             -float(str(alert["recentNetSellLots"]))
             if alert and direction == "short"
-            else float(str(alert["recentNetBuyLots"])) if alert else 0.0
+            else float(str(alert["recentNetBuyLots"])) if alert
+            else fallback_force if not data_available
+            else 0.0
         )
         directional_steps = int(str(
             alert["negativeSteps"] if direction == "short" else alert["positiveSteps"]
@@ -1000,7 +1016,8 @@ def enrich_day_trading_large_order_confirmation(
                 _aware(latest.updated_at).isoformat() if latest is not None else None
             ),
             "largeOrderForce": recent_net_lots,
-            "largeOrderIsEstimate": True,
+            "largeOrderSource": "real_tick" if data_available else fallback_source,
+            "largeOrderIsEstimate": not data_available,
             "reasons": reasons,
             "warnings": warnings,
         })

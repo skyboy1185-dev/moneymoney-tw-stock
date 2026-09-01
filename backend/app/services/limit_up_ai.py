@@ -26,6 +26,10 @@ FULL_MARKET_SIGNAL_CACHE_SECONDS = 10
 FULL_MARKET_QUOTE_BATCH_SIZE = 80
 FULL_MARKET_SIGNAL_RETENTION_SECONDS = 120
 POPULAR_UNIVERSE_CACHE_SECONDS = 90
+LIMIT_UP_ALERT_SCORE = 75
+LIMIT_UP_ACTIONABLE_SCORE = 86
+LIMIT_UP_ORDER_BOOK_SUPPORT_RATIO = 1.25
+LIMIT_UP_MAX_STOP_DISTANCE_PERCENT = 1.2
 _FULL_MARKET_SIGNAL_CACHE: tuple[datetime, list[dict[str, Any]]] | None = None
 _FULL_MARKET_SIGNAL_BY_SYMBOL_CACHE: dict[str, tuple[datetime, dict[str, Any]]] = {}
 _FULL_MARKET_QUOTE_CURSOR = 0
@@ -172,6 +176,14 @@ def _estimated_volume_ratio(signal: dict[str, Any]) -> float:
     return round(max(0.0, _num(signal.get("volumeScore")) / 50), 2)
 
 
+def _order_book_support_ratio(signal: dict[str, Any]) -> float | None:
+    bid_volumes = [_num(value) for value in signal.get("bidVolumes", []) if _num(value) > 0]
+    ask_volumes = [_num(value) for value in signal.get("askVolumes", []) if _num(value) > 0]
+    if not bid_volumes or not ask_volumes:
+        return None
+    return sum(bid_volumes[:5]) / max(1.0, sum(ask_volumes[:5]))
+
+
 def _order_book_score(signal: dict[str, Any]) -> tuple[float, list[str]]:
     bid_volumes = [_num(value) for value in signal.get("bidVolumes", []) if _num(value) > 0]
     ask_volumes = [_num(value) for value in signal.get("askVolumes", []) if _num(value) > 0]
@@ -209,8 +221,19 @@ def score_limit_up_candidate(
     vwap_ok = "站上" in str(signal.get("vwapStatus", "")) or _num(signal.get("vwapDeviationPercent")) >= 0
     higher_lows = "低點" in str(signal.get("fiveMinuteStructure", "")) or bool(signal.get("fiveMinuteLongSetup"))
     retest_ok = bool(signal.get("entryRetestConfirmed") or signal.get("fiveMinuteLongRetest"))
-    large_buy = bool(signal.get("largeOrderContinuousBuy")) or _num(signal.get("largeOrderForce")) >= 80
-    not_locked = limit_distance >= 0.3 and change < 9.7
+    order_book_support = _order_book_support_ratio(signal)
+    large_order_force = _num(signal.get("largeOrderForce"))
+    large_order_source = str(signal.get("largeOrderSource") or (
+        "quote_proxy" if signal.get("largeOrderIsEstimate") else "real_tick"
+        if signal.get("largeOrderDataAvailable") else "unavailable"
+    ))
+    large_buy = (
+        bool(signal.get("largeOrderContinuousBuy"))
+        or large_order_force >= 80
+        or (order_book_support is not None and order_book_support >= LIMIT_UP_ORDER_BOOK_SUPPORT_RATIO)
+    )
+    is_locked_limit_up = limit_distance < 0.3 or change >= 9.7
+    not_locked = not is_locked_limit_up
 
     failures: list[str] = []
     warnings: list[str] = []
@@ -276,10 +299,10 @@ def score_limit_up_candidate(
         setup_reasons.append("距漲停 1～3%，連續大單買入")
 
     actionable = not failures and setup != "等待型態" and score >= 85 and large_buy
-    if score >= 85:
+    if score >= LIMIT_UP_ACTIONABLE_SCORE:
         category = "attack"
         category_label = "漲停攻擊候選"
-    elif score >= 75:
+    elif score >= LIMIT_UP_ALERT_SCORE:
         category = "monitor"
         category_label = "強勢監控"
     elif score >= 65:
@@ -295,6 +318,38 @@ def score_limit_up_candidate(
     rr = (target1 - price) / max(0.01, price - stop_loss)
     if rr < 2:
         warnings.append("預期風險報酬比未達 2:1")
+
+    stop_loss = max(
+        price * (1 - LIMIT_UP_MAX_STOP_DISTANCE_PERCENT / 100),
+        min(price * 0.99, _num(signal.get("low"), price) * 0.995),
+    )
+    rr = (target1 - price) / max(0.01, price - stop_loss)
+    if rr < 1.5:
+        warnings.append("預期風險報酬比未達 1.5:1")
+    alertable = (
+        not (day_trading_restrictions.is_disposed(signal.get("symbol")) or signal.get("tradeRestricted"))
+        and setup != "等待成形"
+        and (score >= LIMIT_UP_ALERT_SCORE or 0 <= limit_distance <= 3)
+    )
+    entry_blockers = list(failures)
+    if setup == "等待成形":
+        entry_blockers.append("型態尚未成形")
+    if score < LIMIT_UP_ACTIONABLE_SCORE:
+        entry_blockers.append(f"攻擊分數未達 {LIMIT_UP_ACTIONABLE_SCORE}")
+    if not large_buy:
+        entry_blockers.append("缺少真實大單或五檔買盤支撐")
+    if is_locked_limit_up:
+        entry_blockers.append("已鎖住或過度接近漲停，只通知不模擬買進")
+    if rr < 1.5:
+        entry_blockers.append("風險報酬比不足")
+    actionable = (
+        not failures
+        and setup != "等待成形"
+        and score >= LIMIT_UP_ACTIONABLE_SCORE
+        and large_buy
+        and not is_locked_limit_up
+        and rr >= 1.5
+    )
 
     return {
         "id": str(signal.get("id") or f"{signal.get('symbol')}-{current.timestamp()}"),
@@ -317,14 +372,23 @@ def score_limit_up_candidate(
         "setupType": setup,
         "setupLabel": setup_label,
         "actionable": actionable,
+        "alertable": alertable,
+        "isLockedLimitUp": is_locked_limit_up,
+        "entryBlockReason": "" if actionable else (
+            "已鎖住或過度接近漲停，只通知不模擬買進"
+            if is_locked_limit_up
+            else entry_blockers[0] if entry_blockers
+            else "只列入漲停觀察，不模擬買進"
+        ),
         "stopLoss": round(stop_loss, 2),
         "target1": round(target1, 2),
         "target2": round(target2, 2),
         "riskRewardRatio": round(rr, 2),
         "components": components,
         "riskDeduction": round(min(5.0, risk_deduct), 2),
-        "largeOrderForce": _num(signal.get("largeOrderForce")),
+        "largeOrderForce": large_order_force,
         "largeOrderContinuousBuy": bool(signal.get("largeOrderContinuousBuy")),
+        "largeOrderSource": large_order_source,
         "largeOrderStatus": signal.get("largeOrderStatus"),
         "vwapStatus": signal.get("vwapStatus"),
         "fiveMinuteStructure": signal.get("fiveMinuteStructure"),
@@ -475,6 +539,7 @@ def _quote_to_limit_up_signal(quote, market: str) -> dict[str, Any] | None:
         "largeOrderForce": round(large_order_force, 2),
         "largeOrderContinuousBuy": large_order_force >= 100,
         "largeOrderDataAvailable": False,
+        "largeOrderSource": "quote_proxy",
         "largeOrderStatus": "全市場量價估算，等待大單明細確認",
         "spreadPercentage": (
             (float(quote.best_ask) - float(quote.best_bid)) / price * 100
@@ -800,7 +865,7 @@ def _notify_candidate_alerts(db: Session, user_id: str, candidates: list[dict[st
     bucket_minute = local.minute - (local.minute % 5)
     bucket = local.replace(minute=bucket_minute, second=0, microsecond=0)
     for candidate in candidates[:10]:
-        if not (candidate["actionable"] or (candidate["category"] == "attack" and candidate["limitDistancePercent"] <= 3)):
+        if not (candidate["actionable"] or candidate.get("alertable") or (candidate["category"] == "attack" and candidate["limitDistancePercent"] <= 3)):
             continue
         alert_type = "ACTIONABLE" if candidate["actionable"] else "NEAR_LIMIT"
         _notify(
@@ -1043,13 +1108,23 @@ def dashboard_payload(
     performance = limit_up_performance_payload(db, user_id, current)
     unread = unread_limit_up_notification_count(db, user_id)
     latest_notifications = list_limit_up_notifications(db, user_id, limit=30)["items"]
+    limit_board = [
+        item for item in candidates
+        if item.get("isLockedLimitUp") or 0 <= float(item.get("limitDistancePercent", 99)) <= 3
+    ][:20]
+    alert_items = [
+        item for item in candidates
+        if item.get("alertable") or item.get("actionable")
+    ][:10]
     return {
         "updatedAt": current.isoformat(),
         "settings": settings_payload(settings),
         "summary": {
             "candidateCount": len(candidates),
             "attackCount": sum(1 for item in candidates if item["category"] == "attack"),
+            "alertableCount": sum(1 for item in candidates if item.get("alertable")),
             "actionableCount": sum(1 for item in candidates if item["actionable"]),
+            "limitBoardCount": len(limit_board),
             "openPositionCount": len(open_positions),
             "realizedPnl": round(realized, 2),
             "unrealizedPnl": round(unrealized, 2),
@@ -1057,7 +1132,9 @@ def dashboard_payload(
             "winRate": round(len(wins) / len(closed_sells) * 100, 2) if closed_sells else 0,
         },
         "candidates": candidates[:SNAPSHOT_LIMIT],
-        "nearEntries": [item for item in candidates if item["actionable"] or item["category"] == "attack"][:10],
+        "limitBoard": limit_board,
+        "alerts": alert_items,
+        "nearEntries": alert_items,
         "watchlist": [item for item in candidates if item["category"] in {"monitor", "watch"}][:20],
         "positions": [position_payload(item) for item in positions],
         "trades": [trade_payload(item) for item in trades],
@@ -1093,6 +1170,7 @@ def replay_today(db: Session, user_id: str, now: datetime | None = None) -> dict
         "items": items,
         "total": len(items),
         "attackTotal": sum(1 for item in items if item.get("category") == "attack"),
+        "alertableTotal": sum(1 for item in items if item.get("alertable")),
         "actionableTotal": sum(1 for item in items if item.get("actionable")),
         "updatedAt": current.isoformat(),
     }

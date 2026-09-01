@@ -53,6 +53,9 @@ export interface LimitUpCandidate {
   setupType: string;
   setupLabel: string;
   actionable: boolean;
+  alertable: boolean;
+  isLockedLimitUp: boolean;
+  entryBlockReason: string;
   stopLoss: number;
   target1: number;
   target2: number;
@@ -61,6 +64,7 @@ export interface LimitUpCandidate {
   riskDeduction: number;
   largeOrderForce: number;
   largeOrderContinuousBuy: boolean;
+  largeOrderSource: "real_tick" | "quote_proxy" | "unavailable" | string;
   largeOrderStatus?: string | null;
   vwapStatus?: string | null;
   fiveMinuteStructure?: string | null;
@@ -168,7 +172,9 @@ export interface LimitUpDashboard {
   summary: {
     candidateCount: number;
     attackCount: number;
+    alertableCount: number;
     actionableCount: number;
+    limitBoardCount: number;
     openPositionCount: number;
     realizedPnl: number;
     unrealizedPnl: number;
@@ -176,6 +182,8 @@ export interface LimitUpDashboard {
     winRate: number;
   };
   candidates: LimitUpCandidate[];
+  limitBoard: LimitUpCandidate[];
+  alerts: LimitUpCandidate[];
   nearEntries: LimitUpCandidate[];
   watchlist: LimitUpCandidate[];
   positions: LimitUpPosition[];
@@ -193,6 +201,7 @@ export interface LimitUpReplay {
   items: LimitUpCandidate[];
   total: number;
   attackTotal: number;
+  alertableTotal?: number;
   actionableTotal: number;
   updatedAt: string;
 }
