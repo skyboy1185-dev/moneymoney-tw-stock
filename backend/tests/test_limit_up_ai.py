@@ -1,6 +1,8 @@
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 from app.models import LimitUpAiSettings
+from app.services import limit_up_ai
 from app.services.limit_up_ai import score_limit_up_candidate
 
 
@@ -94,3 +96,19 @@ def test_price_filter_blocks_out_of_range_stock() -> None:
 
     assert item["actionable"] is False
     assert any("股價不在" in reason for reason in item["failures"])
+
+
+def test_full_market_quote_slice_rotates_without_requesting_full_universe(monkeypatch) -> None:
+    monkeypatch.setattr(limit_up_ai, "_FULL_MARKET_QUOTE_CURSOR", 0)
+    stocks = tuple(
+        SimpleNamespace(symbol=str(1000 + index), name=f"Stock {index}", market="上市")
+        for index in range(limit_up_ai.FULL_MARKET_QUOTE_BATCH_SIZE + 5)
+    )
+
+    first = limit_up_ai._full_market_quote_slice(stocks)
+    second = limit_up_ai._full_market_quote_slice(stocks)
+
+    assert len(first) == limit_up_ai.FULL_MARKET_QUOTE_BATCH_SIZE
+    assert len(second) == limit_up_ai.FULL_MARKET_QUOTE_BATCH_SIZE
+    assert first[0].symbol == "1000"
+    assert second[0].symbol == str(1000 + limit_up_ai.FULL_MARKET_QUOTE_BATCH_SIZE)

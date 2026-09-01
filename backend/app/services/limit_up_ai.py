@@ -23,8 +23,12 @@ from .popular_stock_universe import OfficialPopularStockProvider
 TAIPEI = ZoneInfo("Asia/Taipei")
 SNAPSHOT_LIMIT = 20
 FULL_MARKET_SIGNAL_CACHE_SECONDS = 10
+FULL_MARKET_QUOTE_BATCH_SIZE = 80
+FULL_MARKET_SIGNAL_RETENTION_SECONDS = 120
 POPULAR_UNIVERSE_CACHE_SECONDS = 90
 _FULL_MARKET_SIGNAL_CACHE: tuple[datetime, list[dict[str, Any]]] | None = None
+_FULL_MARKET_SIGNAL_BY_SYMBOL_CACHE: dict[str, tuple[datetime, dict[str, Any]]] = {}
+_FULL_MARKET_QUOTE_CURSOR = 0
 _POPULAR_UNIVERSE_CACHE: tuple[datetime, tuple[Any, ...]] | None = None
 
 
@@ -374,6 +378,32 @@ def _popular_universe(now: datetime) -> tuple[Any, ...]:
     return stocks
 
 
+def _dedupe_stocks_by_symbol(stocks: tuple[Any, ...]) -> tuple[Any, ...]:
+    deduped: dict[str, Any] = {}
+    for stock in stocks:
+        symbol = str(getattr(stock, "symbol", "") or "")
+        if symbol and symbol not in deduped:
+            deduped[symbol] = stock
+    return tuple(deduped.values())
+
+
+def _full_market_quote_slice(stocks: tuple[Any, ...]) -> tuple[Any, ...]:
+    global _FULL_MARKET_QUOTE_CURSOR
+    unique_stocks = _dedupe_stocks_by_symbol(stocks)
+    if len(unique_stocks) <= FULL_MARKET_QUOTE_BATCH_SIZE:
+        _FULL_MARKET_QUOTE_CURSOR = 0
+        return unique_stocks
+    start = _FULL_MARKET_QUOTE_CURSOR % len(unique_stocks)
+    end = start + FULL_MARKET_QUOTE_BATCH_SIZE
+    selected = (
+        unique_stocks[start:end]
+        if end <= len(unique_stocks)
+        else (*unique_stocks[start:], *unique_stocks[:end - len(unique_stocks)])
+    )
+    _FULL_MARKET_QUOTE_CURSOR = end % len(unique_stocks)
+    return tuple(selected)
+
+
 def _quote_to_limit_up_signal(quote, market: str) -> dict[str, Any] | None:
     price = float(quote.price)
     previous_close = float(quote.previous_close)
@@ -472,17 +502,29 @@ def _full_market_limit_up_signals(now: datetime) -> list[dict[str, Any]]:
     stocks = _popular_universe(now)
     if not stocks:
         return []
-    requests = [StockQuoteRequest(stock.symbol, stock.name, stock.market) for stock in stocks]
+    selected_stocks = _full_market_quote_slice(stocks)
+    requests = [
+        StockQuoteRequest(stock.symbol, stock.name, stock.market)
+        for stock in selected_stocks
+    ]
     quotes = _await_sync(official_market_data_provider.get_quotes(requests, force_refresh=True))
-    by_symbol = {stock.symbol: stock for stock in stocks}
-    signals: list[dict[str, Any]] = []
+    by_symbol = {stock.symbol: stock for stock in selected_stocks}
+    fresh_signals_by_symbol: dict[str, dict[str, Any]] = {}
     for symbol, quote in quotes.items():
         stock = by_symbol.get(symbol)
         if stock is None:
             continue
         signal = _quote_to_limit_up_signal(quote, stock.market)
         if signal is not None:
-            signals.append(signal)
+            fresh_signals_by_symbol[symbol] = signal
+    scanned_symbols = set(by_symbol)
+    cutoff = now - timedelta(seconds=FULL_MARKET_SIGNAL_RETENTION_SECONDS)
+    for symbol, (updated_at, _signal) in list(_FULL_MARKET_SIGNAL_BY_SYMBOL_CACHE.items()):
+        if updated_at < cutoff or symbol in scanned_symbols:
+            _FULL_MARKET_SIGNAL_BY_SYMBOL_CACHE.pop(symbol, None)
+    for symbol, signal in fresh_signals_by_symbol.items():
+        _FULL_MARKET_SIGNAL_BY_SYMBOL_CACHE[symbol] = (now, signal)
+    signals = [dict(signal) for _updated_at, signal in _FULL_MARKET_SIGNAL_BY_SYMBOL_CACHE.values()]
     ranked = sorted(
         signals,
         key=lambda item: (
