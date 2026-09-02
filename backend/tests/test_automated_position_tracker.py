@@ -16,7 +16,6 @@ from app.models import (
 )
 from app.services.automated_position_tracker import (
     AUTOMATION_DAILY_CAPITAL,
-    AUTOMATION_FIXED_MAX_POSITION_CAPITAL,
     AUTOMATION_FIXED_REPEAT_STOP_LIMIT,
     AUTOMATION_USER_ID,
     DYNAMIC_AUTOMATION_USER_ID,
@@ -243,7 +242,7 @@ def test_official_recommendation_history_is_deduplicated() -> None:
 
 def test_low_confidence_official_recommendation_does_not_open_or_record() -> None:
     config, session, now = _formal_session()
-    signal = _qualified_signal(confidenceScore=79)
+    signal = _qualified_signal(confidenceScore=69)
 
     with _session() as db:
         created = ensure_positions_for_delivered_entries(
@@ -270,7 +269,7 @@ def test_low_confidence_official_recommendation_does_not_open_or_record() -> Non
 
 def test_low_confirmation_official_recommendation_does_not_open_or_record() -> None:
     config, session, now = _formal_session()
-    signal = _qualified_signal(confirmationScore=44)
+    signal = _qualified_signal(confirmationScore=34)
 
     with _session() as db:
         created = ensure_positions_for_delivered_entries(
@@ -313,7 +312,7 @@ def test_fixed_two_lot_strategy_skips_excessive_stop_risk() -> None:
         assert "超過單筆上限 50,000 元" in allocation["status"]
 
 
-def test_fixed_two_lot_strategy_skips_oversized_high_price_position() -> None:
+def test_fixed_two_lot_strategy_opens_high_price_position_over_one_million() -> None:
     with _session() as db:
         signal = {
             **_signal(),
@@ -328,10 +327,12 @@ def test_fixed_two_lot_strategy_skips_oversized_high_price_position() -> None:
 
         created = ensure_positions_for_delivered_entries(db, [signal])
 
-        assert created == []
+        assert len(created) == 1
         allocation = signal["strategyAllocations"][FIXED_STRATEGY_KEY]
-        assert allocation["quantityLots"] == 0
-        assert f"{AUTOMATION_FIXED_MAX_POSITION_CAPITAL:,.0f}" in allocation["status"]
+        assert allocation["quantityLots"] == 2
+        assert allocation["allocatedCapital"] == 1_122_000
+        assert created[0].quantity == 2
+        assert created[0].symbol == "3034"
 
 
 def test_fixed_two_lot_strategy_pauses_symbol_after_repeated_stop_losses() -> None:

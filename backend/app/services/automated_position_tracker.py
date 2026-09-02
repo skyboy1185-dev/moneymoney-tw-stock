@@ -34,7 +34,6 @@ DYNAMIC_STRATEGY_KEY = "dynamic_5m"
 # Legacy fallback used only by recommendation history created before dynamic sizing.
 AUTOMATION_QUANTITY_LOTS = 2.0
 AUTOMATION_FIXED_MAX_STOP_RISK = 50_000.0
-AUTOMATION_FIXED_MAX_POSITION_CAPITAL = 1_000_000.0
 AUTOMATION_FIXED_REPEAT_STOP_LOOKBACK_DAYS = 30
 AUTOMATION_FIXED_REPEAT_STOP_LIMIT = 2
 AUTOMATION_DAILY_CAPITAL = 5_000_000.0
@@ -326,12 +325,6 @@ def ensure_positions_for_official_recommendations(
                     f"超過單筆上限 {AUTOMATION_FIXED_MAX_STOP_RISK:,.0f} 元，未建倉"
                     if estimated_stop_risk > AUTOMATION_FIXED_MAX_STOP_RISK else ""
                 )
-                estimated_position_capital = entry_price * quantity_lots * 1000
-                if not blocked_status and estimated_position_capital > AUTOMATION_FIXED_MAX_POSITION_CAPITAL:
-                    blocked_status = (
-                        f"固定 2 張使用資金 {estimated_position_capital:,.0f} 元，"
-                        f"超過單檔上限 {AUTOMATION_FIXED_MAX_POSITION_CAPITAL:,.0f} 元，未建倉"
-                    )
                 recent_stop_losses = _recent_symbol_stop_loss_count(
                     db,
                     user_id=user_id,
