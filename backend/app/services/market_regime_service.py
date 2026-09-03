@@ -66,12 +66,33 @@ def intraday_regime_override(market: AdaptiveMarketMetrics, base_regime: str) ->
     if _yes(market.taiex_new_low):
         bearish_votes += 1
 
+    hard_bearish = (
+        (taiex_1d is not None and taiex_1d <= -1.5)
+        or (
+            electronic_1d is not None
+            and electronic_1d <= -2.0
+            and advance is not None
+            and advance <= 35
+        )
+        or (market.limit_down_count is not None and market.limit_down_count >= 10)
+        or _yes(market.taiex_new_low)
+    )
+
+    if hard_bearish:
+        return "CRASH"
+    if bearish_votes >= 2:
+        if (
+            base_regime in {"BREAKOUT", "RECOVERY"}
+            and bullish_votes >= 1
+            and not hard_bearish
+            and bearish_votes <= bullish_votes + 1
+        ):
+            return base_regime
+        return "CRASH"
     if bullish_votes >= 3:
         return "BREAKOUT"
     if bullish_votes >= 2 and base_regime not in {"BREAKOUT", "RECOVERY"}:
         return "RECOVERY"
-    if bearish_votes >= 2:
-        return "CRASH"
     return base_regime
 
 

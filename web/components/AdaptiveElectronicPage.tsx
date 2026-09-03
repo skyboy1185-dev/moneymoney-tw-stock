@@ -97,6 +97,13 @@ type Status = {
   todayScanSucceeded?: boolean;
   candidateDataStale?: boolean;
   newTradesPausedByScanner?: boolean;
+  candidateCount?: number;
+  canEnterCandidateCount?: number;
+  superAiEligibleCount?: number;
+  blockedReasonCounts?: Record<string, number>;
+  selectionStrategies?: string[];
+  tradingRegime?: string | null;
+  candidateStrategyCounts?: Record<string, number>;
   settings: Settings;
   marketState: MarketState;
   risk: RiskState;
@@ -345,6 +352,29 @@ function StatCard({ label, value, tone }: { label: string; value: string; tone?:
   );
 }
 
+const BLOCK_REASON_LABELS: Record<string, string> = {
+  precision_breakout_long_only: "只允許多方突破",
+  precision_requires_strong_market: "盤勢不符",
+  precision_requires_breakout_strategy: "不是突破策略",
+  precision_total_score_below_82: "總分不足",
+  precision_health_score_below_75: "健康度不足",
+  precision_relative_strength_not_positive: "相對強度不足",
+  precision_industry_strength_below_65: "族群強度不足",
+  precision_false_breakout_risk_too_high: "假突破風險高",
+  precision_vwap_proxy_not_confirmed: "盤中突破未確認",
+  strong_market_requires_breakout_strategy: "強勢盤需突破",
+  strong_market_total_score_too_weak: "強勢分不足",
+  strong_market_health_score_too_weak: "強勢健康度不足",
+  strong_market_relative_strength_too_weak: "強勢相對強度不足",
+  max_positions: "持倉已滿",
+  ai_score_below_trade_threshold: "AI 分數不足",
+  risk_reward_below_threshold: "R/R 不足",
+  stop_distance_too_wide: "停損太寬",
+  quantity_zero: "張數為 0",
+  delayed_quote: "延遲報價",
+  market_risk_blocks_long: "市場風險擋多",
+};
+
 function DecisionReasonList({ reasons }: { reasons: string[] }) {
   if (!reasons.length) return <small>尚無AI決策說明</small>;
   return (
@@ -533,6 +563,16 @@ export function AdaptiveElectronicPage({
       ? `掃描器異常：${status.lastError}`
       : `掃描資料過期：候選股日期 ${candidateTradeDate ?? status?.latestCandidateTradeDate ?? "無"}，今日尚未成功掃描；系統暫停新倉。`
     : "";
+  const blockedReasons = Object.entries(status?.blockedReasonCounts ?? {})
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 4)
+    .map(([reason, count]) => `${BLOCK_REASON_LABELS[reason] ?? reason} ${count}`);
+  const noEligibleReason = !scannerPaused && (status?.candidateCount ?? 0) > 0 && (status?.superAiEligibleCount ?? 0) === 0
+    ? `今日有 ${status?.candidateCount ?? candidates.length} 檔候選，但正式可進場 0 檔；主要原因：${blockedReasons.join("、") || "尚無擋單統計"}。`
+    : "";
+  const strategyCountText = Object.entries(status?.candidateStrategyCounts ?? {})
+    .map(([strategy, count]) => `${strategy} ${count}`)
+    .join(" / ");
   const strategyModeLabel = settings?.strategyModeLabel ?? "少量精準突破模式";
 
   if (loading && !status) {
@@ -590,6 +630,7 @@ export function AdaptiveElectronicPage({
       </p>
       {error && <div className="error-banner">{error}<button onClick={() => setError("")}><X /></button></div>}
       {scannerWarning && <div className="error-banner"><AlertTriangle />{scannerWarning}</div>}
+      {noEligibleReason && <div className="error-banner"><AlertTriangle />{noEligibleReason}</div>}
       {toast && <div className="pattern-toast">{toast}</div>}
 
       <section className="pattern-stats">
@@ -609,6 +650,8 @@ export function AdaptiveElectronicPage({
         <StatCard label="精準門檻" value={`AI ${precisionPolicy?.minAiScore ?? 88} / 健康 ${precisionPolicy?.minHealthScore ?? 75}`} />
         <StatCard label="停損上限" value={`${precisionPolicy?.maxStopDistancePct ?? 2}%`} />
         <StatCard label="候選股日期" value={candidateTradeDate ?? status?.latestCandidateTradeDate ?? "尚無"} tone={scannerPaused ? "pattern-loss" : undefined} />
+        <StatCard label="候選 / 可進場" value={`${status?.candidateCount ?? candidates.length}/${status?.superAiEligibleCount ?? 0}`} tone={(status?.superAiEligibleCount ?? 0) > 0 ? "pattern-profit" : "pattern-loss"} />
+        <StatCard label="選股策略" value={strategyCountText || (status?.selectionStrategies ?? []).join(" / ") || "尚無"} />
       </section>
 
       <section className="pattern-panel">

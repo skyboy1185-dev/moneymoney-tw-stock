@@ -17,10 +17,12 @@ from app.database import Base
 from app.models import AdaptivePaperTrade, AdaptiveSignal, AdaptiveStockCandidate, SuperAIDaytradeNotification
 from app.services.adaptive_backtest_service import run_backtest
 from app.services.adaptive_electronic_service import (
+    _active_trading_strategies,
     _active_trading_strategy,
     _display_candidate_status,
     _selection_strategy,
     candidate_payload,
+    process_adaptive_scan,
 )
 from app.services.adaptive_electronic_automation import (
     _normalize_scan_payload,
@@ -185,6 +187,38 @@ def test_intraday_selloff_overrides_recovery_for_day_trading() -> None:
             electronic_return_1d=-1.3,
             advance_ratio=28,
             taiex_new_low=True,
+        ),
+        "RECOVERY",
+    ) == "CRASH"
+
+
+def test_intraday_mixed_tape_keeps_recovery_for_long_breakout_screening() -> None:
+    metrics = market(
+        taiex_return_1d=2.5,
+        electronic_return_1d=-0.99,
+        advance_ratio=21,
+        taiex_above_ma5=True,
+        taiex_new_low=False,
+        limit_down_count=1,
+        market_open=True,
+    )
+    override = intraday_regime_override(metrics, "RECOVERY")
+
+    assert override == "RECOVERY"
+    payload = AdaptiveScanPayload(market=metrics, industries=[], stocks=[])
+    evaluation = evaluate_market_regime(metrics, PARAMETERS, previous_regime="RECOVERY")
+    assert _active_trading_strategies(evaluation, payload, override)[0] == "BREAKOUT"
+
+
+def test_intraday_hard_bearish_risk_still_overrides_to_crash() -> None:
+    assert intraday_regime_override(
+        market(
+            taiex_return_1d=-1.7,
+            electronic_return_1d=-0.2,
+            advance_ratio=42,
+            taiex_new_low=False,
+            limit_down_count=0,
+            market_open=True,
         ),
         "RECOVERY",
     ) == "CRASH"
@@ -1141,6 +1175,44 @@ def test_super_ai_blocked_entry_does_not_create_watch_notification() -> None:
         db.commit()
 
         assert db.scalar(select(func.count(SuperAIDaytradeNotification.id))) == 0
+
+
+def test_process_scan_reports_breakout_candidate_and_gate_summary_in_bullish_recovery() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 8, 26, 10, 30, tzinfo=TAIPEI)
+    metrics = market(
+        trade_date=date(2026, 8, 26),
+        updated_at=now,
+        market_open=True,
+        taiex_return_1d=1.0,
+        electronic_return_1d=1.2,
+        advance_ratio=68,
+        taiex_above_ma5=True,
+    )
+    payload = AdaptiveScanPayload(
+        market=metrics,
+        industries=[],
+        stocks=[stock(range_high=100)],
+    )
+
+    with Session(engine) as db:
+        result = process_adaptive_scan(db, payload)
+
+        candidate = db.scalar(select(AdaptiveStockCandidate).where(
+            AdaptiveStockCandidate.stock_code == "2330",
+        ))
+        assert candidate is not None
+        assert candidate.strategy_type == "BREAKOUT"
+        assert result["selectionStrategies"][0] == "BREAKOUT"
+        assert result["candidateCount"] == 1
+        assert result["canEnterCandidateCount"] == 1
+        assert result["superAiEligibleCount"] == 1
+        assert result["blockedReasonCounts"] == {}
 
 
 def test_super_ai_pending_mail_requires_matching_trade_record() -> None:

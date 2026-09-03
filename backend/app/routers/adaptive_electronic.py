@@ -6,7 +6,7 @@ import json
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..adaptive_schemas import (
@@ -48,6 +48,7 @@ from ..services.super_ai_daytrade_service import (
     risk_reward,
     settings_payload,
     stop_distance_pct,
+    trading_gate,
     trade_side_for,
     update_settings as update_super_ai_settings,
 )
@@ -106,7 +107,44 @@ def automation_status(db: Session = Depends(get_db)) -> dict:
     today = datetime.now(UTC).astimezone(TAIPEI).date()
     latest_trade_date = latest_candidate.trade_date if latest_candidate else None
     candidate_data_stale = latest_trade_date is not None and latest_trade_date < today
+    candidate_count = 0
+    can_enter_candidate_count = 0
+    strategy_counts: dict[str, int] = {}
+    blocked_reason_counts: dict[str, int] = {}
+    super_ai_eligible_count = 0
+    if latest_trade_date is not None:
+        latest_candidates = list(db.scalars(
+            select(AdaptiveStockCandidate)
+            .where(AdaptiveStockCandidate.trade_date == latest_trade_date)
+            .order_by(AdaptiveStockCandidate.rank)
+        ).all())
+        candidate_count = len(latest_candidates)
+        can_enter_candidate_count = sum(1 for item in latest_candidates if item.candidate_status == "can_enter")
+        strategy_counts = {
+            str(strategy): int(count)
+            for strategy, count in db.execute(
+                select(AdaptiveStockCandidate.strategy_type, func.count(AdaptiveStockCandidate.id))
+                .where(AdaptiveStockCandidate.trade_date == latest_trade_date)
+                .group_by(AdaptiveStockCandidate.strategy_type)
+            ).all()
+        }
     state = adaptive_electronic_automation.state
+    last_result = state.get("lastResult") if isinstance(state.get("lastResult"), dict) else {}
+    status_regime = str(last_result.get("tradingRegime") or (regime.regime if regime else "UNCERTAIN"))
+    if latest_trade_date is not None:
+        trade_candidates: dict[str, AdaptiveStockCandidate] = {}
+        for item in latest_candidates:
+            current = trade_candidates.get(item.stock_code)
+            item_priority = ({"BREAKOUT": 4, "RECOVERY": 3, "RANGE": 2, "CRASH": 1}.get(item.strategy_type, 0), item.candidate_status == "can_enter", item.total_score)
+            current_priority = ({"BREAKOUT": 4, "RECOVERY": 3, "RANGE": 2, "CRASH": 1}.get(current.strategy_type, 0), current.candidate_status == "can_enter", current.total_score) if current else None
+            if current is None or item_priority > current_priority:
+                trade_candidates[item.stock_code] = item
+        for item in trade_candidates.values():
+            gate = trading_gate(db, settings, item, status_regime, datetime.now(UTC))
+            if gate["allowed"]:
+                super_ai_eligible_count += 1
+            for reason in gate["failures"]:
+                blocked_reason_counts[reason] = blocked_reason_counts.get(reason, 0) + 1
     state.update({
         "systemName": SYSTEM_NAME,
         "settings": settings_payload(settings),
@@ -117,6 +155,13 @@ def automation_status(db: Session = Depends(get_db)) -> dict:
         "todayScanSucceeded": latest_trade_date == today,
         "candidateDataStale": candidate_data_stale,
         "newTradesPausedByScanner": bool(candidate_data_stale or state.get("lastError")),
+        "candidateCount": candidate_count,
+        "canEnterCandidateCount": can_enter_candidate_count,
+        "superAiEligibleCount": super_ai_eligible_count,
+        "blockedReasonCounts": blocked_reason_counts or last_result.get("blockedReasonCounts") or {},
+        "selectionStrategies": last_result.get("selectionStrategies") or [],
+        "tradingRegime": status_regime,
+        "candidateStrategyCounts": strategy_counts,
     })
     return state
 

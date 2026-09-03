@@ -526,6 +526,21 @@ def _signal_open_for_new_entry(signal: AdaptiveSignal, trade_date: date) -> bool
     )
 
 
+def _trade_candidate_priority(candidate: AdaptiveStockCandidate) -> tuple[int, int, Decimal]:
+    strategy_priority = {"BREAKOUT": 4, "RECOVERY": 3, "RANGE": 2, "CRASH": 1}.get(candidate.strategy_type, 0)
+    status_priority = 1 if candidate.candidate_status == "can_enter" else 0
+    return strategy_priority, status_priority, candidate.total_score
+
+
+def _trade_candidate_by_symbol(candidates: list[AdaptiveStockCandidate]) -> dict[str, AdaptiveStockCandidate]:
+    selected: dict[str, AdaptiveStockCandidate] = {}
+    for candidate in candidates:
+        current = selected.get(candidate.stock_code)
+        if current is None or _trade_candidate_priority(candidate) > _trade_candidate_priority(current):
+            selected[candidate.stock_code] = candidate
+    return selected
+
+
 def update_adaptive_paper_trades(
     db: Session,
     payload: AdaptiveScanPayload,
@@ -534,7 +549,7 @@ def update_adaptive_paper_trades(
     regime: str,
 ) -> list[AdaptiveSignal]:
     """Update the Super AI day-trade paper ledger from official adaptive scan prices."""
-    candidate_by_symbol = {candidate.stock_code: candidate for candidate in candidates}
+    candidate_by_symbol = _trade_candidate_by_symbol(candidates)
     emitted = _manage_open_trades(db, payload, candidate_by_symbol, regime)
 
     if not adaptive_entry_window_open(

@@ -214,6 +214,39 @@ def _active_trading_strategy(evaluation: RegimeEvaluation, payload: AdaptiveScan
     return _selection_strategy(evaluation, payload)
 
 
+def _active_trading_strategies(evaluation: RegimeEvaluation, payload: AdaptiveScanPayload, trading_regime: str) -> list[str]:
+    """Return observation strategies while keeping precision entries long-breakout only.
+
+    A mixed intraday tape should not turn a recovery day into a pure CRASH
+    candidate list. In bullish/recovery regimes we always include BREAKOUT
+    candidates first so the Super AI trading gate has valid long setups to
+    evaluate; recovery candidates remain observation-only unless the gate is
+    changed elsewhere.
+    """
+    primary = _active_trading_strategy(evaluation, payload, trading_regime)
+    if trading_regime in {"BREAKOUT", "RECOVERY"}:
+        strategies = ["BREAKOUT"]
+        if primary != "BREAKOUT" and primary in STRATEGIES:
+            strategies.append(primary)
+        return strategies
+    return [primary]
+
+
+def _trade_candidate_priority(candidate: AdaptiveStockCandidate) -> tuple[int, int, Decimal]:
+    strategy_priority = {"BREAKOUT": 4, "RECOVERY": 3, "RANGE": 2, "CRASH": 1}.get(candidate.strategy_type, 0)
+    status_priority = 1 if candidate.candidate_status == "can_enter" else 0
+    return strategy_priority, status_priority, candidate.total_score
+
+
+def _trade_candidate_by_symbol(candidates: list[AdaptiveStockCandidate]) -> dict[str, AdaptiveStockCandidate]:
+    selected: dict[str, AdaptiveStockCandidate] = {}
+    for candidate in candidates:
+        current = selected.get(candidate.stock_code)
+        if current is None or _trade_candidate_priority(candidate) > _trade_candidate_priority(current):
+            selected[candidate.stock_code] = candidate
+    return selected
+
+
 def _persist_regime(
     db: Session,
     payload: AdaptiveScanPayload,
@@ -294,7 +327,7 @@ def process_adaptive_scan(db: Session, payload: AdaptiveScanPayload) -> dict[str
             for key, value in values.items(): setattr(stored, key, value)
 
     scored: list[tuple[AdaptiveStockInput, str, StrategyScore, float, dict[str, float], list[str]]] = []
-    selection_strategy = _active_trading_strategy(evaluation, payload, trading_regime)
+    selection_strategies = _active_trading_strategies(evaluation, payload, trading_regime)
     for stock in payload.stocks:
         mapping = db.scalar(select(ElectronicIndustryMapping).where(ElectronicIndustryMapping.stock_code == stock.stock_code))
         mapping_values = {
@@ -315,27 +348,27 @@ def process_adaptive_scan(db: Session, payload: AdaptiveScanPayload) -> dict[str
         if strength:
             stock.industry_strength_score = strength.score
             stock.industry_rank_percentile = strength.rank / max(1, len(strengths))
-        strategy_key = selection_strategy
-        if strategy_key == "CRASH":
-            result = CrashRecoveryStrategy().evaluate(stock, parameters)
-            result = StrategyScore(result.total, result.components, result.reasons, result.risks, "市場風險過高", result.false_breakout_risk)
-            minimum = 60
-        else:
-            strategy = STRATEGIES[strategy_key]
-            result = strategy.evaluate(stock, parameters)
-            minimum = parameters[f"{strategy_key.lower()}.observation_score"]
-        if trading_regime == "UNCERTAIN":
-            result = StrategyScore(
-                result.total,
-                result.components,
-                (*result.reasons, "市場狀態尚未確認，僅列入盤中候選監控"),
-                result.risks,
-                "等待確認",
-                result.false_breakout_risk,
-            )
         health, health_breakdown, missing = _health(stock, evaluation.regime)
-        if result.total >= minimum:
-            scored.append((stock, strategy_key, result, health, health_breakdown, missing))
+        for strategy_key in selection_strategies:
+            if strategy_key == "CRASH":
+                result = CrashRecoveryStrategy().evaluate(stock, parameters)
+                result = StrategyScore(result.total, result.components, result.reasons, result.risks, "市場風險過高", result.false_breakout_risk)
+                minimum = 60
+            else:
+                strategy = STRATEGIES[strategy_key]
+                result = strategy.evaluate(stock, parameters)
+                minimum = parameters[f"{strategy_key.lower()}.observation_score"]
+            if trading_regime == "UNCERTAIN":
+                result = StrategyScore(
+                    result.total,
+                    result.components,
+                    (*result.reasons, "市場狀態尚未確認，僅列入盤中候選監控"),
+                    result.risks,
+                    "等待確認",
+                    result.false_breakout_risk,
+                )
+            if result.total >= minimum:
+                scored.append((stock, strategy_key, result, health, health_breakdown, missing))
         if trading_regime not in {"BREAKOUT", "RECOVERY"}:
             short_result = _short_score(stock, trading_regime)
             short_minimum = 55 if trading_regime == "CRASH" else 62 if trading_regime in {"RANGE", "UNCERTAIN"} else 70
@@ -407,6 +440,18 @@ def process_adaptive_scan(db: Session, payload: AdaptiveScanPayload) -> dict[str
         db.add(candidate)
         candidates.append(candidate)
     db.flush()
+
+    from .super_ai_daytrade_service import ensure_settings as ensure_super_ai_settings, trading_gate
+
+    super_ai_settings = ensure_super_ai_settings(db, payload.market.updated_at)
+    blocked_reason_counts: dict[str, int] = {}
+    super_ai_eligible_count = 0
+    for candidate in _trade_candidate_by_symbol(candidates).values():
+        gate = trading_gate(db, super_ai_settings, candidate, trading_regime, payload.market.updated_at)
+        if gate["allowed"]:
+            super_ai_eligible_count += 1
+        for reason in gate["failures"]:
+            blocked_reason_counts[reason] = blocked_reason_counts.get(reason, 0) + 1
 
     priority = int(parameters["monitor.priority_candidates"])
     for candidate in candidates[:priority]:
@@ -484,6 +529,11 @@ def process_adaptive_scan(db: Session, payload: AdaptiveScanPayload) -> dict[str
     return {
         "regime": regime_payload(regime_row),
         "candidateCount": len(candidates), "priorityCount": min(priority, len(candidates)),
+        "canEnterCandidateCount": sum(1 for item in candidates if item.candidate_status == "can_enter"),
+        "superAiEligibleCount": super_ai_eligible_count,
+        "blockedReasonCounts": blocked_reason_counts,
+        "selectionStrategies": selection_strategies,
+        "tradingRegime": trading_regime,
         "signalIds": [item.signal_key for item in signals],
         "dataSources": payload.data_sources,
     }
