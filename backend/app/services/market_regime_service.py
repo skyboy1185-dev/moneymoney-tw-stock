@@ -38,6 +38,9 @@ def intraday_regime_override(market: AdaptiveMarketMetrics, base_regime: str) ->
     cannot wait that long: a broad intraday squeeze should immediately block
     shorts, and a broad intraday selloff should immediately block longs.
     """
+    if not market.market_open:
+        return base_regime
+
     taiex_1d = market.taiex_return_1d
     electronic_1d = market.electronic_return_1d
     advance = market.advance_ratio

@@ -175,6 +175,7 @@ def test_intraday_bull_squeeze_override_value() -> None:
             electronic_return_1d=1.4,
             advance_ratio=68,
             taiex_above_ma5=True,
+            market_open=True,
         ),
         "RANGE",
     ) == "BREAKOUT"
@@ -187,6 +188,7 @@ def test_intraday_selloff_overrides_recovery_for_day_trading() -> None:
             electronic_return_1d=-1.3,
             advance_ratio=28,
             taiex_new_low=True,
+            market_open=True,
         ),
         "RECOVERY",
     ) == "CRASH"
@@ -222,6 +224,20 @@ def test_intraday_hard_bearish_risk_still_overrides_to_crash() -> None:
         ),
         "RECOVERY",
     ) == "CRASH"
+
+
+def test_closed_market_does_not_override_recovery_to_crash() -> None:
+    assert intraday_regime_override(
+        market(
+            taiex_return_1d=-0.6,
+            electronic_return_1d=-0.99,
+            advance_ratio=15,
+            limit_down_count=10,
+            taiex_new_low=False,
+            market_open=False,
+        ),
+        "RECOVERY",
+    ) == "RECOVERY"
 
 
 def test_non_electronic_industry_is_rejected_even_if_name_looks_technical() -> None:
