@@ -76,7 +76,7 @@ def _append_exit_marker(trade: AdaptivePaperTrade, marker: str) -> None:
 
 
 def _has_exit_marker(trade: AdaptivePaperTrade, marker: str) -> bool:
-    return marker in _reasons(trade.exit_reasons_json)
+    return marker in _reasons(getattr(trade, "exit_reasons_json", "[]"))
 
 
 def _raise_trailing_stop_after_tp1(

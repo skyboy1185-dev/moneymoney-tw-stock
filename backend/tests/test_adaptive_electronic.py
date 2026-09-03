@@ -22,7 +22,11 @@ from app.services.adaptive_electronic_service import (
     _selection_strategy,
     candidate_payload,
 )
-from app.services.adaptive_electronic_automation import _normalize_scan_payload, _signal_has_super_ai_trade_record
+from app.services.adaptive_electronic_automation import (
+    _normalize_scan_payload,
+    _scanner_payload_error,
+    _signal_has_super_ai_trade_record,
+)
 from app.services.adaptive_entry_window import adaptive_entry_window_open
 from app.services.adaptive_parameters import DEFAULT_PARAMETERS
 from app.services.adaptive_performance_service import (
@@ -54,6 +58,11 @@ def test_scan_payload_normalizes_missing_industry_code_without_rejecting_batch()
     normalized = _normalize_scan_payload(raw)
     assert normalized["stocks"][0]["industry_code"] == "00"
     assert normalized["stocks"][1]["industry_code"] == "24"
+
+
+def test_scanner_error_payload_is_reported_before_schema_validation() -> None:
+    message = _scanner_payload_error({"error": "fetch failed"})
+    assert message == "scanner returned error payload: fetch failed"
 
 
 def market(**changes):

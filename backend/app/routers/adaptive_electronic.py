@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 import json
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from sqlalchemy import select
@@ -53,6 +54,7 @@ from ..services.super_ai_daytrade_service import (
 
 
 router = APIRouter(prefix="/adaptive-electronic", tags=["adaptive-electronic"])
+TAIPEI = ZoneInfo("Asia/Taipei")
 
 
 def _user_id(x_user_id: str = Header(min_length=8, max_length=80)) -> str:
@@ -96,12 +98,25 @@ def _super_ai_candidate_payload(
 def automation_status(db: Session = Depends(get_db)) -> dict:
     settings = ensure_super_ai_settings(db)
     regime = db.scalar(select(MarketRegime).where(MarketRegime.is_current.is_(True)).order_by(MarketRegime.trade_date.desc()).limit(1))
+    latest_candidate = db.scalar(
+        select(AdaptiveStockCandidate)
+        .order_by(AdaptiveStockCandidate.trade_date.desc(), AdaptiveStockCandidate.updated_at.desc())
+        .limit(1)
+    )
+    today = datetime.now(UTC).astimezone(TAIPEI).date()
+    latest_trade_date = latest_candidate.trade_date if latest_candidate else None
+    candidate_data_stale = latest_trade_date is not None and latest_trade_date < today
     state = adaptive_electronic_automation.state
     state.update({
         "systemName": SYSTEM_NAME,
         "settings": settings_payload(settings),
         "marketState": market_state(regime.regime if regime else "UNCERTAIN"),
         "risk": risk_status(db, settings, datetime.now(UTC)),
+        "latestCandidateTradeDate": latest_trade_date.isoformat() if latest_trade_date else None,
+        "latestCandidateUpdatedAt": latest_candidate.updated_at.isoformat() if latest_candidate else None,
+        "todayScanSucceeded": latest_trade_date == today,
+        "candidateDataStale": candidate_data_stale,
+        "newTradesPausedByScanner": bool(candidate_data_stale or state.get("lastError")),
     })
     return state
 

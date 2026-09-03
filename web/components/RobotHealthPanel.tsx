@@ -134,7 +134,7 @@ function limitUpHealth(payload: unknown, error?: string): RobotHealth {
   };
 }
 
-function superAiHealth(payload: unknown, error?: string): RobotHealth {
+export function superAiHealth(payload: unknown, error?: string): RobotHealth {
   const body = record(payload);
   const settings = record(body.settings);
   const risk = record(body.risk);
@@ -142,12 +142,20 @@ function superAiHealth(payload: unknown, error?: string): RobotHealth {
   const lastError = text(body.lastError);
   const stopReason = text(risk.stopReason) || text(settings.stopReason);
   const stopNewTrades = risk.stopNewTrades === true || settings.stopNewTrades === true;
+  const scannerPaused = body.newTradesPausedByScanner === true || body.candidateDataStale === true;
+  const latestCandidateTradeDate = text(body.latestCandidateTradeDate);
+  const scannerDetail = scannerPaused
+    ? lastError || `掃描資料過期${latestCandidateTradeDate ? `：候選股日期 ${latestCandidateTradeDate}` : ""}`
+    : "";
   let tone: HealthTone = running ? "ok" : "paused";
   let status = running ? "運作中" : "暫停";
 
   if (error || lastError) {
     tone = "error";
     status = "偵測異常";
+  } else if (scannerPaused) {
+    tone = "error";
+    status = "掃描資料過期";
   } else if (stopNewTrades) {
     tone = "paused";
     status = "風控暫停";
@@ -159,7 +167,7 @@ function superAiHealth(payload: unknown, error?: string): RobotHealth {
     subtitle: "電子股 AI 風控",
     tone,
     status,
-    detail: error || lastError || stopReason || text(record(body.marketState).label) || "依風控與 AI 評分自動調整",
+    detail: error || scannerDetail || lastError || stopReason || text(record(body.marketState).label) || "依風控與 AI 評分自動調整",
     updatedAt: text(body.lastSuccessAt) || text(body.lastRunAt) || null,
   };
 }

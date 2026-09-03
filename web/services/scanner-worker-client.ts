@@ -17,6 +17,14 @@ function workerHeaders(request?: Request) {
   return headers;
 }
 
+export function scannerWorkerErrorPayload(error: unknown, statusCode = 503) {
+  return {
+    error: error instanceof Error ? error.message : typeof error === "string" ? error : "Scanner worker unavailable",
+    status: "scanner_error",
+    statusCode,
+  };
+}
+
 export async function proxyScannerRequest(request: Request): Promise<Response | null> {
   const workerUrl = getScannerWorkerUrl();
   if (!workerUrl || isScannerWorker()) return null;
@@ -48,14 +56,19 @@ export async function proxyScannerRequest(request: Request): Promise<Response | 
         signal: AbortSignal.timeout(1_800_000),
       }).then(async (response) => {
         const payload = await response.text();
-        if (!enqueue(payload)) return;
+        if (response.ok) {
+          if (!enqueue(payload)) return;
+        } else {
+          const message = payload.trim().startsWith("{")
+            ? payload
+            : JSON.stringify(scannerWorkerErrorPayload(`Scanner worker HTTP ${response.status}`, response.status));
+          if (!enqueue(message)) return;
+        }
         closed = true;
         if (heartbeat) clearInterval(heartbeat);
         try { controller.close(); } catch { /* caller already disconnected */ }
       }).catch((error) => {
-        enqueue(JSON.stringify({
-          error: error instanceof Error ? error.message : "Scanner worker unavailable",
-        }));
+        enqueue(JSON.stringify(scannerWorkerErrorPayload(error)));
         closed = true;
         if (heartbeat) clearInterval(heartbeat);
         try { controller.close(); } catch { /* caller already disconnected */ }

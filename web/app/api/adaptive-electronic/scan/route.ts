@@ -16,6 +16,10 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(await buildAdaptiveElectronicScan());
   } catch (error) {
     console.error("adaptive-electronic scan", error);
-    return NextResponse.json({ error: "預測選股掃描暫時無法完成" }, { status: 503 });
+    return NextResponse.json({
+      error: error instanceof Error ? error.message : "超強 AI 掃描暫時無法完成",
+      status: "scanner_error",
+      statusCode: 503,
+    }, { status: 503 });
   }
 }

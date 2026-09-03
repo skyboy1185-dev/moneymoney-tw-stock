@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import httpx
+from pydantic import ValidationError
 from sqlalchemy import select
 
 from ..adaptive_schemas import AdaptiveScanPayload
@@ -60,6 +61,17 @@ def _normalize_scan_payload(raw: object) -> object:
     if normalized:
         logger.warning("Normalized %s stocks with a missing industry code", normalized)
     return raw
+
+
+def _scanner_payload_error(raw: object) -> str | None:
+    if not isinstance(raw, dict):
+        return None
+    if "market" in raw:
+        return None
+    message = raw.get("detail") or raw.get("error") or raw.get("message")
+    if message:
+        return f"scanner returned error payload: {message}"
+    return None
 
 
 def _session(now: datetime) -> str:
@@ -130,12 +142,41 @@ async def fetch_adaptive_scan_payload() -> AdaptiveScanPayload:
         timeout=min(settings.adaptive_electronic_scanner_timeout_seconds, 25.0),
         follow_redirects=True,
     ) as client:
+        timeout_seconds = min(settings.adaptive_electronic_scanner_timeout_seconds, 25.0)
         for attempt in range(3):
             try:
-                response = await client.get(url, headers=headers)
-                response.raise_for_status()
-                return AdaptiveScanPayload.model_validate(_normalize_scan_payload(response.json()))
-            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError, httpx.TimeoutException) as error:
+                response = await asyncio.wait_for(
+                    client.get(url, headers=headers),
+                    timeout=timeout_seconds,
+                )
+                try:
+                    raw = response.json()
+                except ValueError as error:
+                    raise RuntimeError(
+                        f"scanner returned non-json HTTP {response.status_code}: {response.text[:300]}"
+                    ) from error
+                payload_error = _scanner_payload_error(raw)
+                if response.status_code >= 400:
+                    raise RuntimeError(
+                        payload_error
+                        or f"scanner HTTP {response.status_code}: {response.text[:300]}"
+                    )
+                if payload_error:
+                    raise RuntimeError(payload_error)
+                try:
+                    return AdaptiveScanPayload.model_validate(_normalize_scan_payload(raw))
+                except ValidationError as error:
+                    first = error.errors()[0] if error.errors() else {}
+                    location = ".".join(str(part) for part in first.get("loc", ())) or "payload"
+                    message = first.get("msg") or str(error)
+                    raise RuntimeError(f"scanner payload invalid at {location}: {message}") from error
+            except TimeoutError as error:
+                last_error = RuntimeError(f"scanner total timeout after {timeout_seconds:g}s")
+                if attempt < 2:
+                    await asyncio.sleep(1.5 * (attempt + 1))
+                    continue
+                raise last_error from error
+            except (RuntimeError, httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError, httpx.TimeoutException) as error:
                 last_error = error
                 if attempt < 2:
                     await asyncio.sleep(1.5 * (attempt + 1))
@@ -232,7 +273,12 @@ class AdaptiveElectronicAutomation:
             result = {"status": f"skipped_{session}"}
             self._state.update({"lastResult": result, "lastError": None})
             return result
-        payload = await self._fetch_payload()
+        try:
+            payload = await self._fetch_payload()
+        except Exception as error:
+            result = {"status": "scanner_error", "message": str(error)[:300]}
+            self._state.update({"lastResult": result, "lastError": str(error)[:500]})
+            raise
         with SessionLocal() as db:
             result = process_adaptive_scan(db, payload)
         if session == "after_close":

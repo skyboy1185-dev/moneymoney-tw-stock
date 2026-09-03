@@ -92,6 +92,11 @@ type Status = {
   lastRunAt?: string | null;
   lastSuccessAt?: string | null;
   lastError?: string | null;
+  latestCandidateTradeDate?: string | null;
+  latestCandidateUpdatedAt?: string | null;
+  todayScanSucceeded?: boolean;
+  candidateDataStale?: boolean;
+  newTradesPausedByScanner?: boolean;
   settings: Settings;
   marketState: MarketState;
   risk: RiskState;
@@ -409,6 +414,7 @@ export function AdaptiveElectronicPage({
   const [status, setStatus] = useState<Status | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [candidateTradeDate, setCandidateTradeDate] = useState<string | null>(null);
   const [industries, setIndustries] = useState<Industry[]>([]);
   const [performance, setPerformance] = useState<Performance | null>(null);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
@@ -426,7 +432,7 @@ export function AdaptiveElectronicPage({
     try {
       const currentStatus = await api<Status>("/status", userId);
       const [candidatePayload, industryPayload, perfPayload, notificationPayload] = await Promise.all([
-        api<{ items: Candidate[] }>(`/candidates?minimumScore=${minimumScore}`, userId),
+        api<{ tradeDate?: string | null; items: Candidate[] }>(`/candidates?minimumScore=${minimumScore}`, userId),
         api<{ items: Industry[] }>("/industries", userId),
         api<Performance>("/performance", userId),
         api<{ items: NotificationItem[] }>(`/notifications?source=${notificationSource}&limit=120`, userId),
@@ -434,6 +440,7 @@ export function AdaptiveElectronicPage({
       setStatus(currentStatus);
       setSettings(currentStatus.settings);
       setCandidates(candidatePayload.items ?? []);
+      setCandidateTradeDate(candidatePayload.tradeDate ?? currentStatus.latestCandidateTradeDate ?? null);
       setIndustries(industryPayload.items ?? []);
       setPerformance(perfPayload);
       setNotifications(notificationPayload.items ?? []);
@@ -520,6 +527,12 @@ export function AdaptiveElectronicPage({
   const entryPhase = useMemo(() => superAiEntryPhase(), []);
   const precisionPolicy = settings?.precisionPolicy;
   const stopNewTrades = risk?.stopNewTrades === true || settings?.stopNewTrades === true;
+  const scannerPaused = status?.newTradesPausedByScanner === true;
+  const scannerWarning = scannerPaused
+    ? status?.lastError
+      ? `掃描器異常：${status.lastError}`
+      : `掃描資料過期：候選股日期 ${candidateTradeDate ?? status?.latestCandidateTradeDate ?? "無"}，今日尚未成功掃描；系統暫停新倉。`
+    : "";
   const strategyModeLabel = settings?.strategyModeLabel ?? "少量精準突破模式";
 
   if (loading && !status) {
@@ -576,6 +589,7 @@ export function AdaptiveElectronicPage({
         <Bot />策略隔離：本頁是「超強AI當沖系統」，使用 SUPER_AI_DAYTRADE 來源、AI 評分、多空權重、R/R 與獨立模擬績效；可共用行情資料，但不沿用「當沖機器人」的 VWAP/5 分 K 原版當沖策略與績效。
       </p>
       {error && <div className="error-banner">{error}<button onClick={() => setError("")}><X /></button></div>}
+      {scannerWarning && <div className="error-banner"><AlertTriangle />{scannerWarning}</div>}
       {toast && <div className="pattern-toast">{toast}</div>}
 
       <section className="pattern-stats">
@@ -594,6 +608,7 @@ export function AdaptiveElectronicPage({
         <StatCard label="今日新單" value={`${risk?.openedTradesToday ?? 0}/${risk?.maxNewTradesPerDay ?? precisionPolicy?.maxNewTradesPerDay ?? 2}`} />
         <StatCard label="精準門檻" value={`AI ${precisionPolicy?.minAiScore ?? 88} / 健康 ${precisionPolicy?.minHealthScore ?? 75}`} />
         <StatCard label="停損上限" value={`${precisionPolicy?.maxStopDistancePct ?? 2}%`} />
+        <StatCard label="候選股日期" value={candidateTradeDate ?? status?.latestCandidateTradeDate ?? "尚無"} tone={scannerPaused ? "pattern-loss" : undefined} />
       </section>
 
       <section className="pattern-panel">

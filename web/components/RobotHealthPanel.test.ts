@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { dayTradingHealth } from "./RobotHealthPanel";
+import { dayTradingHealth, superAiHealth } from "./RobotHealthPanel";
 
 describe("dayTradingHealth", () => {
   it("does not report after-close summary cache as a robot error", () => {
@@ -51,5 +51,23 @@ describe("dayTradingHealth", () => {
 
     expect(health.tone).toBe("warming");
     expect(health.status).toBe("資料降級");
+  });
+});
+
+describe("superAiHealth", () => {
+  it("reports stale scanner data as a robot error with the stale trade date", () => {
+    const health = superAiHealth({
+      status: "running",
+      latestCandidateTradeDate: "2026-09-02",
+      candidateDataStale: true,
+      newTradesPausedByScanner: true,
+      settings: {},
+      risk: {},
+      marketState: { label: "突破" },
+    });
+
+    expect(health.tone).toBe("error");
+    expect(health.status).toBe("掃描資料過期");
+    expect(health.detail).toContain("2026-09-02");
   });
 });
