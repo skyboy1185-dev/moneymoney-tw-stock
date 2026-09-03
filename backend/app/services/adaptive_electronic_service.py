@@ -247,6 +247,26 @@ def _trade_candidate_by_symbol(candidates: list[AdaptiveStockCandidate]) -> dict
     return selected
 
 
+def _scored_candidate_priority(
+    item: tuple[AdaptiveStockInput, str, StrategyScore, float, dict[str, float], list[str]],
+) -> tuple[int, float, float, float]:
+    stock, strategy_key, result, health, _, _ = item
+    strategy_priority = {"BREAKOUT": 4, "RECOVERY": 3, "RANGE": 2, "CRASH": 1}.get(strategy_key, 0)
+    return strategy_priority, result.total, health, stock.industry_strength_score
+
+
+def _dedupe_scored_by_symbol(
+    items: list[tuple[AdaptiveStockInput, str, StrategyScore, float, dict[str, float], list[str]]],
+) -> list[tuple[AdaptiveStockInput, str, StrategyScore, float, dict[str, float], list[str]]]:
+    selected: dict[str, tuple[AdaptiveStockInput, str, StrategyScore, float, dict[str, float], list[str]]] = {}
+    for item in items:
+        symbol = item[0].stock_code
+        current = selected.get(symbol)
+        if current is None or _scored_candidate_priority(item) > _scored_candidate_priority(current):
+            selected[symbol] = item
+    return list(selected.values())
+
+
 def _persist_regime(
     db: Session,
     payload: AdaptiveScanPayload,
@@ -327,6 +347,7 @@ def process_adaptive_scan(db: Session, payload: AdaptiveScanPayload) -> dict[str
             for key, value in values.items(): setattr(stored, key, value)
 
     scored: list[tuple[AdaptiveStockInput, str, StrategyScore, float, dict[str, float], list[str]]] = []
+    fallback_scored: list[tuple[AdaptiveStockInput, str, StrategyScore, float, dict[str, float], list[str]]] = []
     selection_strategies = _active_trading_strategies(evaluation, payload, trading_regime)
     for stock in payload.stocks:
         mapping = db.scalar(select(ElectronicIndustryMapping).where(ElectronicIndustryMapping.stock_code == stock.stock_code))
@@ -369,11 +390,16 @@ def process_adaptive_scan(db: Session, payload: AdaptiveScanPayload) -> dict[str
                 )
             if result.total >= minimum:
                 scored.append((stock, strategy_key, result, health, health_breakdown, missing))
+            elif trading_regime in {"BREAKOUT", "RECOVERY"} and result.total > 0:
+                fallback_scored.append((stock, strategy_key, result, health, health_breakdown, missing))
         if trading_regime not in {"BREAKOUT", "RECOVERY"}:
             short_result = _short_score(stock, trading_regime)
             short_minimum = 55 if trading_regime == "CRASH" else 62 if trading_regime in {"RANGE", "UNCERTAIN"} else 70
             if short_result.total >= short_minimum:
                 scored.append((stock, "CRASH", short_result, health, health_breakdown, missing))
+
+    if not scored and trading_regime in {"BREAKOUT", "RECOVERY"}:
+        scored = _dedupe_scored_by_symbol(fallback_scored)
 
     scored.sort(key=lambda row: (row[2].total, row[3], row[0].industry_strength_score), reverse=True)
     maximum = int(parameters["monitor.maximum_candidates"])

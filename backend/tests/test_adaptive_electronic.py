@@ -1231,6 +1231,62 @@ def test_process_scan_reports_breakout_candidate_and_gate_summary_in_bullish_rec
         assert result["blockedReasonCounts"] == {}
 
 
+def test_process_scan_keeps_observation_candidates_when_positive_regime_has_no_full_match() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 8, 26, 14, 30, tzinfo=TAIPEI)
+    metrics = market(
+        trade_date=date(2026, 8, 26),
+        updated_at=now,
+        market_open=False,
+        taiex_new_low=False,
+        electronic_new_low=False,
+        higher_low=True,
+        taiex_above_ma5=True,
+        ma5_slope=.1,
+        advance_ratio_2d=60,
+    )
+    weak_breakout = stock(
+        range_high=120,
+        breakout_20d=False,
+        breakout_60d=False,
+        breakout_percent=-5,
+        distance_to_high_percent=8,
+        volume_ratio_20d=0.9,
+        close_location=.5,
+        upper_shadow_ratio=.6,
+        volume_contracting=False,
+        relative_strength_market=1,
+        relative_strength_electronic=1,
+        same_industry_strong_count=1,
+        foreign_net_5d=None,
+        trust_net_5d=None,
+        holder_400_change=None,
+        holder_1000_change=None,
+        revenue_yoy=None,
+        latest_eps=None,
+        trailing_eps=None,
+        industry_strength_score=45,
+        industry_rank_percentile=.6,
+    )
+    payload = AdaptiveScanPayload(market=metrics, industries=[], stocks=[weak_breakout])
+
+    with Session(engine) as db:
+        result = process_adaptive_scan(db, payload)
+
+        candidate = db.scalar(select(AdaptiveStockCandidate))
+        assert candidate is not None
+        assert result["tradingRegime"] == "RECOVERY"
+        assert result["selectionStrategies"][0] == "BREAKOUT"
+        assert result["candidateCount"] == 1
+        assert result["canEnterCandidateCount"] == 0
+        assert result["superAiEligibleCount"] == 0
+
+
 def test_super_ai_pending_mail_requires_matching_trade_record() -> None:
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
