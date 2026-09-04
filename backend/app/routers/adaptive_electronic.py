@@ -245,7 +245,9 @@ def candidates(
     items = list(db.scalars(query.order_by(AdaptiveStockCandidate.rank)).all())
     settings = ensure_super_ai_settings(db)
     regime = db.scalar(select(MarketRegime).where(MarketRegime.is_current.is_(True)).order_by(MarketRegime.trade_date.desc()).limit(1))
-    regime_key = regime.regime if regime is not None else "UNCERTAIN"
+    state = adaptive_electronic_automation.state
+    last_result = state.get("lastResult") if isinstance(state.get("lastResult"), dict) else {}
+    regime_key = str(last_result.get("tradingRegime") or (regime.regime if regime is not None else "UNCERTAIN"))
     return {
         "tradeDate": trade_date.isoformat(),
         "items": [
