@@ -80,18 +80,42 @@ def _super_ai_candidate_payload(
     *,
     settings,
     regime: str,
+    gate: dict | None = None,
 ) -> dict:
     payload = candidate_payload(item)
     side = trade_side_for(regime, item)
     entry, stop, _tp1, tp2 = levels_for_side(item, side)
-    score = ai_score(item, regime, side)
+    if gate is not None:
+        stop = gate["stop"]
+        score = gate["aiScore"]
+        rr = gate["riskReward"]
+        stop_pct = gate["stopDistancePct"]
+        max_stop_pct = gate["maxStopDistancePct"]
+        payload["gateAllowed"] = bool(gate["allowed"])
+        payload["entryMode"] = gate.get("entryMode")
+        payload["probeEligible"] = bool(gate.get("probeEligible"))
+        payload["gateFailures"] = gate.get("failures", [])
+        payload["gateWarnings"] = gate.get("warnings", [])
+    else:
+        score = ai_score(item, regime, side)
+        rr = risk_reward(entry, stop, tp2, side)
+        stop_pct = stop_distance_pct(entry, stop)
+        max_stop_pct = PRECISION_MAX_STOP_DISTANCE_PCT
+        payload["gateAllowed"] = False
+        payload["entryMode"] = "UNKNOWN"
+        payload["probeEligible"] = False
+        payload["gateFailures"] = []
+        payload["gateWarnings"] = []
     payload["stopLossPrice"] = float(stop)
-    payload["stopDistancePct"] = round(float(stop_distance_pct(entry, stop)), 2)
-    payload["riskReward"] = float(risk_reward(entry, stop, tp2, side))
-    payload["maxStopDistancePct"] = float(PRECISION_MAX_STOP_DISTANCE_PCT)
-    payload["stopDistanceCapped"] = False
+    payload["stopDistancePct"] = round(float(stop_pct), 2)
+    payload["riskReward"] = float(rr)
+    payload["maxStopDistancePct"] = float(max_stop_pct)
+    payload["stopDistanceCapped"] = stop != item.stop_loss_price
     payload["tradeSide"] = side
-    payload["strategyMode"] = "PRECISION_BREAKOUT"
+    payload["strategyMode"] = "BALANCED_BREAKOUT"
+    payload["aiScore"] = float(score)
+    if payload["probeEligible"]:
+        payload["statusLabel"] = "試單可進場"
     return payload
 
 
@@ -112,6 +136,7 @@ def automation_status(db: Session = Depends(get_db)) -> dict:
     strategy_counts: dict[str, int] = {}
     blocked_reason_counts: dict[str, int] = {}
     super_ai_eligible_count = 0
+    probe_eligible_count = 0
     if latest_trade_date is not None:
         latest_candidates = list(db.scalars(
             select(AdaptiveStockCandidate)
@@ -143,6 +168,8 @@ def automation_status(db: Session = Depends(get_db)) -> dict:
             gate = trading_gate(db, settings, item, status_regime, datetime.now(UTC))
             if gate["allowed"]:
                 super_ai_eligible_count += 1
+            if gate.get("probeEligible"):
+                probe_eligible_count += 1
             for reason in gate["failures"]:
                 blocked_reason_counts[reason] = blocked_reason_counts.get(reason, 0) + 1
     state.update({
@@ -158,6 +185,7 @@ def automation_status(db: Session = Depends(get_db)) -> dict:
         "candidateCount": candidate_count,
         "canEnterCandidateCount": can_enter_candidate_count,
         "superAiEligibleCount": super_ai_eligible_count,
+        "probeEligibleCount": probe_eligible_count,
         "blockedReasonCounts": blocked_reason_counts or last_result.get("blockedReasonCounts") or {},
         "selectionStrategies": last_result.get("selectionStrategies") or [],
         "tradingRegime": status_regime,
@@ -220,7 +248,15 @@ def candidates(
     regime_key = regime.regime if regime is not None else "UNCERTAIN"
     return {
         "tradeDate": trade_date.isoformat(),
-        "items": [_super_ai_candidate_payload(item, settings=settings, regime=regime_key) for item in items],
+        "items": [
+            _super_ai_candidate_payload(
+                item,
+                settings=settings,
+                regime=regime_key,
+                gate=trading_gate(db, settings, item, regime_key, datetime.now(UTC)),
+            )
+            for item in items
+        ],
         "message": None if items else "目前沒有適合進場的電子股",
         "updatedAt": max((item.updated_at for item in items), default=None),
     }

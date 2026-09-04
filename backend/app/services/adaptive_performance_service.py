@@ -563,10 +563,10 @@ def update_adaptive_paper_trades(
     entry_signals = {
         signal.signal_key: signal
         for signal in signals
-        if signal.stock_code and signal.price is not None and signal.signal_type == "entry_confirmed"
+        if signal.stock_code and signal.price is not None and signal.signal_type in {"entry_confirmed", "new_top5"}
     }
     recent = db.scalars(select(AdaptiveSignal).where(
-        AdaptiveSignal.signal_type == "entry_confirmed",
+        AdaptiveSignal.signal_type.in_(("entry_confirmed", "new_top5")),
     ).order_by(AdaptiveSignal.created_at.desc()).limit(100)).all()
     for signal in recent:
         created_at = _stored_signal_created_at(signal)
@@ -580,8 +580,6 @@ def update_adaptive_paper_trades(
             continue
         candidate = candidate_by_symbol.get(signal.stock_code)
         if candidate is None:
-            continue
-        if candidate.candidate_status != "can_enter":
             continue
         if regime in {"BREAKOUT", "RECOVERY"} and candidate.strategy_type == "CRASH":
             continue
@@ -597,6 +595,11 @@ def update_adaptive_paper_trades(
             continue
 
         quantity = int(gate["quantity"])
+        entry_mode = str(gate.get("entryMode") or "FORMAL")
+        entry_reasons = list(gate["reasons"])
+        if entry_mode == "PROBE":
+            entry_reasons = [reason for reason in entry_reasons if reason != "probe_entry"]
+            entry_reasons.insert(0, "probe_entry")
         trade = AdaptivePaperTrade(
             stock_code=signal.stock_code,
             stock_name=signal.stock_name or candidate.stock_name,
@@ -607,7 +610,7 @@ def update_adaptive_paper_trades(
             quantity_shares=quantity,
             entry_price=gate["entry"],
             entry_time=payload.market.updated_at,
-            entry_reason="; ".join(gate["reasons"][:8]),
+            entry_reason="; ".join(entry_reasons[:8]),
             stop_loss_price=gate["stop"],
             target_price_1=gate["takeProfit1"],
             target_price_2=gate["takeProfit2"],
@@ -618,7 +621,7 @@ def update_adaptive_paper_trades(
             initial_capital=settings.max_capital,
             risk_amount=gate["riskAmount"],
             initial_r=abs(Decimal(gate["entry"]) - Decimal(gate["stop"])),
-            entry_reasons_json=json.dumps(gate["reasons"], ensure_ascii=False),
+            entry_reasons_json=json.dumps(entry_reasons, ensure_ascii=False),
             status="open",
             unrealized_profit=Decimal("0"),
             created_at=payload.market.updated_at,

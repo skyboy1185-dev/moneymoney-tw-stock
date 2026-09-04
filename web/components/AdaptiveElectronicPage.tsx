@@ -59,6 +59,9 @@ type Settings = {
     minRiskReward: number;
     maxStopDistancePct: number;
     maxNewTradesPerDay: number;
+    maxProbeTradesPerDay?: number;
+    probeMinTotalScore?: number;
+    probeMinHealthScore?: number;
     maxDailyLossPct: number;
     riskPerTradePct: number;
     requiresRealtimeBreakoutProxy: boolean;
@@ -79,7 +82,9 @@ type RiskState = {
   dailyMaxLoss: number;
   openTrades: number;
   openedTradesToday?: number;
+  openedProbeTradesToday?: number;
   maxNewTradesPerDay?: number;
+  maxProbeTradesPerDay?: number;
   stopNewTrades: boolean;
   stopReason: string | null;
   consecutiveStopLosses: number;
@@ -100,6 +105,7 @@ type Status = {
   candidateCount?: number;
   canEnterCandidateCount?: number;
   superAiEligibleCount?: number;
+  probeEligibleCount?: number;
   blockedReasonCounts?: Record<string, number>;
   selectionStrategies?: string[];
   tradingRegime?: string | null;
@@ -124,10 +130,17 @@ type Candidate = {
   breakoutPrice: number;
   stopLossPrice: number;
   stopDistancePct?: number;
+  riskReward?: number;
   maxStopDistancePct?: number;
   stopDistanceCapped?: boolean;
   tradeSide?: "LONG" | "SHORT" | string;
   strategyMode?: string;
+  aiScore?: number;
+  gateAllowed?: boolean;
+  entryMode?: "FORMAL" | "PROBE" | "BLOCKED" | "UNKNOWN" | string;
+  probeEligible?: boolean;
+  gateFailures?: string[];
+  gateWarnings?: string[];
   targetPrice1: number;
   targetPrice2: number;
   relativeStrength: number;
@@ -357,11 +370,15 @@ const BLOCK_REASON_LABELS: Record<string, string> = {
   precision_requires_strong_market: "盤勢不符",
   precision_requires_breakout_strategy: "不是突破策略",
   precision_total_score_below_82: "總分不足",
+  precision_total_score_below_58: "總分不足",
   precision_health_score_below_75: "健康度不足",
+  precision_health_score_below_55: "健康度不足",
   precision_relative_strength_not_positive: "相對強度不足",
   precision_industry_strength_below_65: "族群強度不足",
+  precision_industry_strength_below_20: "族群強度不足",
   precision_false_breakout_risk_too_high: "假突破風險高",
   precision_vwap_proxy_not_confirmed: "盤中突破未確認",
+  breakout_price_not_reached: "尚未站上突破價",
   strong_market_requires_breakout_strategy: "強勢盤需突破",
   strong_market_total_score_too_weak: "強勢分不足",
   strong_market_health_score_too_weak: "強勢健康度不足",
@@ -373,6 +390,9 @@ const BLOCK_REASON_LABELS: Record<string, string> = {
   quantity_zero: "張數為 0",
   delayed_quote: "延遲報價",
   market_risk_blocks_long: "市場風險擋多",
+  probe_total_score_below_55: "試單總分不足",
+  probe_health_score_below_55: "試單健康度不足",
+  probe_daily_trade_limit: "試單達今日上限",
 };
 
 function DecisionReasonList({ reasons }: { reasons: string[] }) {
@@ -570,6 +590,7 @@ export function AdaptiveElectronicPage({
   const noEligibleReason = !scannerPaused && (status?.candidateCount ?? 0) > 0 && (status?.superAiEligibleCount ?? 0) === 0
     ? `今日有 ${status?.candidateCount ?? candidates.length} 檔候選，但正式可進場 0 檔；主要原因：${blockedReasons.join("、") || "尚無擋單統計"}。`
     : "";
+  const probeEligibleCount = status?.probeEligibleCount ?? candidates.filter((item) => item.probeEligible).length;
   const strategyCountText = Object.entries(status?.candidateStrategyCounts ?? {})
     .map(([strategy, count]) => `${strategy} ${count}`)
     .join(" / ");
@@ -617,7 +638,7 @@ export function AdaptiveElectronicPage({
       <p className="pattern-risk-notice"><ShieldAlert />{USER_WARNING}</p>
       <p className="pattern-risk-notice">
         <ShieldAlert />
-        {strategyModeLabel}：只做強勢盤高分突破；AI ≥ {precisionPolicy?.minAiScore ?? 88}、健康度 ≥ {precisionPolicy?.minHealthScore ?? 75}、族群強度 ≥ {precisionPolicy?.minIndustryStrength ?? 65}、R/R ≥ {precisionPolicy?.minRiskReward ?? 2.5}、停損 ≤ {precisionPolicy?.maxStopDistancePct ?? 2}%。
+        {strategyModeLabel}：平衡突破模式；AI ≥ {precisionPolicy?.minAiScore ?? 60}、總分 ≥ {precisionPolicy?.minTotalScore ?? 58}、健康度 ≥ {precisionPolicy?.minHealthScore ?? 55}、族群強度 ≥ {precisionPolicy?.minIndustryStrength ?? 20}、R/R ≥ {precisionPolicy?.minRiskReward ?? 2}、停損 ≤ {precisionPolicy?.maxStopDistancePct ?? 8}%；若正式單不足，總分 ≥ {precisionPolicy?.probeMinTotalScore ?? 55} 可做最多 {precisionPolicy?.maxProbeTradesPerDay ?? 1} 檔試單。
         {stopNewTrades ? "目前停止新增 paper trade，掃描與排行照常更新。" : "目前允許符合條件的新 paper trade。"}
       </p>
       <p className="pattern-risk-notice">
@@ -647,10 +668,11 @@ export function AdaptiveElectronicPage({
       <section className="pattern-stats">
         <StatCard label="策略模式" value={strategyModeLabel} />
         <StatCard label="今日新單" value={`${risk?.openedTradesToday ?? 0}/${risk?.maxNewTradesPerDay ?? precisionPolicy?.maxNewTradesPerDay ?? 2}`} />
-        <StatCard label="精準門檻" value={`AI ${precisionPolicy?.minAiScore ?? 88} / 健康 ${precisionPolicy?.minHealthScore ?? 75}`} />
-        <StatCard label="停損上限" value={`${precisionPolicy?.maxStopDistancePct ?? 2}%`} />
+        <StatCard label="平衡門檻" value={`AI ${precisionPolicy?.minAiScore ?? 60} / 健康 ${precisionPolicy?.minHealthScore ?? 55}`} />
+        <StatCard label="停損上限" value={`${precisionPolicy?.maxStopDistancePct ?? 8}%`} />
         <StatCard label="候選股日期" value={candidateTradeDate ?? status?.latestCandidateTradeDate ?? "尚無"} tone={scannerPaused ? "pattern-loss" : undefined} />
         <StatCard label="候選 / 可進場" value={`${status?.candidateCount ?? candidates.length}/${status?.superAiEligibleCount ?? 0}`} tone={(status?.superAiEligibleCount ?? 0) > 0 ? "pattern-profit" : "pattern-loss"} />
+        <StatCard label="試單可進場" value={`${probeEligibleCount}/${risk?.maxProbeTradesPerDay ?? precisionPolicy?.maxProbeTradesPerDay ?? 1}`} tone={probeEligibleCount > 0 ? "pattern-profit" : undefined} />
         <StatCard label="選股策略" value={strategyCountText || (status?.selectionStrategies ?? []).join(" / ") || "尚無"} />
       </section>
 
@@ -696,7 +718,7 @@ export function AdaptiveElectronicPage({
               <input type="number" min="1" max="5" step="0.1" value={settings.minRiskReward} onChange={(e) => setSettings({ ...settings, minRiskReward: Number(e.target.value) })} />
             </label>
             <label>最大停損距離 %
-              <input type="number" min="0.3" max="3" step="0.1" value={settings.maxStopDistancePct ?? 1} onChange={(e) => setSettings({ ...settings, maxStopDistancePct: Number(e.target.value) })} />
+              <input type="number" min="0.3" max="10" step="0.1" value={settings.maxStopDistancePct ?? 1} onChange={(e) => setSettings({ ...settings, maxStopDistancePct: Number(e.target.value) })} />
             </label>
             <label>最多持股
               <input type="number" min="1" max="10" value={settings.maxPositions} onChange={(e) => setSettings({ ...settings, maxPositions: Number(e.target.value) })} />
@@ -720,7 +742,7 @@ export function AdaptiveElectronicPage({
         <div className="pattern-run-strip">
           <span>交易模式 <b className={settings?.tradingMode === "LIVE" ? "pattern-loss" : ""}>{settings?.tradingMode === "LIVE" ? "實盤" : "模擬盤"}</b></span>
           <span>單筆風險金額 <b>{money((settings?.maxCapital ?? 0) * (settings?.riskPerTradePct ?? 0) / 100)}</b></span>
-          <span>新單停損上限 <b>{(settings?.maxStopDistancePct ?? 1).toFixed(2)}%</b></span>
+          <span>新單停損上限 <b>{(precisionPolicy?.maxStopDistancePct ?? settings?.maxStopDistancePct ?? 8).toFixed(2)}%</b></span>
           <span>退水計算 <b>{settings?.commissionDiscountLabel ?? `${((settings?.commissionDiscount ?? 0.2) * 10).toFixed(1)}折`}</b></span>
           <span>連續停損 <b>{risk?.consecutiveStopLosses ?? 0}/3</b></span>
           <span>設定版本 <b>v{settings?.settingsVersion ?? 0}</b></span>
@@ -808,15 +830,24 @@ export function AdaptiveElectronicPage({
             <tbody>
               {visibleCandidates.map((item) => {
                 const inferredSide = item.tradeSide ?? (market?.regime === "CRASH" || item.strategyType === "CRASH" || item.relativeStrength < -3 ? "SHORT" : "LONG");
-                const aiScore = Math.min(100, item.totalScore * 0.6 + item.healthScore * 0.4 + (market?.regime === "BREAKOUT" || market?.regime === "RECOVERY" ? 10 : 4));
+                const aiScore = item.aiScore ?? Math.min(100, item.totalScore * 0.6 + item.healthScore * 0.4 + (market?.regime === "BREAKOUT" || market?.regime === "RECOVERY" ? 10 : 4));
                 const risk = Math.max(0.01, Math.abs(item.currentPrice - item.stopLossPrice));
                 const reward = Math.max(0, Math.abs(item.targetPrice2 - item.currentPrice));
-                const rr = reward / risk;
+                const rr = item.riskReward ?? reward / risk;
+                const statusText = item.probeEligible
+                  ? "試單可進場"
+                  : item.gateAllowed
+                    ? "正式可進場"
+                    : item.statusLabel;
+                const gateNotes = [
+                  ...(item.gateWarnings ?? []),
+                  ...(item.gateFailures ?? []),
+                ].map((reason) => BLOCK_REASON_LABELS[reason] ?? reason);
                 return (
                   <tr key={`${item.stockCode}-${item.strategyType}`}>
                     <td><b>{item.stockCode}</b><small>{item.stockName}</small></td>
                     <td><b>{sideLabel(inferredSide)}</b><small>{strategyLabel(item.strategyType)}</small></td>
-                    <td><strong>{aiScore.toFixed(0)}</strong><small>{item.statusLabel}</small></td>
+                    <td><strong>{aiScore.toFixed(0)}</strong><small>{statusText}</small></td>
                     <td>{price(item.currentPrice)}<small>{price(item.entryPriceLow)} - {price(item.entryPriceHigh)}</small></td>
                     <td>
                       <span className="pattern-loss">{price(item.stopLossPrice)}（{(item.stopDistancePct ?? (risk / item.currentPrice * 100)).toFixed(2)}%）</span>
@@ -824,7 +855,7 @@ export function AdaptiveElectronicPage({
                       {item.stopDistanceCapped && <small className="pattern-loss">停損已套用上限 {(item.maxStopDistancePct ?? settings?.maxStopDistancePct ?? 1).toFixed(2)}%</small>}
                     </td>
                     <td>{item.subIndustry}<small>族群 {item.industryStrength.toFixed(0)}｜RS {item.relativeStrength.toFixed(1)}｜R/R {rr.toFixed(2)}</small></td>
-                    <td><DecisionReasonList reasons={[...item.selectedReasons, ...item.riskReasons]} /></td>
+                    <td><DecisionReasonList reasons={[...gateNotes, ...item.selectedReasons, ...item.riskReasons]} /></td>
                     <td><button onClick={() => onSelectStock(item.stockCode)}>查看個股</button></td>
                   </tr>
                 );

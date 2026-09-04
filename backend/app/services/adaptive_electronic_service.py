@@ -472,10 +472,13 @@ def process_adaptive_scan(db: Session, payload: AdaptiveScanPayload) -> dict[str
     super_ai_settings = ensure_super_ai_settings(db, payload.market.updated_at)
     blocked_reason_counts: dict[str, int] = {}
     super_ai_eligible_count = 0
+    probe_eligible_count = 0
     for candidate in _trade_candidate_by_symbol(candidates).values():
         gate = trading_gate(db, super_ai_settings, candidate, trading_regime, payload.market.updated_at)
         if gate["allowed"]:
             super_ai_eligible_count += 1
+        if gate.get("probeEligible"):
+            probe_eligible_count += 1
         for reason in gate["failures"]:
             blocked_reason_counts[reason] = blocked_reason_counts.get(reason, 0) + 1
 
@@ -557,6 +560,7 @@ def process_adaptive_scan(db: Session, payload: AdaptiveScanPayload) -> dict[str
         "candidateCount": len(candidates), "priorityCount": min(priority, len(candidates)),
         "canEnterCandidateCount": sum(1 for item in candidates if item.candidate_status == "can_enter"),
         "superAiEligibleCount": super_ai_eligible_count,
+        "probeEligibleCount": probe_eligible_count,
         "blockedReasonCounts": blocked_reason_counts,
         "selectionStrategies": selection_strategies,
         "tradingRegime": trading_regime,
