@@ -5,7 +5,7 @@ import pytest
 from app.services import day_trading_v2 as dtv2
 
 from app.services.day_trading_v2 import (
-    STRATEGIES, DisabledLiveBrokerAdapter, LiveTradingUnavailable, MinuteBar, StrategySignal, apply_execution_report,
+    STRATEGIES, TAIPEI, DisabledLiveBrokerAdapter, LiveTradingUnavailable, MinuteBar, StrategySignal, apply_execution_report,
     calculate_costs, calculate_position_size, calculate_trade_result,
     evaluate_strategies, exit_action, market_gate_reasons, performance, performance_by_strategy,
     resolve_duplicate_signals, risk_status, run_backtest,
@@ -355,6 +355,25 @@ def test_portfolio_ranks_only_candidates_that_can_close_same_day():
     assert result["trades"]
     assert result["trades"][0]["symbol"] == "2454"
     assert any(row["reason"] == "FORCED_CLOSE_MINUTE_MISSING" for row in result["skipReasons"])
+
+
+def test_forced_close_uses_first_available_trade_after_1325():
+    bars = _opening_breakout_bars()
+    bars[-1] = MinuteBar(
+        bars[-1].timestamp + timedelta(minutes=1), bars[-1].open, bars[-1].high,
+        bars[-1].low, bars[-1].close, bars[-1].volume,
+    )
+    # Avoid hitting the target before the forced-close flow is exercised.
+    bars[17] = MinuteBar(
+        bars[17].timestamp, Decimal("102.5"), Decimal("103"), Decimal("101"), Decimal("102"), 1500,
+    )
+    result = run_backtest(
+        {"2330": bars}, strategy_id="OPENING_RANGE_BREAKOUT",
+        config={"minimumConfidence": "0", "allowOddLots": True, "slippageBps": "0"},
+    )
+    assert result["trades"]
+    assert result["trades"][0]["exitReason"] == "FORCED_CLOSE"
+    assert result["trades"][0]["exitTime"].astimezone(TAIPEI).time().isoformat() == "13:26:00"
 
 
 def test_individual_backtest_also_applies_controller_time_window(monkeypatch):

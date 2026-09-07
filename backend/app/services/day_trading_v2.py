@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 TAIPEI = ZoneInfo("Asia/Taipei")
 ZERO = Decimal("0")
 CENT = Decimal("0.01")
-BACKTEST_ENGINE_VERSION = "3.1.0"
+BACKTEST_ENGINE_VERSION = "3.1.1"
 
 STRATEGIES = (
     ("OPENING_RANGE_BREAKOUT", "開盤15分鐘區間突破", Decimal("750000")),
@@ -200,6 +200,7 @@ def run_backtest(
     has_verified_regimes = market_regime_by_time is not None
     apply_controller = True if controller_filter is None else controller_filter
     force_close = time.fromisoformat(str(cfg["forcedCloseTime"]))
+    market_close = time.fromisoformat(str(cfg["marketCloseTime"]))
     latest_entry = time.fromisoformat(str(cfg["latestEntryTime"]))
     allocation_by_strategy = {sid: amount for sid, _name, amount in STRATEGIES}
     skip_counts: dict[str, int] = {}
@@ -272,14 +273,17 @@ def run_backtest(
             skip("RISK_REWARD_BELOW_MINIMUM_AFTER_FILL")
             continue
         future = [bar for bar in day_bars[fill_index:] if taipei_time(bar.timestamp) <= force_close]
-        close_candidates = [bar for bar in future if taipei_time(bar.timestamp) >= force_close]
+        close_candidates = [
+            bar for bar in day_bars[fill_index:]
+            if force_close <= taipei_time(bar.timestamp) <= market_close
+        ]
         if not future or not close_candidates:
             skip("FORCED_CLOSE_MINUTE_MISSING")
             continue
         row["entry"] = entry
         row["actualRiskReward"] = actual_rr
         row["future"] = future
-        row["forceCloseBar"] = close_candidates[-1]
+        row["forceCloseBar"] = close_candidates[0]
         regime = regime_map.get(signal_time, REGIME_MILD if not has_verified_regimes else REGIME_UNKNOWN)
         risk_reward = ((signal.target_price - signal.entry_price) /
                        (signal.entry_price - signal.stop_price))
