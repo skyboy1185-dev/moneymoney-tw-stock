@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS day_trade_v2_notifications (
   id BIGSERIAL PRIMARY KEY, user_id VARCHAR(80) NOT NULL, event_id VARCHAR(120) NOT NULL,
   mode VARCHAR(20) NOT NULL, event_type VARCHAR(50) NOT NULL, title VARCHAR(160) NOT NULL,
   message TEXT NOT NULL, payload_json TEXT NOT NULL DEFAULT '{}', read BOOLEAN NOT NULL DEFAULT FALSE,
+  email_sent BOOLEAN NOT NULL DEFAULT FALSE, email_attempted_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT uq_dtv2_notification_event UNIQUE(user_id,event_id)
 );

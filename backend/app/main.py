@@ -37,6 +37,7 @@ from .services.adaptive_electronic_automation import adaptive_electronic_automat
 from .services.ai_stock_automation import ai_stock_automation
 from .services.chip_flow_alerts import electronic_chip_flow_alert_monitor
 from .services.day_trading_automation import day_trading_automation
+from .services.day_trading_v2_automation import day_trading_v2_notification_automation
 from .services.line_messaging import line_notification_dispatcher
 from .services.large_holder_automation import large_holder_automation
 from .services.limit_up_ai_automation import limit_up_ai_automation
@@ -59,6 +60,7 @@ async def lifespan(_: FastAPI):
         logger.exception("operational database retention cleanup failed")
     await line_notification_dispatcher.start()
     await day_trading_automation.start()
+    await day_trading_v2_notification_automation.start()
     # 型態掃描必須先於原本 AI 選股偵測啟動；09:00 後重啟會由此立即補掃。
     await pattern_robot_automation.start(persist=False)
     await ai_stock_automation.start()
@@ -82,6 +84,7 @@ async def lifespan(_: FastAPI):
         await ai_stock_automation.stop()
         await pattern_robot_automation.stop(persist=False)
         await day_trading_automation.stop()
+        await day_trading_v2_notification_automation.stop()
         await line_notification_dispatcher.stop()
 
 

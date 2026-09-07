@@ -264,6 +264,28 @@ def create_tables() -> None:
                 "FALSE, 0, 1, 'system', CURRENT_TIMESTAMP"
                 ") ON CONFLICT (id) DO NOTHING"
             ))
+            # V2 may have been created by an earlier interrupted deployment;
+            # create_all does not add later columns to that partial schema.
+            connection.execute(text(
+                "ALTER TABLE day_trade_v2_robots "
+                "ADD COLUMN IF NOT EXISTS status_date DATE"
+            ))
+            connection.execute(text(
+                "ALTER TABLE day_trade_v2_signals "
+                "ADD COLUMN IF NOT EXISTS sector VARCHAR(100) NOT NULL DEFAULT ''"
+            ))
+            connection.execute(text(
+                "ALTER TABLE day_trade_v2_positions "
+                "ADD COLUMN IF NOT EXISTS sector VARCHAR(100) NOT NULL DEFAULT ''"
+            ))
+            connection.execute(text(
+                "ALTER TABLE day_trade_v2_notifications "
+                "ADD COLUMN IF NOT EXISTS email_sent BOOLEAN NOT NULL DEFAULT FALSE"
+            ))
+            connection.execute(text(
+                "ALTER TABLE day_trade_v2_notifications "
+                "ADD COLUMN IF NOT EXISTS email_attempted_at TIMESTAMPTZ"
+            ))
     # Database synchronization can merge two independently created portfolio
     # batches. Quarantine overflow before enforcing one open row per symbol.
     from .services.long_term_selection import repair_long_term_position_overflow
