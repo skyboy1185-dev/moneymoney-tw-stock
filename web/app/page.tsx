@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Activity, BarChart3, Bot, Fish, Flame, Landmark, Newspaper, Rocket, ScanSearch, Search, SlidersHorizontal, Telescope, Waves, Wifi, WifiOff, Zap } from "lucide-react";
+import { Activity, BarChart3, Bot, Fish, Flame, Landmark, Newspaper, Rocket, ScanSearch, Search, SlidersHorizontal, Telescope, TrendingUp, Waves, Wifi, WifiOff, Zap } from "lucide-react";
 import { StockAnalysis } from "@/components/StockAnalysis";
 import { Screener } from "@/components/Screener";
 import { PortfolioPage } from "@/components/PortfolioPage";
@@ -16,6 +16,7 @@ import { RobotHealthPanel } from "@/components/RobotHealthPanel";
 import { TodayRobotNotificationsPanel } from "@/components/TodayRobotNotificationsPanel";
 import { AdaptiveElectronicPage } from "@/components/AdaptiveElectronicPage";
 import { LongTermSelectionPage } from "@/components/LongTermSelectionPage";
+import { StrongStockPage } from "@/components/strong-stock/StrongStockPage";
 import { RocketRadarPage } from "@/components/RocketRadarPage";
 import { LimitUpAiPage } from "@/components/LimitUpAiPage";
 import { WhaleAccumulationPage } from "@/components/WhaleAccumulationPage";
@@ -32,9 +33,9 @@ import {
 } from "@/lib/market-snapshot-refresh";
 import type { StockPayload } from "@/lib/types";
 
-type Tab = "analysis" | "screener" | "day-trading-v2" | "day-trading" | "limit-up-ai" | "pattern-robot" | "adaptive-electronic" | "rocket-radar" | "long-term" | "whale-accumulation" | "institutional-investors" | "chip-flow" | "portfolio" | "industries" | "news";
+type Tab = "analysis" | "screener" | "day-trading-v2" | "day-trading" | "limit-up-ai" | "pattern-robot" | "adaptive-electronic" | "rocket-radar" | "long-term" | "strong-stocks" | "whale-accumulation" | "institutional-investors" | "chip-flow" | "portfolio" | "industries" | "news";
 type Connection = "connecting" | "connected" | "disconnected";
-const VIEW_TABS: Tab[] = ["analysis", "screener", "day-trading-v2", "day-trading", "limit-up-ai", "pattern-robot", "adaptive-electronic", "rocket-radar", "long-term", "whale-accumulation", "institutional-investors", "chip-flow", "portfolio", "industries", "news"];
+const VIEW_TABS: Tab[] = ["analysis", "screener", "day-trading-v2", "day-trading", "limit-up-ai", "pattern-robot", "adaptive-electronic", "rocket-radar", "long-term", "strong-stocks", "whale-accumulation", "institutional-investors", "chip-flow", "portfolio", "industries", "news"];
 
 function viewUrl(symbol: string, view: Tab): string {
   const params = new URLSearchParams({ symbol });
@@ -340,6 +341,7 @@ export default function Home() {
         <button className={tab === "pattern-robot" ? "active pattern-nav" : "pattern-nav"} onClick={() => switchTab("pattern-robot")}><ScanSearch size={17} />型態選股機器人</button>
         <button className={tab === "rocket-radar" ? "active rocket-nav" : "rocket-nav"} onClick={() => switchTab("rocket-radar")}><Rocket size={17} />飆股雷達{rocketUnread > 0 && <span className="rocket-unread-badge">{rocketUnread > 99 ? "99+" : rocketUnread}</span>}</button>
         <button className={tab === "long-term" ? "active" : ""} onClick={() => switchTab("long-term")}><Telescope size={17} />長線選股</button>
+        <button className={tab === "strong-stocks" ? "active strong-nav" : "strong-nav"} onClick={() => switchTab("strong-stocks")}><TrendingUp size={17} />強勢股策略</button>
         <button className={tab === "whale-accumulation" ? "active whale-nav" : "whale-nav"} onClick={() => switchTab("whale-accumulation")}><Fish size={17} />大戶偷掃貨</button>
         <button className={tab === "institutional-investors" ? "active" : ""} onClick={() => switchTab("institutional-investors")}><Landmark size={17} />三大法人</button>
         <button className={tab === "chip-flow" ? "active" : ""} onClick={() => switchTab("chip-flow")}><Waves size={17} />盤中籌碼</button>
@@ -379,6 +381,8 @@ export default function Home() {
           <RocketRadarPage onUnreadChange={setRocketUnread} onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }} />
         ) : tab === "long-term" ? (
           <LongTermSelectionPage onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }} />
+        ) : tab === "strong-stocks" ? (
+          <StrongStockPage userId={userId} onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }} />
         ) : tab === "whale-accumulation" ? (
           <WhaleAccumulationPage onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }} />
         ) : tab === "institutional-investors" ? (

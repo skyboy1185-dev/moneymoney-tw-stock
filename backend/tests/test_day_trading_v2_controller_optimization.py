@@ -17,7 +17,7 @@ from app.services.day_trading_v2_controller import (
     REGIME_STRONG, REGIME_WEAK, apply_regime_hysteresis, classify_market,
     rank_candidates, score_candidate,
 )
-from app.services.day_trading_v2_datasets import DatasetValidationError, parse_dataset
+from app.services.day_trading_v2_datasets import DatasetValidationError, load_dataset, parse_dataset, persist_dataset
 from app.services.day_trading_v2_health import (
     active_version, apply_pending_deployments, handle_strategy_runtime_error,
 )
@@ -190,6 +190,17 @@ def test_parquet_dataset_keeps_binary_content_and_market_context():
     assert datasets["2330"][0].close == Decimal("100")
     assert sectors["2330"] == "semiconductor"
     assert regimes and quality["marketContextVerified"] is True
+
+
+def test_backtest_dataset_can_be_persisted_and_loaded(monkeypatch, tmp_path):
+    content = b"symbol,timestamp,open,high,low,close,volume,sector,index_price,index_vwap,index_trend_1m_pct,index_trend_5m_pct,market_breadth_pct,market_relative_volume,quote_coverage_pct\n2330,2026-09-07T09:00:00+08:00,100,101,99,100,1000,semiconductor,25000,24990,0.1,0.2,55,1.0,95\n"
+    monkeypatch.setenv("DTV2_OPTIMIZATION_DATA_DIR", str(tmp_path))
+    path, checksum = persist_dataset(content, dataset_id="backtest-fixture", data_format="CSV")
+    datasets, sectors, regimes, quality = load_dataset(str(path), checksum, "CSV")
+    assert datasets["2330"][0].close == Decimal("100")
+    assert sectors == {"2330": "semiconductor"}
+    assert regimes
+    assert quality["rowCount"] == 1
 
 
 def test_pending_strategy_version_activates_only_on_effective_day_and_history_stays_immutable():

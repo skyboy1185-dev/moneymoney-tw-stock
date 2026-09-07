@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from ..database import SessionLocal, get_db
 from ..day_trading_v2_models import (
-    DayTradeV2AuditEvent, DayTradeV2BacktestJob, DayTradeV2Fill,
+    DayTradeV2AuditEvent, DayTradeV2BacktestJob, DayTradeV2CalendarHoliday, DayTradeV2Fill,
     DayTradeV2CandidateState, DayTradeV2Notification, DayTradeV2Order, DayTradeV2Position,
     DayTradeV2RiskDaily, DayTradeV2Robot, DayTradeV2Setting,
     DayTradeV2RuntimeState, DayTradeV2ScheduleEvent, DayTradeV2Signal,
@@ -37,7 +37,7 @@ from ..services.day_trading_v2_controller import (
     apply_regime_hysteresis, classify_market, rank_candidates, risk_multiplier_for_regime, score_candidate,
 )
 from ..services.day_trading_v2_datasets import (
-    MAX_UPLOAD_BYTES, DatasetValidationError, parse_dataset, persist_dataset, quality_json,
+    MAX_UPLOAD_BYTES, DatasetValidationError, load_dataset, parse_dataset, persist_dataset, quality_json,
 )
 from ..services.day_trading_v2_health import (
     active_version, handle_strategy_runtime_error, health_for_strategy, run_health_diagnosis,
@@ -1682,6 +1682,7 @@ class BacktestBody(BaseModel):
     strategy_id: str = "ALL"
     start_date: date
     end_date: date
+    dataset_id: str | None = None
     datasets: dict[str, list[dict[str, object]]] | None = None
 
 
@@ -1690,14 +1691,40 @@ def create_backtest(body: BacktestBody, user_id: str = Depends(_user_id), db: Se
     if body.end_date < body.start_date:
         raise HTTPException(422, "結束日期不可早於開始日期")
     job_id = str(uuid4())
-    if not body.datasets:
+    request_datasets = body.datasets
+    dataset_source = "REQUEST_DATASET"
+    if body.dataset_id:
+        dataset_row = db.get(DayTradeV2OptimizationDataset, body.dataset_id)
+        if dataset_row is None or dataset_row.user_id != user_id:
+            raise HTTPException(404, "找不到指定的分鐘資料集")
+        try:
+            loaded, _loaded_sectors, _regimes, _quality = load_dataset(
+                dataset_row.storage_path, dataset_row.checksum, dataset_row.data_format,
+            )
+        except DatasetValidationError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        request_datasets = {
+            symbol: [
+                {
+                    "timestamp": bar.timestamp.isoformat(), "open": str(bar.open),
+                    "high": str(bar.high), "low": str(bar.low), "close": str(bar.close),
+                    "volume": bar.volume, "sector": _loaded_sectors.get(symbol, "未分類"),
+                }
+                for bar in bars
+                if body.start_date <= bar.timestamp.astimezone(TAIPEI).date() <= body.end_date
+            ]
+            for symbol, bars in loaded.items()
+        }
+        request_datasets = {symbol: bars for symbol, bars in request_datasets.items() if bars}
+        dataset_source = f"DATASET:{dataset_row.id}"
+    if not request_datasets:
         result = {"code": "MINUTE_DATA_REQUIRED", "message": "資料精度不足：尚未設定合格的歷史分鐘行情來源，不適合驗證當沖策略。", "summary": None, "trades": []}
         status, source, precision = "DATA_INSUFFICIENT", "UNCONFIGURED", "NONE"
     else:
         parsed: dict[str, list[MinuteBar]] = {}
         sectors: dict[str, str] = {}
         try:
-            for symbol, rows in body.datasets.items():
+            for symbol, rows in request_datasets.items():
                 sectors[symbol] = str((rows[0].get("sector") if rows else None) or "回測未分類")
                 parsed[symbol] = [MinuteBar(
                     timestamp=datetime.fromisoformat(str(row["timestamp"])), open=dec(row["open"]), high=dec(row["high"]),
@@ -1715,7 +1742,7 @@ def create_backtest(body: BacktestBody, user_id: str = Depends(_user_id), db: Se
             result = run_backtest(parsed, strategy_id=body.strategy_id, portfolio=body.backtest_mode == "PORTFOLIO", sector_by_symbol=sectors)
             if body.backtest_mode == "PORTFOLIO":
                 result["marketRegimeNotice"] = "未提供指數分鐘序列時，總控回測明確採用溫和多頭盤基準；策略優化資料集需提供完整市場脈絡。"
-        status, source, precision = "COMPLETED", "REQUEST_DATASET", "1_MINUTE"
+        status, source, precision = "COMPLETED", dataset_source, "1_MINUTE"
     job = DayTradeV2BacktestJob(
         id=job_id, user_id=user_id, backtest_mode=body.backtest_mode, strategy_id=body.strategy_id,
         start_date=body.start_date, end_date=body.end_date, status=status, data_source=source,

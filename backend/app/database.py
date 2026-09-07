@@ -155,6 +155,7 @@ def database_runtime_status(session: Session, expected_host: str = "") -> dict[s
 def create_tables() -> None:
     from . import models  # noqa: F401
     from . import day_trading_v2_models  # noqa: F401
+    from . import strong_stock_models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
     # create_all does not add columns to an existing PostgreSQL table. Keep the

@@ -31,6 +31,7 @@ from .routers import (
     portfolio,
     rocket_radar,
     screener,
+    strong_stock,
     stocks,
 )
 from .services.adaptive_electronic_automation import adaptive_electronic_automation
@@ -45,6 +46,7 @@ from .services.long_term_automation import long_term_selection_automation
 from .services.operational_maintenance import operational_maintenance_automation
 from .services.pattern_robot_automation import pattern_robot_automation
 from .services.rocket_automation import rocket_radar_automation
+from .services.strong_stock_automation import strong_stock_automation
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -68,6 +70,7 @@ async def lifespan(_: FastAPI):
     await large_holder_automation.start()
     await electronic_chip_flow_alert_monitor.start()
     await long_term_selection_automation.start()
+    await strong_stock_automation.start()
     await rocket_radar_automation.start()
     await limit_up_ai_automation.start()
     await operational_maintenance_automation.start()
@@ -77,6 +80,7 @@ async def lifespan(_: FastAPI):
         await operational_maintenance_automation.stop()
         await limit_up_ai_automation.stop()
         await rocket_radar_automation.stop()
+        await strong_stock_automation.stop()
         await long_term_selection_automation.stop()
         await electronic_chip_flow_alert_monitor.stop()
         await large_holder_automation.stop()
@@ -116,6 +120,7 @@ app.include_router(adaptive_electronic.router, prefix=settings.api_prefix)
 app.include_router(large_holders.router, prefix=settings.api_prefix)
 app.include_router(limit_up_ai.router, prefix=settings.api_prefix)
 app.include_router(long_term.router, prefix=settings.api_prefix)
+app.include_router(strong_stock.router, prefix=settings.api_prefix)
 app.include_router(rocket_radar.router, prefix=settings.api_prefix)
 app.include_router(market_data.router, prefix=settings.api_prefix)
 app.include_router(line_integration.webhook_router)
