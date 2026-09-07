@@ -1977,6 +1977,12 @@ def _enrich_backtest_result(result: dict[str, object], strategy_id: str = "ALL")
             "此結果由舊版回測引擎產生，可能包含跨日指標、隔日出場或資金重複使用；"
             "僅保留作歷史參考，請用新版引擎重新執行。"
         )
+    elif has_result and result.get("engineVersion") != BACKTEST_ENGINE_VERSION:
+        result["validationStatus"] = "SUPERSEDED_UNVERIFIED"
+        result["validationWarning"] = (
+            f"此結果使用回測引擎 {result.get('engineVersion')}，目前可信版本為 "
+            f"{BACKTEST_ENGINE_VERSION}；請重新執行後再判斷策略績效。"
+        )
     elif result.get("engineVersion") == BACKTEST_ENGINE_VERSION:
         result.setdefault("validationStatus", "VALIDATED")
     summary = result.get("summary")

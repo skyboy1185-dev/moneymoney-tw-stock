@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 TAIPEI = ZoneInfo("Asia/Taipei")
 ZERO = Decimal("0")
 CENT = Decimal("0.01")
-BACKTEST_ENGINE_VERSION = "3.0.0"
+BACKTEST_ENGINE_VERSION = "3.0.1"
 
 STRATEGIES = (
     ("OPENING_RANGE_BREAKOUT", "開盤15分鐘區間突破", Decimal("750000")),

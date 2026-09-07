@@ -61,6 +61,15 @@ def test_legacy_portfolio_backtest_gets_five_strategy_summaries():
     assert result["summary"]["netPnl"] == "60.00"
 
 
+def test_superseded_engine_result_is_not_presented_as_validated():
+    result = _enrich_backtest_result({
+        "engineVersion": "3.0.0", "validationStatus": "VALIDATED",
+        "summary": {"initialCapital": "3000000"}, "trades": [],
+    })
+    assert result["validationStatus"] == "SUPERSEDED_UNVERIFIED"
+    assert "3.0.1" in result["validationWarning"]
+
+
 def test_fugle_minute_client_keeps_timezone_and_converts_equity_lots_to_shares():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["X-API-KEY"] == "secret"
@@ -189,7 +198,7 @@ def test_stale_running_job_reuses_its_persisted_dataset(monkeypatch):
 
     monkeypatch.setattr(backtest_service, "load_dataset", lambda *_args: ({}, {}, {}, {"rowCount": 241}))
     monkeypatch.setattr(backtest_service, "execute_backtest", lambda *_args, **_kwargs: {
-        "engineVersion": "3.0.0", "validationStatus": "VALIDATED", "summary": {}, "trades": [],
+        "engineVersion": "3.0.1", "validationStatus": "VALIDATED", "summary": {}, "trades": [],
     })
 
     async def should_not_download(_request):
