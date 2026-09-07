@@ -17,6 +17,7 @@ export interface LongTermPositionItem {
   modelKey: string;
   modelName: string;
   entryDate: string;
+  entryTime: string;
   entryPrice: number;
   currentPrice: number;
   actualReturnPercent: number;
@@ -50,7 +51,9 @@ export interface LongTermClosedItem {
   direction: LongTermDirection;
   modelName: string;
   entryDate: string;
+  entryTime: string;
   exitDate: string | null;
+  exitTime: string | null;
   entryPrice: number;
   exitPrice: number;
   actualReturnPercent: number;

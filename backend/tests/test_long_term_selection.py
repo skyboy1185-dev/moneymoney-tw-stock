@@ -373,6 +373,7 @@ def test_portfolio_performance_includes_cash_dividend_income(monkeypatch) -> Non
         response = asyncio.run(portfolio_payload(db, "long_only"))
 
     expected_income = sum(item["quantity"] for item in response["items"])
+    assert all(item["entryTime"] == at.isoformat() for item in response["items"])
     assert all(item["dividendPerShare"] == 1 for item in response["items"])
     assert all(item["totalReturnPercent"] == item["dividendReturnPercent"] for item in response["items"])
     assert response["capitalAllocation"]["dividendIncome"] == expected_income

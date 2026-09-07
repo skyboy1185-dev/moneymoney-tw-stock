@@ -79,6 +79,22 @@ function taipeiDate(value?: string | null): string {
   return parsed.toLocaleDateString("sv-SE", { timeZone: "Asia/Taipei" });
 }
 
+function dateTime(value?: string | null): string {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString("zh-TW", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZone: "Asia/Taipei",
+  });
+}
+
 function fixed(value: unknown, digits = 2): string {
   return typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "—";
 }
@@ -309,13 +325,16 @@ export function DayTradingRobotNotifier({ onOpen }: { onOpen?: (target: RobotTar
             const replacement = signal.reason.includes("汰換") || signal.reason.includes("換股");
             const isSkip = signal.eventType === "SKIP";
             const action = signal.eventType === "BUY" ? "買進" : isSkip ? "未成交" : "賣出";
+            const actionTimeLabel = signal.eventType === "BUY" ? "買入時間" : isSkip ? "判定時間" : "賣出時間";
             items.push({
               id: `long-term-signal:${signal.id}`,
               kind: signal.eventType === "BUY" ? "buy" : isSkip ? "skip" : "sell",
               target: "long-term",
               title: `長線選股｜${isSkip ? action : replacement ? `換股${action}` : `模擬${action}`}（${modeLabel}）`,
               stock: `${signal.stockCode} ${signal.stockName}`,
-              message: isSkip ? `不列績效・參考價 ${fixed(signal.price)}` : `價格 ${fixed(signal.price)}・${integer(signal.quantity)} 股`,
+              message: isSkip
+                ? `不列績效・參考價 ${fixed(signal.price)}・${actionTimeLabel} ${dateTime(signal.timestamp)}`
+                : `價格 ${fixed(signal.price)}・${integer(signal.quantity)} 股・${actionTimeLabel} ${dateTime(signal.timestamp)}`,
               reason: signal.reason,
               timestamp: signal.timestamp,
             });

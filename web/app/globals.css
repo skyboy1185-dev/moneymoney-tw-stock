@@ -2731,9 +2731,11 @@ footer span { color: #566177; }
 .long-term-event-filters button { padding: 5px 11px; color: #7f8fa5; background: transparent; border: 1px solid #2a3c55; border-radius: 14px; font-size: 10px; cursor: pointer; }
 .long-term-event-filters button.active { color: #e7eef8; background: #253a59; border-color: #4a6891; }
 .long-term-event-list { display: grid; }
-.long-term-event-list article { min-height: 66px; padding: 11px 14px; display: grid; grid-template-columns: 105px 68px minmax(210px,1fr) minmax(190px,.8fr) 95px; align-items: center; gap: 12px; border-top: 1px solid #1e2d42; }
+.long-term-event-list article { min-height: 66px; padding: 11px 14px; display: grid; grid-template-columns: 150px 68px minmax(210px,1fr) minmax(190px,.8fr) 95px; align-items: center; gap: 12px; border-top: 1px solid #1e2d42; }
 .long-term-event-list article:first-child { border-top: 0; }
 .long-term-event-list time, .long-term-event-list small { color: #697990; font-size: 10px; }
+.long-term-event-list time { display: grid; gap: 3px; }
+.long-term-event-list time b { color: #9eafc5; font-size: 10px; }
 .long-term-event-list .event-kind { color: #56d99c; font-size: 11px; font-weight: 700; }
 .long-term-event-list article.sell .event-kind { color: #ff7b83; }
 .long-term-event-list article.skip .event-kind { color: #a8b4c4; }
@@ -2743,7 +2745,7 @@ footer span { color: #566177; }
 .long-term-event-list strong { color: #cbd6e5; font-size: 11px; }
 .long-term-event-empty { padding: 34px; color: #718198; text-align: center; font-size: 10px; }
 @media (max-width: 1100px) { .long-term-summary { grid-template-columns: repeat(3,1fr); } }
-@media (max-width: 720px) { .long-term-heading { align-items: flex-start; flex-direction: column; } .long-term-mode-tabs { width: 100%; } .long-term-mode-tabs button { min-width: 0; flex: 1; } .long-term-summary { grid-template-columns: 1fr 1fr; } .long-term-models > div:last-child { grid-template-columns: 1fr; } .long-term-event-list article { grid-template-columns: 70px 58px minmax(180px,1fr) 160px 80px; } .long-term-toast-stack { top: 104px; right: 8px; width: calc(100vw - 16px); } }
+@media (max-width: 720px) { .long-term-heading { align-items: flex-start; flex-direction: column; } .long-term-mode-tabs { width: 100%; } .long-term-mode-tabs button { min-width: 0; flex: 1; } .long-term-summary { grid-template-columns: 1fr 1fr; } .long-term-models > div:last-child { grid-template-columns: 1fr; } .long-term-event-list article { grid-template-columns: 120px 58px minmax(180px,1fr) 160px 80px; } .long-term-toast-stack { top: 104px; right: 8px; width: calc(100vw - 16px); } }
 
 /* Rocket Radar */
 .main-nav .rocket-nav { position: relative; }

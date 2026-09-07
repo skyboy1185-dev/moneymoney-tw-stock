@@ -41,10 +41,20 @@ function eventFilterLabel(filter: LongTermEventFilter): string {
   return "交易";
 }
 
-function eventTime(value: string): string {
+function dateTime(value?: string | null): string {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "—";
   return new Intl.DateTimeFormat("zh-TW", {
-    month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
-  }).format(new Date(value));
+    timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+  }).format(parsed);
+}
+
+function eventTimeLabel(item: LongTermTradeMessage): string {
+  if (item.eventType === "BUY") return "買入時間";
+  if (item.eventType === "SELL") return "賣出時間";
+  return "判定時間";
 }
 
 function holdingsLabel(symbols: string[]): string {
@@ -300,7 +310,7 @@ export function LongTermSelectionPage({ onSelectStock }: { onSelectStock: (symbo
             <td><span className="long-term-direction long"><ArrowUpRight size={12} />做多</span><small>{item.modelName}</small></td>
             <td><strong className="allocation-weight">{item.allocationWeightPercent.toFixed(2)}%</strong></td>
             <td><strong>{money(item.allocatedCapital)}</strong><small>{item.quantity.toLocaleString("zh-TW")} 股・成交 {money(item.investedCapital)}</small></td>
-            <td><strong>{price(item.entryPrice)}</strong><small>{item.entryDate}</small></td>
+            <td><strong>買入價 {price(item.entryPrice)}</strong><small>買入時間 {dateTime(item.entryTime)}</small></td>
             <td><strong>{price(item.currentPrice)}</strong></td>
             <td><strong className={returnClass(item.actualReturnPercent)}>{percent(item.actualReturnPercent)}</strong><small className={returnClass(item.unrealizedProfit)}>{money(item.unrealizedProfit)}</small><small>價差 {percent(item.priceReturnPercent)}・股息 {item.dividendDataAvailable ? `${percent(item.dividendReturnPercent)}／${money(item.dividendIncome)}` : "資料待補"}</small></td>
             <td><strong className="forecast">{percent(item.predictedMonthReturnPercent)}</strong></td>
@@ -316,8 +326,8 @@ export function LongTermSelectionPage({ onSelectStock }: { onSelectStock: (symbo
 
       {data.closedItems.length > 0 && <section className="long-term-history">
         <div className="long-term-section-title"><CalendarClock size={16} /><div><h2>歷史汰換紀錄</h2><p>保留進出價格、配息與含息總報酬</p></div></div>
-        <div className="long-term-table-wrap"><table><thead><tr><th>股票</th><th>方向</th><th>模型</th><th>進場日</th><th>出場日</th><th>進／出價格</th><th>含息總損益</th><th>原因</th></tr></thead><tbody>
-          {data.closedItems.map((item) => <tr key={item.id}><td>{item.name}<small>{item.symbol}</small></td><td>多</td><td>{item.modelName}</td><td>{item.entryDate}</td><td>{item.exitDate}</td><td>{price(item.entryPrice)} → {price(item.exitPrice)}</td><td className={returnClass(item.actualReturnPercent)}><strong>{percent(item.actualReturnPercent)}</strong><small>價差 {percent(item.priceReturnPercent)}・股息 {item.dividendDataAvailable ? `${percent(item.dividendReturnPercent)}／${money(item.dividendIncome)}` : "資料待補"}</small></td><td>{item.exitReason}</td></tr>)}
+        <div className="long-term-table-wrap"><table><thead><tr><th>股票</th><th>方向</th><th>模型</th><th>買入時間</th><th>賣出時間</th><th>進／出價格</th><th>含息總損益</th><th>原因</th></tr></thead><tbody>
+          {data.closedItems.map((item) => <tr key={item.id}><td>{item.name}<small>{item.symbol}</small></td><td>多</td><td>{item.modelName}</td><td>{dateTime(item.entryTime)}</td><td>{dateTime(item.exitTime)}</td><td>{price(item.entryPrice)} → {price(item.exitPrice)}</td><td className={returnClass(item.actualReturnPercent)}><strong>{percent(item.actualReturnPercent)}</strong><small>價差 {percent(item.priceReturnPercent)}・股息 {item.dividendDataAvailable ? `${percent(item.dividendReturnPercent)}／${money(item.dividendIncome)}` : "資料待補"}</small></td><td>{item.exitReason}</td></tr>)}
         </tbody></table></div>
       </section>}
 
@@ -331,7 +341,7 @@ export function LongTermSelectionPage({ onSelectStock }: { onSelectStock: (symbo
         </div>
         {!visibleMessages.length ? <div className="long-term-event-empty">目前尚無{eventFilterLabel(eventFilter)}訊息，模型建立部位後會自動記錄在這裡。</div> : <div className="long-term-event-list">
           {visibleMessages.map((item) => <article key={item.id} className={item.eventType.toLowerCase()}>
-            <time>{eventTime(item.timestamp)}</time>
+            <time><b>{eventTimeLabel(item)}</b><small>{dateTime(item.timestamp)}</small></time>
             <span className="event-kind">{tradeEventKind(item)}</span>
             <div><strong>{item.stockCode} {item.stockName}</strong><p>{item.reason}</p></div>
             <div className="event-numbers"><strong>{price(item.price)} 元・{item.quantity.toLocaleString("zh-TW")} 股</strong><small>配置 {item.allocationWeightPercent.toFixed(2)}%・{money(item.allocatedCapital)}</small></div>
