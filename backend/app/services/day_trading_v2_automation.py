@@ -7,7 +7,7 @@ import logging
 from sqlalchemy import select
 
 from ..database import SessionLocal
-from ..day_trading_v2_models import DayTradeV2Notification
+from ..day_trading_v2_models import DayTradeV2Notification, DayTradeV2Setting
 from .gmail_messaging import gmail_notification_dispatcher
 
 
@@ -38,6 +38,7 @@ class DayTradingV2NotificationAutomation:
     async def _run(self) -> None:
         while not self._stop.is_set():
             try:
+                await asyncio.to_thread(self.scan_paper_users)
                 await self.dispatch_pending()
             except Exception:
                 logger.exception("day-trading-v2 email dispatch failed")
@@ -45,6 +46,27 @@ class DayTradingV2NotificationAutomation:
                 await asyncio.wait_for(self._stop.wait(), timeout=10)
             except TimeoutError:
                 pass
+
+    @staticmethod
+    def scan_paper_users() -> int:
+        # Import lazily to keep the strategy/router dependency out of module
+        # initialization while reusing the same audited execution path.
+        from ..routers.day_trading_v2 import scan_now
+
+        with SessionLocal() as db:
+            user_ids = list(db.scalars(select(DayTradeV2Setting.user_id).where(
+                DayTradeV2Setting.trade_mode == "PAPER",
+                DayTradeV2Setting.live_enabled.is_(False),
+            ).limit(200)).all())
+        scanned = 0
+        for user_id in user_ids:
+            try:
+                with SessionLocal() as db:
+                    scan_now(user_id, db)
+                scanned += 1
+            except Exception:
+                logger.exception("day-trading-v2 paper scan failed for user")
+        return scanned
 
     async def dispatch_pending(self) -> int:
         if not gmail_notification_dispatcher.configured:
