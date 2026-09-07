@@ -80,3 +80,13 @@ def test_short_eligibility_uses_exchange_sell_first_list() -> None:
     assert candidates[0]["shortEligible"] is True
     assert candidates[1]["shortEligible"] is False
     assert candidates[2]["shortEligible"] is True
+
+
+def test_short_eligibility_accepts_exchange_codes_used_by_super_ai() -> None:
+    service = DayTradingRestrictionService()
+    service._short_status = {"twse": "healthy", "tpex": "healthy"}
+    service._short_symbols = {"twse": {"2330"}, "tpex": {"8358"}}
+
+    assert service.short_eligibility("2330", "TWSE") == (True, True)
+    assert service.short_eligibility("8358", "TPEX") == (True, True)
+    assert service.short_eligibility("2317", "TWSE") == (True, False)

@@ -40,6 +40,8 @@ AUTOMATION_DAILY_CAPITAL = 5_000_000.0
 AUTOMATION_MAX_POSITION_PERCENT = 30.0
 AUTOMATION_RISK_PER_TRADE_PERCENT = 0.5
 AUTOMATION_DAILY_LOSS_LIMIT_PERCENT = 2.0
+AUTOMATION_MAX_DAILY_TRADES = 5
+AUTOMATION_MAX_CONSECUTIVE_LOSSES = 3
 AUTOMATION_PERFORMANCE_START = datetime(2026, 8, 4, tzinfo=ZoneInfo("Asia/Taipei")).astimezone(UTC)
 DYNAMIC_AUTOMATION_PERFORMANCE_START = datetime(2026, 8, 17, tzinfo=ZoneInfo("Asia/Taipei")).astimezone(UTC)
 TAIPEI = ZoneInfo("Asia/Taipei")
@@ -145,6 +147,53 @@ def automation_capital_state(
         "lossLimitReached": daily_pnl <= -daily_loss_limit,
         "openPositionCount": len(open_positions),
         "sizingMethod": "停損風險與可用資金兩者取較小值；支援零股，張數不設固定上限",
+    }
+
+
+def fixed_automation_risk_state(db: Session, now: datetime | None = None) -> dict[str, Any]:
+    current = now or datetime.now(UTC)
+    local_day = current.astimezone(TAIPEI).date()
+    day_start = datetime.combine(local_day, time.min, tzinfo=TAIPEI).astimezone(UTC)
+    day_end = day_start + timedelta(days=1)
+    positions = list(db.scalars(select(DayTradingPosition).where(
+        DayTradingPosition.user_id == AUTOMATION_USER_ID,
+        DayTradingPosition.opened_at >= day_start,
+        DayTradingPosition.opened_at < day_end,
+    )).all())
+    open_positions = [position for position in positions if position.status == "open"]
+    trades = list(db.scalars(select(DayTradingTrade).where(
+        DayTradingTrade.user_id == AUTOMATION_USER_ID,
+        DayTradingTrade.exit_time >= day_start,
+        DayTradingTrade.exit_time < day_end,
+    ).order_by(DayTradingTrade.exit_time.desc())).all())
+    realized = sum(float(trade.profit or 0) for trade in trades)
+    unrealized = sum(
+        (float(position.current_price) - float(position.entry_price))
+        * float(position.quantity) * 1000
+        * (1 if position.direction == "long" else -1)
+        for position in open_positions
+    )
+    consecutive_losses = 0
+    for trade in trades:
+        if float(trade.profit or 0) >= 0:
+            break
+        consecutive_losses += 1
+    daily_loss_limit = 1_000_000 * AUTOMATION_DAILY_LOSS_LIMIT_PERCENT / 100
+    daily_pnl = realized + unrealized
+    stop_reason = (
+        "daily_trade_limit" if len(positions) >= AUTOMATION_MAX_DAILY_TRADES
+        else "daily_max_loss" if daily_pnl <= -daily_loss_limit
+        else "consecutive_losses" if consecutive_losses >= AUTOMATION_MAX_CONSECUTIVE_LOSSES
+        else None
+    )
+    return {
+        "openedTradesToday": len(positions),
+        "openPositions": len(open_positions),
+        "todayPnl": round(daily_pnl, 2),
+        "dailyLossLimit": round(daily_loss_limit, 2),
+        "consecutiveLosses": consecutive_losses,
+        "stopNewTrades": stop_reason is not None,
+        "stopReason": stop_reason,
     }
 
 
@@ -319,6 +368,14 @@ def ensure_positions_for_official_recommendations(
                 continue
             if user_id == AUTOMATION_USER_ID:
                 quantity_lots = AUTOMATION_QUANTITY_LOTS
+                fixed_risk = fixed_automation_risk_state(db, current)
+                if fixed_risk["stopNewTrades"]:
+                    allocations[strategy_key] = {
+                        "quantityLots": 0,
+                        "allocatedCapital": 0,
+                        "status": f"固定 2 張風控停止：{fixed_risk['stopReason']}",
+                    }
+                    continue
                 estimated_stop_risk = abs(entry_price - stop_loss) * quantity_lots * 1000
                 blocked_status = (
                     f"固定 2 張預估停損 {estimated_stop_risk:,.0f} 元，"

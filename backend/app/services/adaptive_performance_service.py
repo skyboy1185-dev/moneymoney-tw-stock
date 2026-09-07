@@ -581,8 +581,6 @@ def update_adaptive_paper_trades(
         candidate = candidate_by_symbol.get(signal.stock_code)
         if candidate is None:
             continue
-        if regime in {"BREAKOUT", "RECOVERY"} and candidate.strategy_type == "CRASH":
-            continue
         existing = db.scalar(select(AdaptivePaperTrade.id).where(
             (AdaptivePaperTrade.entry_signal_key == signal.signal_key)
             | ((AdaptivePaperTrade.stock_code == signal.stock_code) & (AdaptivePaperTrade.status == "open")),

@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from app.models import LimitUpAiSettings
@@ -60,6 +60,7 @@ def _signal(**overrides: object) -> dict[str, object]:
         "largeOrderDataAvailable": True,
         "spreadPercentage": 0.2,
         "quoteIsRealtime": True,
+        "quoteTimestamp": NOW.isoformat(),
         "bidVolumes": [300_000, 220_000, 180_000],
         "askVolumes": [120_000, 100_000, 80_000],
     }
@@ -118,9 +119,10 @@ def test_near_limit_stock_can_alert_without_large_order_tick_data() -> None:
     )
 
     assert item["alertable"] is True
+    assert item["actionable"] is True
     assert item["largeOrderSource"] == "quote_proxy"
     assert item["largeOrderForce"] == 0
-    assert item["entryBlockReason"]
+    assert item["entryBlockReason"] == ""
 
 
 def test_price_filter_blocks_out_of_range_stock() -> None:
@@ -132,6 +134,17 @@ def test_price_filter_blocks_out_of_range_stock() -> None:
 
     assert item["actionable"] is False
     assert any("股價不在" in reason for reason in item["failures"])
+
+
+def test_stale_realtime_flagged_quote_is_never_actionable() -> None:
+    item = score_limit_up_candidate(
+        _signal(quoteTimestamp=(NOW - timedelta(seconds=9)).isoformat()),
+        _settings(),
+        now=NOW,
+    )
+
+    assert item["actionable"] is False
+    assert any("8 秒" in reason for reason in item["failures"])
 
 
 def test_full_market_quote_slice_rotates_without_requesting_full_universe(monkeypatch) -> None:

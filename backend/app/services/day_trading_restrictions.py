@@ -212,6 +212,22 @@ class DayTradingRestrictionService:
     def is_disposed(self, symbol: object) -> bool:
         return str(symbol or "").strip() in self.disposed_symbols
 
+    def short_eligibility(self, symbol: object, market: object) -> tuple[bool, bool]:
+        """Return whether exchange short-sale eligibility is known and allowed."""
+        market_name = str(market or "").strip().upper()
+        source = (
+            "tpex" if market_name in {"TPEX", "OTC", "上櫃"}
+            else "twse" if market_name in {"TWSE", "上市"}
+            else None
+        )
+        known = source is not None and self._short_status.get(source) == "healthy"
+        eligible = bool(
+            known
+            and str(symbol or "").strip() in self._short_symbols.get(source, set())
+            and not self.is_disposed(symbol)
+        )
+        return known, eligible
+
     def market_restrictions_available(self, market: object) -> bool:
         market_name = str(market or "").strip()
         source = "tpex" if market_name == "上櫃" else "twse" if market_name == "上市" else None
@@ -233,14 +249,7 @@ class DayTradingRestrictionService:
         for candidate in candidates:
             item = dict(candidate)
             market = str(item.get("market") or "").strip()
-            source = "tpex" if market == "上櫃" else "twse" if market == "上市" else None
-            known = source is not None and self._short_status.get(source) == "healthy"
-            eligible_symbols = self._short_symbols.get(source, set()) if source is not None else set()
-            eligible = (
-                known
-                and str(item.get("symbol") or "") in eligible_symbols
-                and not self.is_disposed(item.get("symbol"))
-            )
+            known, eligible = self.short_eligibility(item.get("symbol"), market)
             item["shortAvailabilityKnown"] = known
             item["shortEligible"] = eligible
             item["shortEligibilitySource"] = "TWSE／TPEx 當日沖銷交易標的" if known else None

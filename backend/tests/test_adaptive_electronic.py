@@ -43,6 +43,7 @@ from app.services.adaptive_strategies import BreakoutStrategy, RangeTradingStrat
 from app.services.electronic_stock_universe_service import common_filter_failures
 from app.services.market_regime_service import evaluate_market_regime, intraday_regime_override
 from app.services.risk_management_service import position_size_shares
+from app.services import super_ai_daytrade_service as super_ai_module
 from app.services.super_ai_daytrade_service import (
     ensure_settings as ensure_super_ai_settings,
     market_state,
@@ -491,13 +492,13 @@ def test_super_ai_short_exits_when_market_recovers() -> None:
     ) == "MARKET_RISK"
 
 
-def test_recovery_market_shows_no_short_weight() -> None:
+def test_recovery_market_keeps_long_bias_with_small_short_weight() -> None:
     state = market_state("RECOVERY")
-    assert state["longWeight"] == 100
-    assert state["shortWeight"] == 0
+    assert state["longWeight"] == 80
+    assert state["shortWeight"] == 20
 
 
-def test_super_ai_precision_breakout_rejects_wide_stop_instead_of_capping() -> None:
+def test_super_ai_bold_profile_caps_stops_and_allows_only_qualified_short(monkeypatch) -> None:
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -577,12 +578,15 @@ def test_super_ai_precision_breakout_rejects_wide_stop_instead_of_capping() -> N
         candidate.industry_strength = Decimal("20")
         candidate.candidate_status = "market_risk_high"
         candidate.stop_loss_price = Decimal("92")
+        monkeypatch.setattr(
+            super_ai_module.day_trading_restrictions,
+            "short_eligibility",
+            lambda _symbol, _market: (True, True),
+        )
         gate = trading_gate(db, settings, candidate, "CRASH", now)
         assert gate["side"] == "SHORT"
-        assert not gate["allowed"]
-        assert "precision_breakout_long_only" in gate["failures"]
-        assert "precision_requires_strong_market" in gate["failures"]
-        assert "precision_requires_breakout_strategy" in gate["failures"]
+        assert gate["allowed"], gate["failures"]
+        assert gate["entryMode"] == "FORMAL"
         assert "stop_distance_capped_to_8.00%" not in gate["reasons"]
 
 
@@ -660,7 +664,7 @@ def test_super_ai_balanced_breakout_blocks_candidate_below_probe_floor() -> None
     Base.metadata.create_all(engine)
     now = datetime(2026, 8, 26, 12, 15, tzinfo=TAIPEI)
     candidate = super_ai_candidate(trade_date=date(2026, 8, 26), now=now)
-    candidate.total_score = Decimal("54")
+    candidate.total_score = Decimal("53")
     candidate.health_score = Decimal("55")
     candidate.industry_strength = Decimal("25")
     candidate.stop_loss_price = Decimal("96")
@@ -673,7 +677,7 @@ def test_super_ai_balanced_breakout_blocks_candidate_below_probe_floor() -> None
 
         assert not gate["allowed"]
         assert gate["entryMode"] == "BLOCKED"
-        assert "probe_total_score_below_55" in gate["failures"]
+        assert "probe_total_score_below_54" in gate["failures"]
 
 
 def test_super_ai_precision_breakout_allows_high_quality_realtime_breakout_candidate() -> None:
@@ -695,9 +699,9 @@ def test_super_ai_precision_breakout_allows_high_quality_realtime_breakout_candi
 
         assert gate["allowed"], gate["failures"]
         assert gate["aiScore"] >= Decimal("88")
-        assert gate["riskAmount"] == Decimal("4500.00")
+        assert gate["riskAmount"] == Decimal("7500.00")
         assert gate["entryMode"] == "FORMAL"
-        assert "balanced_breakout_mode" in gate["reasons"]
+        assert "bold_long_biased_mode" in gate["reasons"]
         assert "intraday_bull_breakout_bonus=+4" in gate["reasons"]
         assert "stop_distance_capped_to_8.00%" not in gate["reasons"]
 
@@ -734,7 +738,7 @@ def test_super_ai_settings_can_stop_new_trades() -> None:
         assert restored.stop_reason is None
 
 
-def test_super_ai_precision_breakout_stops_after_first_stop_loss_today() -> None:
+def test_super_ai_bold_profile_stops_after_second_stop_loss_today() -> None:
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -750,15 +754,23 @@ def test_super_ai_precision_breakout_stops_after_first_stop_loss_today() -> None
     stopped_trade.exit_price = Decimal("98")
     stopped_trade.gross_profit = Decimal("-2000")
     stopped_trade.net_profit = Decimal("-2500")
+    second_stopped_trade = open_super_ai_trade(now=now - timedelta(minutes=20))
+    second_stopped_trade.entry_signal_key = "second-stopped-trade"
+    second_stopped_trade.status = "closed"
+    second_stopped_trade.exit_reason = "STOP_LOSS"
+    second_stopped_trade.exit_time = now - timedelta(minutes=15)
+    second_stopped_trade.exit_price = Decimal("98")
+    second_stopped_trade.gross_profit = Decimal("-2000")
+    second_stopped_trade.net_profit = Decimal("-2500")
 
     with Session(engine) as db:
-        db.add(stopped_trade)
+        db.add_all([stopped_trade, second_stopped_trade])
         db.commit()
         settings = ensure_super_ai_settings(db, now)
         gate = trading_gate(db, settings, candidate, "BREAKOUT", now)
 
         assert not gate["allowed"]
-        assert "first_stop_loss" in gate["failures"]
+        assert "daily_stop_loss_limit" in gate["failures"]
 
 
 def test_super_ai_precision_breakout_limits_new_trades_per_day() -> None:
@@ -770,13 +782,14 @@ def test_super_ai_precision_breakout_limits_new_trades_per_day() -> None:
     Base.metadata.create_all(engine)
     now = datetime(2026, 8, 26, 10, 0, tzinfo=TAIPEI)
     candidate = super_ai_candidate(trade_date=date(2026, 8, 26), now=now)
-    trade1 = open_super_ai_trade(now=now - timedelta(minutes=20))
-    trade1.entry_signal_key = "daily-limit-1"
-    trade2 = open_super_ai_trade(now=now - timedelta(minutes=10))
-    trade2.entry_signal_key = "daily-limit-2"
+    trades = []
+    for index in range(5):
+        trade = open_super_ai_trade(now=now - timedelta(minutes=20 - index))
+        trade.entry_signal_key = f"daily-limit-{index}"
+        trades.append(trade)
 
     with Session(engine) as db:
-        db.add_all([trade1, trade2])
+        db.add_all(trades)
         db.commit()
         settings = ensure_super_ai_settings(db, now)
         gate = trading_gate(db, settings, candidate, "BREAKOUT", now)
@@ -841,7 +854,7 @@ def test_super_ai_intraday_bull_breakout_bonus_requires_realtime_quote() -> None
         gate = trading_gate(db, settings, candidate, "BREAKOUT", now)
 
         assert not gate["allowed"]
-        assert "delayed_quote" in gate["failures"]
+        assert "realtime_market_quote_required" in gate["failures"]
         assert "intraday_bull_breakout_bonus=+8" not in gate["reasons"]
 
 
@@ -1288,7 +1301,7 @@ def test_process_scan_reports_breakout_candidate_and_gate_summary_in_bullish_rec
     payload = AdaptiveScanPayload(
         market=metrics,
         industries=[],
-        stocks=[stock(range_high=100)],
+        stocks=[stock(range_high=100, quote_timestamp=now)],
     )
 
     with Session(engine) as db:

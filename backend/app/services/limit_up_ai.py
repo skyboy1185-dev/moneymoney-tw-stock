@@ -26,10 +26,11 @@ FULL_MARKET_SIGNAL_CACHE_SECONDS = 10
 FULL_MARKET_QUOTE_BATCH_SIZE = 80
 FULL_MARKET_SIGNAL_RETENTION_SECONDS = 120
 POPULAR_UNIVERSE_CACHE_SECONDS = 90
-LIMIT_UP_ALERT_SCORE = 75
-LIMIT_UP_ACTIONABLE_SCORE = 86
+LIMIT_UP_ALERT_SCORE = 72
+LIMIT_UP_ACTIONABLE_SCORE = 82
 LIMIT_UP_ORDER_BOOK_SUPPORT_RATIO = 1.25
 LIMIT_UP_MAX_STOP_DISTANCE_PERCENT = 1.2
+LIMIT_UP_MAX_QUOTE_AGE_SECONDS = 8
 _FULL_MARKET_SIGNAL_CACHE: tuple[datetime, list[dict[str, Any]]] | None = None
 _FULL_MARKET_SIGNAL_BY_SYMBOL_CACHE: dict[str, tuple[datetime, dict[str, Any]]] = {}
 _FULL_MARKET_QUOTE_CURSOR = 0
@@ -246,7 +247,17 @@ def score_limit_up_candidate(
     if volume_ratio < float(settings.min_volume_ratio_20d):
         failures.append("預估量比未達 1.8 倍")
     if not signal.get("quoteIsRealtime", False):
-        warnings.append("行情非即時，只列觀察")
+        failures.append("行情非即時，只列觀察")
+    else:
+        try:
+            quote_at = datetime.fromisoformat(str(signal["quoteTimestamp"]))
+            if quote_at.tzinfo is None:
+                quote_at = quote_at.replace(tzinfo=TAIPEI)
+            quote_age = max(0.0, (current.astimezone(UTC) - quote_at.astimezone(UTC)).total_seconds())
+        except (KeyError, TypeError, ValueError):
+            quote_age = float("inf")
+        if quote_age > LIMIT_UP_MAX_QUOTE_AGE_SECONDS:
+            failures.append(f"個股報價延遲超過 {LIMIT_UP_MAX_QUOTE_AGE_SECONDS} 秒")
     if _num(signal.get("spreadPercentage"), 99) > 1.0:
         failures.append("買賣價差過大，可能不好成交")
     if settings.exclude_locked_limit_up and not not_locked:
@@ -298,7 +309,6 @@ def score_limit_up_candidate(
         setup, setup_label = "pre_limit_attack", "C 漲停前攻擊"
         setup_reasons.append("距漲停 1～3%，連續大單買入")
 
-    actionable = not failures and setup != "等待型態" and score >= 85 and large_buy
     if score >= LIMIT_UP_ACTIONABLE_SCORE:
         category = "attack"
         category_label = "漲停攻擊候選"

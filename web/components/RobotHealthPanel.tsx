@@ -56,6 +56,9 @@ export function dayTradingHealth(payload: unknown, error?: string): RobotHealth 
   const dataStatus = text(body.dataStatus);
   const dataQualityMode = text(body.dataQualityMode);
   const formalBlockReason = text(body.formalBlockReason);
+  const profile = text(body.aggressionProfileLabel);
+  const eligibleLong = numeric(body.eligibleLongCount);
+  const eligibleShort = numeric(body.eligibleShortCount);
   const statusMessage = text(session.statusMessage) || text(body.recommendationSummary) || text(body.dataNotice);
   const quoteCoverageCount = numeric(body.quoteCoverageCount) ?? numeric(supervisor.quoteCoverageCount);
   const candidateUniverseCount = numeric(body.candidateUniverseCount) ?? numeric(supervisor.candidateUniverseCount);
@@ -96,10 +99,12 @@ export function dayTradingHealth(payload: unknown, error?: string): RobotHealth 
   return {
     id: "day-trading",
     title: "AI 當沖多空",
-    subtitle: "盤中訊號 / 持倉監控",
+    subtitle: profile || "盤中訊號 / 持倉監控",
     tone,
     status,
-    detail: error || formalBlockReason || (badDataStatus ? coverageDetail : "") || statusMessage || coverageDetail || "等待盤中資料更新",
+    detail: error || formalBlockReason || (badDataStatus ? coverageDetail : "")
+      || (eligibleLong !== null && eligibleShort !== null ? `合格多方 ${eligibleLong}・空方 ${eligibleShort}` : "")
+      || statusMessage || coverageDetail || "等待盤中資料更新",
     updatedAt: latest,
   };
 }
@@ -109,6 +114,7 @@ function limitUpHealth(payload: unknown, error?: string): RobotHealth {
   const statusValue = text(body.status);
   const lastError = text(body.lastError);
   const marketSessionActive = body.marketSessionActive === true;
+  const profile = text(body.aggressionProfileLabel);
   let tone: HealthTone = "warming";
   let status = "待啟動";
 
@@ -126,7 +132,7 @@ function limitUpHealth(payload: unknown, error?: string): RobotHealth {
   return {
     id: "limit-up-ai",
     title: "漲停機器人",
-    subtitle: "鎖漲停 / 雷達通知",
+    subtitle: profile || "鎖漲停 / 雷達通知",
     tone,
     status,
     detail: error || lastError || (marketSessionActive ? "盤中每 15 秒自動偵測" : "非盤中，保留最後結果"),
@@ -144,6 +150,11 @@ export function superAiHealth(payload: unknown, error?: string): RobotHealth {
   const stopNewTrades = risk.stopNewTrades === true || settings.stopNewTrades === true;
   const scannerPaused = body.newTradesPausedByScanner === true || body.candidateDataStale === true;
   const latestCandidateTradeDate = text(body.latestCandidateTradeDate);
+  const profile = text(body.aggressionProfileLabel) || text(settings.strategyModeLabel);
+  const eligibleLong = numeric(body.eligibleLongCount);
+  const eligibleShort = numeric(body.eligibleShortCount);
+  const openedTradesToday = numeric(risk.openedTradesToday);
+  const maxNewTradesPerDay = numeric(risk.maxNewTradesPerDay);
   const scannerDetail = scannerPaused
     ? lastError || `掃描資料過期${latestCandidateTradeDate ? `：候選股日期 ${latestCandidateTradeDate}` : ""}`
     : "";
@@ -164,10 +175,14 @@ export function superAiHealth(payload: unknown, error?: string): RobotHealth {
   return {
     id: "adaptive-electronic",
     title: "超強 AI 當沖",
-    subtitle: "電子股 AI 風控",
+    subtitle: profile || "電子股 AI 風控",
     tone,
     status,
-    detail: error || scannerDetail || lastError || stopReason || text(record(body.marketState).label) || "依風控與 AI 評分自動調整",
+    detail: error || scannerDetail || lastError || stopReason
+      || (eligibleLong !== null && eligibleShort !== null
+        ? `合格多方 ${eligibleLong}・空方 ${eligibleShort}${openedTradesToday !== null && maxNewTradesPerDay !== null ? `・今日 ${openedTradesToday}/${maxNewTradesPerDay}` : ""}`
+        : "")
+      || text(record(body.marketState).label) || "依風控與 AI 評分自動調整",
     updatedAt: text(body.lastSuccessAt) || text(body.lastRunAt) || null,
   };
 }

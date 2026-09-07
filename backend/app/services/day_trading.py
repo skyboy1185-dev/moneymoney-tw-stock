@@ -1262,12 +1262,13 @@ class MockDayTradingEngine:
             for symbol in stock_universe_symbols
             if symbol in quotes
         ] if stock_universe_symbols else pool_quotes
-        fresh_pool_quotes = [
+        official_pool_quotes = [
             quote for quote in universe_pool_quotes
             if quote.source == "TWSE MIS"
-            and quote.is_realtime
         ]
-        quote_coverage_count = len(fresh_pool_quotes)
+        realtime_pool_quotes = [quote for quote in official_pool_quotes if quote.is_realtime]
+        quote_coverage_count = len(official_pool_quotes)
+        realtime_quote_coverage_count = len(realtime_pool_quotes)
         quote_coverage_ratio = quote_coverage_count / max(1, candidate_universe_count)
         data_quality_mode = "live"
         data_quality_warning: str | None = None
@@ -1412,6 +1413,7 @@ class MockDayTradingEngine:
                 "formalBlockReason": formal_block_reason,
                 "quoteCoverageRatio": round(quote_coverage_ratio, 4),
                 "quoteCoverageCount": quote_coverage_count,
+                "realtimeQuoteCoverageCount": realtime_quote_coverage_count,
                 "candidateUniverseCount": candidate_universe_count,
                 "dataSource": "TWSE MIS 實際行情＋抽樣 Tick Rule 推估",
                 "marketOpen": market_session_open,

@@ -137,6 +137,8 @@ def automation_status(db: Session = Depends(get_db)) -> dict:
     blocked_reason_counts: dict[str, int] = {}
     super_ai_eligible_count = 0
     probe_eligible_count = 0
+    eligible_long_count = 0
+    eligible_short_count = 0
     if latest_trade_date is not None:
         latest_candidates = list(db.scalars(
             select(AdaptiveStockCandidate)
@@ -168,6 +170,10 @@ def automation_status(db: Session = Depends(get_db)) -> dict:
             gate = trading_gate(db, settings, item, status_regime, datetime.now(UTC))
             if gate["allowed"]:
                 super_ai_eligible_count += 1
+                if gate["side"] == "SHORT":
+                    eligible_short_count += 1
+                else:
+                    eligible_long_count += 1
             if gate.get("probeEligible"):
                 probe_eligible_count += 1
             for reason in gate["failures"]:
@@ -186,6 +192,11 @@ def automation_status(db: Session = Depends(get_db)) -> dict:
         "canEnterCandidateCount": can_enter_candidate_count,
         "superAiEligibleCount": super_ai_eligible_count,
         "probeEligibleCount": probe_eligible_count,
+        "eligibleLongCount": eligible_long_count,
+        "eligibleShortCount": eligible_short_count,
+        "aggressionProfile": "BOLD_LONG_BIASED",
+        "aggressionProfileLabel": "積極偏多・精選放空",
+        "sidePolicy": "LONG_PRIMARY_HIGH_CONFIDENCE_SHORT",
         "blockedReasonCounts": blocked_reason_counts or last_result.get("blockedReasonCounts") or {},
         "selectionStrategies": last_result.get("selectionStrategies") or [],
         "tradingRegime": status_regime,

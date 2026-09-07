@@ -17,6 +17,7 @@ from ..models import (
     SuperAIDaytradeNotification,
     SuperAIDaytradeSetting,
 )
+from .day_trading_restrictions import day_trading_restrictions
 
 
 SYSTEM_NAME = "超強AI當沖系統"
@@ -32,17 +33,26 @@ MAX_CONFIGURABLE_STOP_DISTANCE_PCT = Decimal("10.0")
 INTRADAY_BULL_BREAKOUT_BONUS = Decimal("8")
 PRECISION_MIN_AI_SCORE = Decimal("60")
 PRECISION_MIN_TOTAL_SCORE = Decimal("58")
-PRECISION_PROBE_MIN_TOTAL_SCORE = Decimal("55")
-PRECISION_PROBE_MIN_HEALTH_SCORE = Decimal("55")
+PRECISION_PROBE_MIN_TOTAL_SCORE = Decimal("54")
+PRECISION_PROBE_MIN_HEALTH_SCORE = Decimal("52")
 PRECISION_MIN_HEALTH_SCORE = Decimal("55")
-PRECISION_MIN_INDUSTRY_STRENGTH = Decimal("20")
-PRECISION_MIN_RISK_REWARD = Decimal("2.0")
+PRECISION_MIN_INDUSTRY_STRENGTH = Decimal("15")
+PRECISION_MIN_RISK_REWARD = Decimal("1.8")
 PRECISION_MAX_STOP_DISTANCE_PCT = Decimal("8.0")
-PRECISION_MAX_NEW_TRADES_PER_DAY = 2
-PRECISION_MAX_PROBE_TRADES_PER_DAY = 1
-PRECISION_MAX_DAILY_LOSS_PCT = Decimal("0.3")
-PRECISION_RISK_PER_TRADE_PCT = Decimal("0.15")
+PRECISION_MAX_NEW_TRADES_PER_DAY = 5
+PRECISION_MAX_PROBE_TRADES_PER_DAY = 2
+PRECISION_MAX_DAILY_LOSS_PCT = Decimal("0.8")
+PRECISION_RISK_PER_TRADE_PCT = Decimal("0.25")
 PRECISION_MAX_FALSE_BREAKOUT_RISK = Decimal("35")
+SHORT_MIN_AI_SCORE = Decimal("75")
+SHORT_MIN_TOTAL_SCORE = Decimal("65")
+SHORT_MIN_HEALTH_SCORE = Decimal("60")
+SHORT_MAX_INDUSTRY_STRENGTH = Decimal("40")
+SHORT_MAX_RELATIVE_STRENGTH = Decimal("-3")
+SHORT_MIN_RISK_REWARD = Decimal("2.0")
+SHORT_MAX_FALSE_BREAKOUT_RISK = Decimal("45")
+MAX_STOP_LOSSES_PER_DAY = 2
+MAX_ENTRY_QUOTE_AGE_SECONDS = 8
 
 MARKET_WEIGHTS: dict[str, dict[str, float | str]] = {
     "BREAKOUT": {"label": "強多", "long": 100, "short": 0},
@@ -56,11 +66,16 @@ TRADE_EMAIL_CATEGORIES = {
     "BUY", "SHORT", "ADD", "REDUCE", "STOP_LOSS", "TAKE_PROFIT", "EXIT", "RISK", "ERROR",
 }
 
-MARKET_WEIGHTS["RECOVERY"].update({"long": 100, "short": 0})
-
-
 def _money(value: Decimal | float | int) -> Decimal:
     return Decimal(str(value)).quantize(MONEY, rounding=ROUND_HALF_UP)
+
+
+def _quote_age_seconds(quote_at: datetime | None, current: datetime) -> float:
+    if quote_at is None:
+        return float("inf")
+    if quote_at.tzinfo is None:
+        quote_at = quote_at.replace(tzinfo=TAIPEI)
+    return max(0.0, (current.astimezone(UTC) - quote_at.astimezone(UTC)).total_seconds())
 
 
 def _json(value: Any) -> str:
@@ -118,12 +133,15 @@ def settings_payload(row: SuperAIDaytradeSetting) -> dict[str, Any]:
         "stopNewTrades": row.stop_new_trades,
         "stopReason": row.stop_reason,
         "consecutiveStopLosses": row.consecutive_stop_losses,
-        "strategyMode": "BALANCED_BREAKOUT",
-        "strategyModeLabel": "平衡突破＋試單模式",
+        "strategyMode": "BOLD_LONG_BIASED",
+        "strategyModeLabel": "積極偏多・精選放空",
+        "aggressionProfile": "BOLD_LONG_BIASED",
+        "sidePolicy": "LONG_PRIMARY_HIGH_CONFIDENCE_SHORT",
         "precisionPolicy": {
-            "longOnly": True,
-            "allowedRegimes": ["BREAKOUT", "RECOVERY"],
-            "allowedStrategies": ["BREAKOUT"],
+            "longOnly": False,
+            "allowedRegimes": ["BREAKOUT", "RECOVERY", "RANGE", "UNCERTAIN", "CRASH"],
+            "longStrategies": ["BREAKOUT", "RECOVERY"],
+            "shortStrategies": ["CRASH"],
             "minAiScore": float(PRECISION_MIN_AI_SCORE),
             "minTotalScore": float(PRECISION_MIN_TOTAL_SCORE),
             "minHealthScore": float(PRECISION_MIN_HEALTH_SCORE),
@@ -137,6 +155,11 @@ def settings_payload(row: SuperAIDaytradeSetting) -> dict[str, Any]:
             "maxDailyLossPct": float(PRECISION_MAX_DAILY_LOSS_PCT),
             "riskPerTradePct": float(PRECISION_RISK_PER_TRADE_PCT),
             "requiresRealtimeBreakoutProxy": True,
+            "shortMinAiScore": float(SHORT_MIN_AI_SCORE),
+            "shortMinTotalScore": float(SHORT_MIN_TOTAL_SCORE),
+            "shortMinHealthScore": float(SHORT_MIN_HEALTH_SCORE),
+            "shortMinRiskReward": float(SHORT_MIN_RISK_REWARD),
+            "maxStopLossesPerDay": MAX_STOP_LOSSES_PER_DAY,
         },
         "settingsVersion": row.settings_version,
         "updatedAt": row.updated_at.isoformat(),
@@ -217,16 +240,16 @@ def market_state(regime: str) -> dict[str, Any]:
 def trade_side_for(regime: str, candidate: AdaptiveStockCandidate) -> str:
     if regime == "CRASH":
         return "SHORT"
-    if regime in {"BREAKOUT", "RECOVERY"}:
-        return "LONG"
     if candidate.strategy_type == "CRASH":
         severe_weak = (
             float(candidate.relative_strength) <= -3
-            or float(candidate.industry_strength) <= 45
-            or candidate.candidate_status in {"market_risk_high", "breakout_watch", "can_enter"}
+            and float(candidate.industry_strength) <= 40
+            and candidate.candidate_status in {"market_risk_high", "breakout_watch", "can_enter"}
         )
-        if severe_weak:
+        if severe_weak and regime != "BREAKOUT":
             return "SHORT"
+    if regime in {"BREAKOUT", "RECOVERY"}:
+        return "LONG"
     weak = (
         float(candidate.relative_strength) < -3
         or float(candidate.industry_strength) < 35
@@ -377,7 +400,7 @@ def risk_status(db: Session, settings: SuperAIDaytradeSetting, at: datetime) -> 
         settings.stop_new_trades
         or today_pnl <= -daily_limit
         or settings.consecutive_stop_losses >= 3
-        or len(stop_losses) >= 1
+        or len(stop_losses) >= MAX_STOP_LOSSES_PER_DAY
         or opened_today >= PRECISION_MAX_NEW_TRADES_PER_DAY
     )
     return {
@@ -390,7 +413,9 @@ def risk_status(db: Session, settings: SuperAIDaytradeSetting, at: datetime) -> 
         "maxProbeTradesPerDay": PRECISION_MAX_PROBE_TRADES_PER_DAY,
         "stopNewTrades": bool(stop_new),
         "stopReason": settings.stop_reason
-            or ("daily_max_loss" if today_pnl <= -daily_limit else "first_stop_loss" if len(stop_losses) >= 1 else "daily_trade_limit" if opened_today >= PRECISION_MAX_NEW_TRADES_PER_DAY else "consecutive_stop_losses" if settings.consecutive_stop_losses >= 3 else None),
+            or ("daily_max_loss" if today_pnl <= -daily_limit else "daily_stop_loss_limit" if len(stop_losses) >= MAX_STOP_LOSSES_PER_DAY else "daily_trade_limit" if opened_today >= PRECISION_MAX_NEW_TRADES_PER_DAY else "consecutive_stop_losses" if settings.consecutive_stop_losses >= 3 else None),
+        "stopLossesToday": len(stop_losses),
+        "maxStopLossesPerDay": MAX_STOP_LOSSES_PER_DAY,
         "consecutiveStopLosses": max(settings.consecutive_stop_losses, len(stop_losses)),
     }
 
@@ -413,10 +438,14 @@ def sized_quantity(
     )
     risk_shares = int(risk_amount / risk_per_share)
     capital_shares = int(capital_limit / entry)
-    quantity = max(0, min(risk_shares, capital_shares))
-    quantity = (quantity // 1000) * 1000
-    if quantity == 0 and min(risk_shares, capital_shares) >= 100:
-        quantity = (min(risk_shares, capital_shares) // 100) * 100
+    maximum_quantity = max(0, min(risk_shares, capital_shares))
+    quantity = (maximum_quantity // 1000) * 1000
+    if quantity == 0 and maximum_quantity >= 100:
+        quantity = (maximum_quantity // 100) * 100
+    if quantity == 0 and maximum_quantity >= 10:
+        quantity = (maximum_quantity // 10) * 10
+    if quantity == 0 and maximum_quantity >= 1:
+        quantity = maximum_quantity
     return quantity, _money(risk_amount), open_market_value + entry * quantity
 
 
@@ -442,85 +471,108 @@ def trading_gate(
     quantity, risk_amount, projected_value = sized_quantity(
         settings, entry=entry, stop=stop, side=side, open_market_value=open_value,
     )
-    failures: list[str] = []
+    common_failures: list[str] = []
     warnings: list[str] = []
     if not settings.enabled:
-        failures.append("system_disabled")
+        common_failures.append("system_disabled")
     if settings.trading_mode not in {"PAPER", "LIVE"}:
-        failures.append("invalid_trading_mode")
+        common_failures.append("invalid_trading_mode")
     if risk["stopNewTrades"]:
-        failures.append(str(risk["stopReason"] or "risk_stop"))
-    if side == "SHORT":
-        failures.append("precision_breakout_long_only")
-    if regime not in {"BREAKOUT", "RECOVERY"}:
-        failures.append("precision_requires_strong_market")
-    if candidate.strategy_type != "BREAKOUT":
-        failures.append("precision_requires_breakout_strategy")
-    if Decimal(candidate.total_score) < PRECISION_MIN_TOTAL_SCORE:
-        failures.append("precision_total_score_below_58")
-    if Decimal(candidate.health_score) < PRECISION_MIN_HEALTH_SCORE:
-        failures.append("precision_health_score_below_55")
-    if Decimal(candidate.relative_strength) <= Decimal("0"):
-        failures.append("precision_relative_strength_not_positive")
-    if Decimal(candidate.industry_strength) < PRECISION_MIN_INDUSTRY_STRENGTH:
-        failures.append("precision_industry_strength_below_20")
-    if Decimal(candidate.false_breakout_risk) > PRECISION_MAX_FALSE_BREAKOUT_RISK:
-        failures.append("precision_false_breakout_risk_too_high")
+        common_failures.append(str(risk["stopReason"] or "risk_stop"))
     if not str(candidate.quote_source).startswith("TWSE MIS"):
-        failures.append("precision_vwap_proxy_not_confirmed")
+        common_failures.append("realtime_market_quote_required")
+    elif _quote_age_seconds(candidate.quote_timestamp, at) > MAX_ENTRY_QUOTE_AGE_SECONDS:
+        common_failures.append("candidate_quote_older_than_8_seconds")
     elif Decimal(candidate.current_price) < Decimal(candidate.breakout_price):
         warnings.append("breakout_price_not_reached")
-    if side == "LONG" and regime in {"BREAKOUT", "RECOVERY"}:
-        if candidate.strategy_type != "BREAKOUT":
-            failures.append("strong_market_requires_breakout_strategy")
-        if Decimal(candidate.total_score) < PRECISION_MIN_TOTAL_SCORE:
-            failures.append("strong_market_total_score_too_weak")
-        if Decimal(candidate.health_score) < PRECISION_MIN_HEALTH_SCORE:
-            failures.append("strong_market_health_score_too_weak")
-        if Decimal(candidate.relative_strength) <= Decimal("0"):
-            failures.append("strong_market_relative_strength_too_weak")
+    if day_trading_restrictions.is_disposed(candidate.stock_code):
+        common_failures.append("disposed_stock")
     if len(open_trades) >= settings.max_positions:
-        failures.append("max_positions")
-    if score < PRECISION_MIN_AI_SCORE:
-        failures.append("ai_score_below_trade_threshold")
-    if rr < PRECISION_MIN_RISK_REWARD:
-        failures.append("risk_reward_below_threshold")
+        common_failures.append("max_positions")
     if stop_pct > max_stop_pct:
-        failures.append("stop_distance_too_wide")
+        common_failures.append("stop_distance_too_wide")
     if quantity <= 0:
-        failures.append("quantity_zero")
-    if candidate.quote_source.startswith("Yahoo Finance"):
-        failures.append("delayed_quote")
-    if candidate.candidate_status in {"market_risk_high", "signal_invalid"} and side == "LONG":
-        failures.append("market_risk_blocks_long")
+        common_failures.append("quantity_zero")
 
     entry_mode = "FORMAL"
-    probe_failures: list[str] = []
-    if failures:
-        non_probe_failures = [
-            reason for reason in failures
-            if reason not in {
-                "precision_total_score_below_58",
-                "strong_market_total_score_too_weak",
-            }
-        ]
-        if Decimal(candidate.total_score) < PRECISION_PROBE_MIN_TOTAL_SCORE:
-            probe_failures.append("probe_total_score_below_55")
-        if Decimal(candidate.health_score) < PRECISION_PROBE_MIN_HEALTH_SCORE:
-            probe_failures.append("probe_health_score_below_55")
-        if int(risk.get("openedProbeTradesToday", 0)) >= PRECISION_MAX_PROBE_TRADES_PER_DAY:
-            probe_failures.append("probe_daily_trade_limit")
-        if non_probe_failures:
-            probe_failures.extend(non_probe_failures)
-        if not probe_failures:
-            warnings.extend(failures)
-            failures = []
-            entry_mode = "PROBE"
+    if side == "LONG":
+        hard_failures = list(common_failures)
+        if regime not in {"BREAKOUT", "RECOVERY"}:
+            hard_failures.append("long_requires_bullish_or_recovery_market")
+        if candidate.strategy_type not in {"BREAKOUT", "RECOVERY"}:
+            hard_failures.append("long_requires_breakout_or_recovery_strategy")
+        if Decimal(candidate.relative_strength) <= Decimal("0"):
+            hard_failures.append("long_relative_strength_not_positive")
+        if Decimal(candidate.false_breakout_risk) > PRECISION_MAX_FALSE_BREAKOUT_RISK:
+            hard_failures.append("long_false_breakout_risk_too_high")
+        if candidate.candidate_status in {"market_risk_high", "signal_invalid"}:
+            hard_failures.append("market_risk_blocks_long")
+
+        formal_failures = list(hard_failures)
+        if Decimal(candidate.total_score) < PRECISION_MIN_TOTAL_SCORE:
+            formal_failures.append("long_total_score_below_58")
+        if Decimal(candidate.health_score) < PRECISION_MIN_HEALTH_SCORE:
+            formal_failures.append("long_health_score_below_55")
+        if Decimal(candidate.industry_strength) < PRECISION_MIN_INDUSTRY_STRENGTH:
+            formal_failures.append("long_industry_strength_below_15")
+        if score < PRECISION_MIN_AI_SCORE:
+            formal_failures.append("long_ai_score_below_60")
+        if rr < PRECISION_MIN_RISK_REWARD:
+            formal_failures.append("long_risk_reward_below_1_8")
+
+        if formal_failures:
+            probe_failures = list(hard_failures)
+            if Decimal(candidate.total_score) < PRECISION_PROBE_MIN_TOTAL_SCORE:
+                probe_failures.append("probe_total_score_below_54")
+            if Decimal(candidate.health_score) < PRECISION_PROBE_MIN_HEALTH_SCORE:
+                probe_failures.append("probe_health_score_below_52")
+            if Decimal(candidate.industry_strength) < Decimal("10"):
+                probe_failures.append("probe_industry_strength_below_10")
+            if score < Decimal("56"):
+                probe_failures.append("probe_ai_score_below_56")
+            if rr < Decimal("1.5"):
+                probe_failures.append("probe_risk_reward_below_1_5")
+            if int(risk.get("openedProbeTradesToday", 0)) >= PRECISION_MAX_PROBE_TRADES_PER_DAY:
+                probe_failures.append("probe_daily_trade_limit")
+            if probe_failures:
+                failures = probe_failures
+            else:
+                warnings.extend(formal_failures)
+                failures = []
+                entry_mode = "PROBE"
         else:
-            failures = probe_failures
+            failures = []
+    else:
+        failures = list(common_failures)
+        short_known, short_eligible = day_trading_restrictions.short_eligibility(
+            candidate.stock_code,
+            candidate.market_type,
+        )
+        if regime == "BREAKOUT":
+            failures.append("strong_bull_market_blocks_short")
+        if candidate.strategy_type != "CRASH":
+            failures.append("short_requires_crash_strategy")
+        if Decimal(candidate.total_score) < SHORT_MIN_TOTAL_SCORE:
+            failures.append("short_total_score_below_65")
+        if Decimal(candidate.health_score) < SHORT_MIN_HEALTH_SCORE:
+            failures.append("short_health_score_below_60")
+        if Decimal(candidate.relative_strength) > SHORT_MAX_RELATIVE_STRENGTH:
+            failures.append("short_relative_strength_not_weak_enough")
+        if Decimal(candidate.industry_strength) > SHORT_MAX_INDUSTRY_STRENGTH:
+            failures.append("short_industry_not_weak_enough")
+        if Decimal(candidate.false_breakout_risk) > SHORT_MAX_FALSE_BREAKOUT_RISK:
+            failures.append("short_signal_risk_too_high")
+        if score < SHORT_MIN_AI_SCORE:
+            failures.append("short_ai_score_below_75")
+        if rr < SHORT_MIN_RISK_REWARD:
+            failures.append("short_risk_reward_below_2")
+        if not short_known:
+            failures.append("short_eligibility_unknown")
+        elif not short_eligible:
+            failures.append("short_not_eligible")
 
     reasons = decision_reasons(candidate, regime, side, rr)
-    reasons.append("balanced_breakout_mode")
+    reasons.append("bold_long_biased_mode")
     if entry_mode == "PROBE":
         reasons.append("probe_entry")
     if _intraday_bull_breakout_bonus(candidate, regime, side):

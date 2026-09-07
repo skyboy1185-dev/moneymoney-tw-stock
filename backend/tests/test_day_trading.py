@@ -19,6 +19,9 @@ from app.services.day_trading_schedule import (
     MIN_OFFICIAL_CONFIDENCE_SCORE,
     MIN_OFFICIAL_CONFIRMATION_SCORE,
     MIN_OFFICIAL_HEALTH_SCORE,
+    MIN_SHORT_CONFIDENCE_SCORE,
+    MIN_SHORT_CONFIRMATION_SCORE,
+    MIN_SHORT_HEALTH_SCORE,
     STARTER_MAX_RECOMMENDATIONS,
     StableRecommendationSelector,
     TradingScheduleConfig,
@@ -185,7 +188,7 @@ def test_index_delay_degrades_but_allows_formal_signals_when_pool_quotes_are_fre
     assert session["formalSignalsAllowed"] is True
 
 
-def test_realtime_pool_coverage_uses_mis_realtime_flag_not_last_trade_time() -> None:
+def test_official_pool_availability_survives_delayed_trade_flags() -> None:
     now = datetime(2026, 8, 3, 10, 20, tzinfo=TAIPEI)
 
     class FixedClockEngine(MockDayTradingEngine):
@@ -218,7 +221,7 @@ def test_realtime_pool_coverage_uses_mis_realtime_flag_not_last_trade_time() -> 
     engine = FixedClockEngine()
     engine.set_stock_universe(stocks)
     quotes = {"t00": quote("t00", 35)}
-    quotes.update({stock.symbol: quote(stock.symbol, 240) for stock in stocks[:8]})
+    quotes.update({stock.symbol: quote(stock.symbol, 240, realtime=False) for stock in stocks[:8]})
     engine.update_official_quotes(quotes)
 
     regime = engine.market_regime()
@@ -226,6 +229,7 @@ def test_realtime_pool_coverage_uses_mis_realtime_flag_not_last_trade_time() -> 
     assert regime["dataStatus"] == "normal"
     assert regime["dataQualityMode"] == "index_delay"
     assert regime["quoteCoverageCount"] == 8
+    assert regime["realtimeQuoteCoverageCount"] == 0
     assert regime["formalBlockReason"] is None
 
 
@@ -447,6 +451,7 @@ def _candidate(signal_id: str, confidence: int = 80, **overrides: object) -> dic
         "largeOrderContinuousSell": True,
         "industryScore": 80, "liquidityScore": 80, "price": 100,
         "entryMin": 99, "entryMax": 101, "generatedAt": now.isoformat(),
+        "quoteTimestamp": now.isoformat(),
         "expiresAt": (now + timedelta(minutes=20)).isoformat(),
     }
     value.update(overrides)
@@ -682,6 +687,44 @@ def test_recommendation_requires_stronger_intraday_confirmation() -> None:
     assert f"盤中確認分數未達 {MIN_OFFICIAL_CONFIRMATION_SCORE}" in weak_confirmation_failures
     assert not unconfirmed_breakout_passed
     assert "5 分 K 突破結構尚未確認" in unconfirmed_breakout_failures
+
+
+def test_short_entry_requires_higher_confidence_than_long_entry() -> None:
+    now = datetime(2026, 7, 21, 9, 20, tzinfo=TAIPEI)
+    config = TradingScheduleConfig()
+    session = trading_session_state(config, now, quote_samples=10, infrastructure_ok=True)
+
+    passed, failures = recommendation_qualification(
+        _candidate(
+            "qualified-short",
+            direction="short",
+            confidence=MIN_SHORT_CONFIDENCE_SCORE,
+            confirmationScore=MIN_SHORT_CONFIRMATION_SCORE,
+            healthScore=MIN_SHORT_HEALTH_SCORE,
+        ),
+        config,
+        session,
+        now,
+    )
+
+    assert passed
+    assert not failures
+
+
+def test_candidate_quote_older_than_eight_seconds_is_blocked() -> None:
+    now = datetime(2026, 7, 21, 9, 20, tzinfo=TAIPEI)
+    config = TradingScheduleConfig()
+    session = trading_session_state(config, now, quote_samples=10, infrastructure_ok=True)
+
+    passed, failures = recommendation_qualification(
+        _candidate("stale-quote", quoteTimestamp=(now - timedelta(seconds=9)).isoformat()),
+        config,
+        session,
+        now,
+    )
+
+    assert not passed
+    assert any("8 秒" in failure for failure in failures)
 
 
 def test_vwap_confirmation_does_not_require_three_gate_for_official_entry() -> None:
@@ -958,9 +1001,9 @@ def test_selector_adds_limited_starter_entries_when_strict_recommendations_are_e
     retained, _ = selector.select(
         "starter-user",
         [
-            _candidate("starter-a", symbol="2330", **blocked_but_strong),
-            _candidate("starter-b", symbol="2317", **blocked_but_strong),
-            _candidate("starter-c", symbol="2454", **blocked_but_strong),
+            _candidate("starter-a", symbol="2330", quoteTimestamp=(now + timedelta(minutes=1)).isoformat(), **blocked_but_strong),
+            _candidate("starter-b", symbol="2317", quoteTimestamp=(now + timedelta(minutes=1)).isoformat(), **blocked_but_strong),
+            _candidate("starter-c", symbol="2454", quoteTimestamp=(now + timedelta(minutes=1)).isoformat(), **blocked_but_strong),
         ],
         config,
         trading_session_state(config, now + timedelta(minutes=1), quote_samples=10, infrastructure_ok=True),
@@ -1049,22 +1092,37 @@ def test_selector_high_confidence_can_enter_after_hourly_quota() -> None:
 
     same_hour = now + timedelta(minutes=10)
     same_session = trading_session_state(config, same_hour, quote_samples=10, infrastructure_ok=True)
-    low_confidence = _candidate("d", 84, **timing)
+    refreshed_first = [
+        {**candidate, "quoteTimestamp": same_hour.isoformat()}
+        for candidate in first_candidates
+    ]
+    low_confidence = _candidate("d", 84, quoteTimestamp=same_hour.isoformat(), **timing)
     still_capped, _ = selector.select(
         "hourly-user",
-        [*first_candidates, low_confidence],
+        [*refreshed_first, low_confidence],
         config,
         same_session,
         now=same_hour,
     )
     assert "d" not in {item["id"] for item in still_capped}
 
-    high_confidence = _candidate("e", 95, healthScore=90, riskRewardRatio=3, marketAlignment=80, **timing)
     high_time = same_hour + timedelta(seconds=10)
+    high_confidence = _candidate(
+        "e", 95,
+        healthScore=90,
+        riskRewardRatio=3,
+        marketAlignment=80,
+        quoteTimestamp=high_time.isoformat(),
+        **timing,
+    )
+    refreshed_first = [
+        {**candidate, "quoteTimestamp": high_time.isoformat()}
+        for candidate in first_candidates
+    ]
     high_session = trading_session_state(config, high_time, quote_samples=10, infrastructure_ok=True)
     within_hour, _ = selector.select(
         "hourly-user",
-        [*first_candidates, high_confidence],
+        [*refreshed_first, high_confidence],
         config,
         high_session,
         now=high_time,
@@ -1076,7 +1134,10 @@ def test_selector_high_confidence_can_enter_after_hourly_quota() -> None:
     next_session = trading_session_state(config, next_hour, quote_samples=10, infrastructure_ok=True)
     after_reset, _ = selector.select(
         "hourly-user",
-        [*first_candidates, low_confidence],
+        [
+            *[{**candidate, "quoteTimestamp": next_hour.isoformat()} for candidate in first_candidates],
+            {**low_confidence, "quoteTimestamp": next_hour.isoformat()},
+        ],
         config,
         next_session,
         now=next_hour,
@@ -1097,12 +1158,22 @@ def test_hourly_quota_keeps_retention_but_allows_high_confidence_after_retention
     )
     too_soon, _ = selector.select(
         "stable-user",
-        [_candidate("a", 90), _candidate("b", 85), _candidate("c", 80), _candidate("d", 90)],
+        [
+            _candidate("a", 90, quoteTimestamp=(now + timedelta(minutes=1)).isoformat()),
+            _candidate("b", 85, quoteTimestamp=(now + timedelta(minutes=1)).isoformat()),
+            _candidate("c", 80, quoteTimestamp=(now + timedelta(minutes=1)).isoformat()),
+            _candidate("d", 90, quoteTimestamp=(now + timedelta(minutes=1)).isoformat()),
+        ],
         config, session, now=now + timedelta(minutes=1),
     )
     still_capped, _ = selector.select(
         "stable-user",
-        [_candidate("a", 90), _candidate("b", 85), _candidate("c", 80), _candidate("d", 90)],
+        [
+            _candidate("a", 90, quoteTimestamp=(now + timedelta(minutes=4)).isoformat()),
+            _candidate("b", 85, quoteTimestamp=(now + timedelta(minutes=4)).isoformat()),
+            _candidate("c", 80, quoteTimestamp=(now + timedelta(minutes=4)).isoformat()),
+            _candidate("d", 90, quoteTimestamp=(now + timedelta(minutes=4)).isoformat()),
+        ],
         config, session, now=now + timedelta(minutes=4),
     )
     next_hour = now + timedelta(hours=1)
@@ -1110,10 +1181,10 @@ def test_hourly_quota_keeps_retention_but_allows_high_confidence_after_retention
     reset, _ = selector.select(
         "stable-user",
         [
-            _candidate("a", 90, expiresAt=(next_hour + timedelta(minutes=20)).isoformat()),
-            _candidate("b", 85, expiresAt=(next_hour + timedelta(minutes=20)).isoformat()),
-            _candidate("c", 80, expiresAt=(next_hour + timedelta(minutes=20)).isoformat()),
-            _candidate("d", 90, expiresAt=(next_hour + timedelta(minutes=20)).isoformat()),
+                _candidate("a", 90, quoteTimestamp=next_hour.isoformat(), expiresAt=(next_hour + timedelta(minutes=20)).isoformat()),
+                _candidate("b", 85, quoteTimestamp=next_hour.isoformat(), expiresAt=(next_hour + timedelta(minutes=20)).isoformat()),
+                _candidate("c", 80, quoteTimestamp=next_hour.isoformat(), expiresAt=(next_hour + timedelta(minutes=20)).isoformat()),
+                _candidate("d", 90, quoteTimestamp=next_hour.isoformat(), expiresAt=(next_hour + timedelta(minutes=20)).isoformat()),
         ],
         config,
         next_session,

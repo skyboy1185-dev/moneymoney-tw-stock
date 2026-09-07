@@ -671,6 +671,7 @@ def _automation_cached_rankings(direction: str) -> dict[str, Any] | None:
 
 def _market_regime_payload(selection: dict[str, Any]) -> dict[str, Any]:
     degraded = bool(selection.get("degraded") or selection["regime"].get("degraded"))
+    recommended = selection.get("recommended") or []
     return {
         **selection["regime"],
         "marketOpen": selection["session"]["phase"] in {"warmup", "scanning", "long_only", "entry_closed", "closing"},
@@ -679,6 +680,11 @@ def _market_regime_payload(selection: dict[str, Any]) -> dict[str, Any]:
         "recommendationSummary": selection["summary"],
         "recommendedCount": selection["totalRecommended"],
         "maximumRecommendations": selection["maximumRecommendations"],
+        "aggressionProfile": "BOLD_LONG_BIASED",
+        "aggressionProfileLabel": "積極偏多・精選放空",
+        "sidePolicy": "LONG_PRIMARY_HIGH_CONFIDENCE_SHORT",
+        "eligibleLongCount": sum(1 for item in recommended if item.get("direction") == "long"),
+        "eligibleShortCount": sum(1 for item in recommended if item.get("direction") == "short"),
         "supervisor": day_trading_automation.state,
         "mode": selection["regime"].get("mode", "demo"),
         "dataNotice": selection["regime"].get("dataNotice", DATA_NOTICE),

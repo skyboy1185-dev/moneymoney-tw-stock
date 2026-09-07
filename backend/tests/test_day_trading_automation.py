@@ -33,6 +33,7 @@ def test_web_entry_is_persisted_when_line_delivery_fails(monkeypatch: Any) -> No
         "dataStatus": "normal",
         "dataMode": "official",
         "quoteIsRealtime": True,
+        "quoteTimestamp": automation_module.datetime.now(automation_module.UTC).isoformat(),
         "confidenceScore": 90,
         "confirmationScore": 90,
         "healthScore": 90,

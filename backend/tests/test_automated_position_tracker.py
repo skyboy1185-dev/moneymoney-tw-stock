@@ -63,6 +63,7 @@ def _qualified_signal(**overrides: object) -> dict[str, object]:
         "status": "confirmed",
         "dataMode": "official",
         "quoteIsRealtime": True,
+        "quoteTimestamp": "2026-07-30T09:41:52+08:00",
         "confidenceScore": 85,
         "healthScore": 85,
         "riskRewardRatio": 2.0,
@@ -242,7 +243,7 @@ def test_official_recommendation_history_is_deduplicated() -> None:
 
 def test_low_confidence_official_recommendation_does_not_open_or_record() -> None:
     config, session, now = _formal_session()
-    signal = _qualified_signal(confidenceScore=69)
+    signal = _qualified_signal(confidenceScore=67)
 
     with _session() as db:
         created = ensure_positions_for_delivered_entries(
@@ -269,7 +270,7 @@ def test_low_confidence_official_recommendation_does_not_open_or_record() -> Non
 
 def test_low_confirmation_official_recommendation_does_not_open_or_record() -> None:
     config, session, now = _formal_session()
-    signal = _qualified_signal(confirmationScore=34)
+    signal = _qualified_signal(confirmationScore=29)
 
     with _session() as db:
         created = ensure_positions_for_delivered_entries(
@@ -335,6 +336,29 @@ def test_fixed_two_lot_strategy_opens_high_price_position_over_one_million() -> 
         assert created[0].symbol == "3034"
 
 
+def test_fixed_two_lot_strategy_stops_after_five_entries_in_one_day() -> None:
+    with _session() as db:
+        now = datetime(2026, 7, 30, 9, 41, 52, tzinfo=TAIPEI)
+        for index in range(5):
+            signal = {
+                **_signal(),
+                "id": f"daily-limit-{index}",
+                "symbol": f"90{index:02d}",
+            }
+            assert len(ensure_positions_for_delivered_entries(db, [signal], now=now)) == 1
+            db.commit()
+
+        blocked = {
+            **_signal(),
+            "id": "daily-limit-blocked",
+            "symbol": "9999",
+        }
+        assert ensure_positions_for_delivered_entries(db, [blocked], now=now) == []
+        allocation = blocked["strategyAllocations"][FIXED_STRATEGY_KEY]
+        assert allocation["quantityLots"] == 0
+        assert "daily_trade_limit" in allocation["status"]
+
+
 def test_fixed_two_lot_strategy_pauses_symbol_after_repeated_stop_losses() -> None:
     with _session() as db:
         now = datetime(2026, 8, 26, 3, 0, tzinfo=UTC)
@@ -373,7 +397,7 @@ def test_fixed_two_lot_strategy_pauses_symbol_after_repeated_stop_losses() -> No
         assert created == []
         allocation = signal["strategyAllocations"][FIXED_STRATEGY_KEY]
         assert allocation["quantityLots"] == 0
-        assert "同股已停損" in allocation["status"]
+        assert "daily_max_loss" in allocation["status"]
 
 
 def test_background_stop_event_closes_position_and_records_trade() -> None:

@@ -49,14 +49,15 @@ def test_entry_cutoff_keeps_robot_visible_in_position_management_mode() -> None:
     assert robot["status"] == "managing"
 
 
-def test_directional_robot_only_routes_aligned_formal_signals() -> None:
+def test_directional_robot_marks_alignment_but_keeps_both_sides_eligible() -> None:
     robot = strategy_context(_regime(40), _session())["activeRobot"]
     routed = route_signals_to_active_robot([
         {"id": "long", "direction": "long"},
         {"id": "short", "direction": "short"},
     ], robot)
 
-    assert [signal["id"] for signal in strategy_eligible_signals(routed)] == ["long"]
+    assert [signal["id"] for signal in strategy_eligible_signals(routed)] == ["long", "short"]
+    assert [signal["strategyAligned"] for signal in routed] == [True, False]
     assert all(signal["strategyRobotName"] == "多頭回撤機器人" for signal in routed)
 
 

@@ -158,4 +158,5 @@ def route_signals_to_active_robot(
 
 
 def strategy_eligible_signals(signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [signal for signal in signals if signal.get("strategyAligned", True)]
+    """Keep both sides available; the active robot is a preference, not a hard filter."""
+    return signals

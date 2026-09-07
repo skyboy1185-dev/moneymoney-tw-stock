@@ -11,9 +11,16 @@ from .theme_stock_universe import is_target_theme_symbol
 
 TAIPEI = ZoneInfo("Asia/Taipei")
 MAX_LONG_CHASE_CHANGE_PERCENT = 5.0
-MIN_OFFICIAL_CONFIDENCE_SCORE = 70
-MIN_OFFICIAL_CONFIRMATION_SCORE = 35
-MIN_OFFICIAL_HEALTH_SCORE = 65
+MIN_OFFICIAL_CONFIDENCE_SCORE = 68
+MIN_OFFICIAL_CONFIRMATION_SCORE = 30
+MIN_OFFICIAL_HEALTH_SCORE = 60
+MIN_SHORT_CONFIDENCE_SCORE = 82
+MIN_SHORT_CONFIRMATION_SCORE = 55
+MIN_SHORT_HEALTH_SCORE = 70
+MIN_SHORT_RISK_REWARD = 2.0
+MIN_LONG_MARKET_ALIGNMENT = 25
+MIN_SHORT_MARKET_ALIGNMENT = 30
+MAX_ENTRY_QUOTE_DELAY_SECONDS = 8
 MIN_DAY_TRADING_VOLUME_SHARES = 1_000_000
 MIN_DAY_TRADING_TURNOVER = 100_000_000
 MIN_LIQUIDITY_PROGRESS = 0.10
@@ -25,12 +32,12 @@ DAY_TRADING_LONG_ENTRY_CUTOFF = "12:30"
 DAY_TRADING_CLOSE_REMINDER = "13:25"
 DAY_TRADING_FORCED_EXIT = "13:30"
 STARTER_ENTRY_MODE = "starter"
-STARTER_MAX_RECOMMENDATIONS = 2
-STARTER_MIN_CONFIDENCE_SCORE = 85
-STARTER_MIN_CONFIRMATION_SCORE = 60
-STARTER_MIN_HEALTH_SCORE = 70
-STARTER_MIN_MARKET_ALIGNMENT = 45
-STARTER_MIN_MOMENTUM_FORCE = 45
+STARTER_MAX_RECOMMENDATIONS = 3
+STARTER_MIN_CONFIDENCE_SCORE = 78
+STARTER_MIN_CONFIRMATION_SCORE = 50
+STARTER_MIN_HEALTH_SCORE = 65
+STARTER_MIN_MARKET_ALIGNMENT = 35
+STARTER_MIN_MOMENTUM_FORCE = 40
 STARTER_MAX_CHANGE_PERCENT = 9.0
 
 
@@ -216,6 +223,16 @@ def _candidate_float(candidate: dict[str, Any], key: str, default: float = 0.0) 
         return default
 
 
+def _quote_delay_seconds(candidate: dict[str, Any], now: datetime) -> float:
+    try:
+        quote_at = datetime.fromisoformat(str(candidate["quoteTimestamp"]))
+    except (KeyError, TypeError, ValueError):
+        return float("inf")
+    if quote_at.tzinfo is None:
+        quote_at = quote_at.replace(tzinfo=UTC)
+    return max(0.0, (now.astimezone(UTC) - quote_at.astimezone(UTC)).total_seconds())
+
+
 def _starter_momentum_ok(candidate: dict[str, Any]) -> bool:
     directional_force = abs(_candidate_float(candidate, "largeOrderForce"))
     active_force = abs(_candidate_float(candidate, "activeForce"))
@@ -238,6 +255,8 @@ def starter_recommendation_qualification(
     current = now or datetime.now(UTC)
     failures: list[str] = []
     direction = str(candidate.get("direction", ""))
+    if direction == "short":
+        failures.append("空方僅接受正式高信心訊號，不使用積極試單")
     direction_allowed = (
         bool(session.get("formalLongSignalsAllowed", session["formalSignalsAllowed"]))
         if direction == "long"
@@ -254,6 +273,8 @@ def starter_recommendation_qualification(
         failures.append("行情或策略來源尚未達正式試單標準")
     if candidate.get("quoteIsRealtime") is not True:
         failures.append("缺少可驗證的盤中即時行情")
+    elif _quote_delay_seconds(candidate, current) > MAX_ENTRY_QUOTE_DELAY_SECONDS:
+        failures.append(f"個股報價延遲超過 {MAX_ENTRY_QUOTE_DELAY_SECONDS} 秒")
     if _expired(candidate, current):
         failures.append("訊號已失效")
     if not bool(candidate.get(
@@ -359,16 +380,23 @@ def recommendation_qualification(
         )
     if candidate.get("quoteIsRealtime") is not True:
         failures.append("缺少可驗證的盤中行情")
+    elif _quote_delay_seconds(candidate, current) > MAX_ENTRY_QUOTE_DELAY_SECONDS:
+        failures.append(f"個股報價延遲超過 {MAX_ENTRY_QUOTE_DELAY_SECONDS} 秒")
     if (not starter_mode and candidate.get("status") != "confirmed") or _expired(candidate, current):
         failures.append("訊號已失效或尚未確認")
     if str(candidate.get("action", "")).startswith(("等待", "觀望", "禁止", "行情異常")):
         failures.append("尚未形成正式進場指令")
     confidence_score = float(candidate.get("confidenceScore", 0))
     confirmation_score = float(candidate.get("confirmationScore", 0))
-    if confidence_score < MIN_OFFICIAL_CONFIDENCE_SCORE:
-        failures.append(f"信心分數未達 {MIN_OFFICIAL_CONFIDENCE_SCORE}")
-    if confirmation_score < MIN_OFFICIAL_CONFIRMATION_SCORE:
-        failures.append(f"盤中確認分數未達 {MIN_OFFICIAL_CONFIRMATION_SCORE}")
+    required_confidence = MIN_SHORT_CONFIDENCE_SCORE if direction == "short" else MIN_OFFICIAL_CONFIDENCE_SCORE
+    required_confirmation = MIN_SHORT_CONFIRMATION_SCORE if direction == "short" else MIN_OFFICIAL_CONFIRMATION_SCORE
+    required_health = MIN_SHORT_HEALTH_SCORE if direction == "short" else MIN_OFFICIAL_HEALTH_SCORE
+    required_risk_reward = max(config.minimum_risk_reward, MIN_SHORT_RISK_REWARD) if direction == "short" else config.minimum_risk_reward
+    required_alignment = MIN_SHORT_MARKET_ALIGNMENT if direction == "short" else MIN_LONG_MARKET_ALIGNMENT
+    if confidence_score < required_confidence:
+        failures.append(f"信心分數未達 {required_confidence}")
+    if confirmation_score < required_confirmation:
+        failures.append(f"盤中確認分數未達 {required_confirmation}")
     five_minute_structure = str(candidate.get("fiveMinuteStructure", ""))
     five_minute_setup = str(candidate.get("fiveMinuteSetup", ""))
     if (
@@ -378,10 +406,10 @@ def recommendation_qualification(
         and ("未確認" in five_minute_structure or "尚未" in five_minute_structure)
     ):
         failures.append("5 分 K 突破結構尚未確認")
-    if float(candidate.get("healthScore", 0)) < MIN_OFFICIAL_HEALTH_SCORE:
-        failures.append(f"健康度未達 {MIN_OFFICIAL_HEALTH_SCORE}")
-    if float(candidate.get("riskRewardRatio", 0)) < config.minimum_risk_reward:
-        failures.append(f"風險報酬比未達 1：{config.minimum_risk_reward:g}")
+    if float(candidate.get("healthScore", 0)) < required_health:
+        failures.append(f"健康度未達 {required_health}")
+    if float(candidate.get("riskRewardRatio", 0)) < required_risk_reward:
+        failures.append(f"風險報酬比未達 1：{required_risk_reward:g}")
     required_volume, required_turnover = intraday_liquidity_minimums(config, current)
     if float(candidate.get("volume", 0)) < required_volume:
         failures.append(
@@ -415,8 +443,8 @@ def recommendation_qualification(
         failures.append("大戶尚未持續加多")
     if not candidate.get("tradingEligible", False):
         failures.append("不符合當沖交易資格")
-    if float(candidate.get("marketAlignment", 0)) < 30:
-        failures.append("方向與大盤環境嚴重衝突")
+    if float(candidate.get("marketAlignment", 0)) < required_alignment:
+        failures.append(f"市場方向一致性未達 {required_alignment}")
     if float(candidate.get("stopDistancePercent", 999)) > config.maximum_stop_distance:
         failures.append("停損距離超過風控上限")
     if candidate.get("direction") == "short":

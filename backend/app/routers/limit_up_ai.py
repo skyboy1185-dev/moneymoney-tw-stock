@@ -71,6 +71,9 @@ def status(user_id: str = Depends(_user_id)) -> dict[str, Any]:
     return {
         **limit_up_ai_automation.status(),
         "userId": user_id,
+        "aggressionProfile": "BOLD_LONG_BIASED",
+        "aggressionProfileLabel": "積極偏多・漲停強攻",
+        "sidePolicy": "LONG_ONLY_LIMIT_UP_MOMENTUM",
     }
 
 
