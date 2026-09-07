@@ -194,7 +194,9 @@ export function LimitUpAiPage({ userId }: { userId: string }) {
         setData((current) => ({
           ...current,
           notifications: tradeNotifications,
-          unreadCount: safeNotifications.unreadCount,
+          unreadCount: messageFilter
+            ? current.unreadCount
+            : tradeNotifications.filter((item) => !item.isRead).length,
         }));
         const newestId = Math.max(0, ...tradeNotifications.map((item) => item.id));
         if (!initializedMessages.current) {
