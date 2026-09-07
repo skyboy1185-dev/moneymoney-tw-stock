@@ -1,4 +1,4 @@
-import type { Dashboard, NotificationItem, TradingMode } from "@/lib/day-trading-v2-types";
+import type { Dashboard, NotificationItem, RegimePerformance, TradingMode } from "@/lib/day-trading-v2-types";
 
 const base = "/api/day-trading-v2";
 
@@ -38,6 +38,12 @@ export const dayTradingV2Client = {
   createOptimizationJob: (userId: string, strategyId: string, datasetId?: string) => request<Record<string, unknown>>("optimization/jobs", userId, { method: "POST", body: JSON.stringify({ strategy_id: strategyId, dataset_id: datasetId }) }),
   optimizationJob: (userId: string, jobId: string) => request<Record<string, unknown>>(`optimization/jobs/${jobId}`, userId),
   challengerRun: (userId: string, runId: string) => request<Record<string, unknown>>(`optimization/challengers/${runId}`, userId),
+  regimePerformance: (userId: string, options: { source: string; period: string; sourceId?: string; role?: string }) => {
+    const query = new URLSearchParams({ source: options.source, period: options.period });
+    if (options.sourceId) query.set("source_id", options.sourceId);
+    if (options.role) query.set("role", options.role);
+    return request<RegimePerformance>(`performance/by-regime?${query.toString()}`, userId);
+  },
   uploadOptimizationDataset: (userId: string, file: File) => request<Record<string, unknown>>(`optimization/datasets?name=${encodeURIComponent(file.name)}&data_format=${file.name.toLowerCase().endsWith(".parquet") ? "PARQUET" : "CSV"}`, userId, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file, signal: AbortSignal.timeout(300_000) }),
   approveVersion: (userId: string, strategyId: string, version: string, approvalCode: string) => request<Record<string, unknown>>(`strategy-versions/${strategyId}/${version}/approve`, userId, { method: "POST", body: JSON.stringify({ confirmation_version: version, approval_code: approvalCode }) }),
   rejectVersion: (userId: string, strategyId: string, version: string, reason: string) => request<Record<string, unknown>>(`strategy-versions/${strategyId}/${version}/reject`, userId, { method: "POST", body: JSON.stringify({ confirmation_version: version, reason }) }),

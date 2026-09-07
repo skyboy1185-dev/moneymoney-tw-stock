@@ -23,6 +23,28 @@ export type Performance = {
   maxLoss: string;
 };
 
+export type RegimePerformanceRow = Performance & {
+  strategyId: string; strategyName: string;
+  marketRegime: string; marketRegimeLabel: string;
+  expectancy: string; maxDrawdown: string; minimumSample: number;
+  suitability: "SUITABLE" | "CAUTION" | "INSUFFICIENT";
+  fitRank: number | null;
+  trades?: Array<{ id: string; symbol: string; entryTime: string | null; exitTime: string | null; grossPnl: string; cost: string; netPnl: string }>;
+};
+
+export type RegimePerformance = {
+  source: "PAPER" | "LIVE" | "BACKTEST" | "CHALLENGER";
+  sourceName: string; sourceId: string; period: string; role: string | null;
+  minimumSample: number;
+  coverage: { totalTrades: number; classifiedTrades: number; unknownTrades: number; classifiedPct: string };
+  regimes: Array<{ id: string; label: string }>;
+  rows: RegimePerformanceRow[];
+  bestByRegime: Array<{ marketRegime: string; marketRegimeLabel: string; best: RegimePerformanceRow | null }>;
+  bestByStrategy: Array<{ strategyId: string; strategyName: string; best: RegimePerformanceRow | null }>;
+  mostProfitable: RegimePerformanceRow | null;
+  largestLoss: RegimePerformanceRow | null;
+};
+
 export type Robot = {
   id: number;
   strategyId: string;

@@ -191,6 +191,19 @@ def test_backtest_fills_on_next_bar_not_signal_price():
     trade = result["trades"][0]
     assert trade["entryPrice"] == "110.00"
     assert trade["signalTime"] < trade["entryTime"]
+    assert trade["marketRegime"] == "UNKNOWN"
+    assert trade["marketRegimeVerified"] is False
+
+
+def test_backtest_trade_keeps_verified_entry_market_regime():
+    bars = _opening_breakout_bars()
+    result = run_backtest(
+        {"2330": bars}, strategy_id="OPENING_RANGE_BREAKOUT",
+        config={"minimumConfidence": "0", "allowOddLots": True, "slippageBps": "0"},
+        market_regime_by_time={bars[15].timestamp: "A_STRONG_TREND"},
+    )
+    assert result["trades"][0]["marketRegime"] == "A_STRONG_TREND"
+    assert result["trades"][0]["marketRegimeVerified"] is True
 
 
 def test_all_strategy_backtest_includes_five_strategy_summaries():

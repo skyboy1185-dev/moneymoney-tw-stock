@@ -55,8 +55,10 @@ def run_health_diagnosis(db, user_id: str, mode: str, config: dict[str, object],
                 context = json.loads(row.market_context_json or "{}")
             except (TypeError, ValueError):
                 context = {}
-            regime = str(context.get("marketRegime") or context.get("regime") or "UNKNOWN")
-            regime_rows[regime].append({"netPnl": row.net_pnl})
+            persisted_regime = str(row.entry_market_regime or "UNKNOWN")
+            regime = persisted_regime if persisted_regime != "UNKNOWN" else str(context.get("marketRegime") or context.get("regime") or "UNKNOWN")
+            if regime != "UNKNOWN":
+                regime_rows[regime].append({"netPnl": row.net_pnl})
         month_rows = [
             {"netPnl": row.net_pnl} for row in trades
             if row.exit_fill_time.year == day.year and row.exit_fill_time.month == day.month

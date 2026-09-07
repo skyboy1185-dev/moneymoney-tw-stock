@@ -141,6 +141,7 @@ def run_challenger_cycle(
                     )
                     db.add(DayTradeV2ChallengerTrade(
                         id=str(uuid4()), run_id=run.id, role=role, symbol=position.symbol,
+                        entry_market_regime=position.entry_market_regime,
                         entry_time=position.opened_at, exit_time=current, quantity=position.quantity,
                         entry_price=position.entry_price, exit_price=price,
                         net_pnl=result["netPnl"], cost=result["total"],
@@ -258,6 +259,7 @@ def run_challenger_cycle(
                     position_id = str(uuid4())
                     db.add(DayTradeV2ChallengerPosition(
                         id=position_id, run_id=run.id, role=role, strategy_version=version,
+                        entry_market_regime=regime,
                         signal_key=winner.candidate.key, symbol=winner.candidate.symbol, quantity=quantity,
                         entry_price=winner.candidate.entry_price, stop_price=winner.candidate.stop_price,
                         target_price=winner.candidate.target_price, opened_at=current,

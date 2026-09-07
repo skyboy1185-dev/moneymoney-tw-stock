@@ -46,6 +46,7 @@ from ..services.day_trading_v2_health import (
     active_version, handle_strategy_runtime_error, health_for_strategy, run_health_diagnosis,
 )
 from ..services.day_trading_v2_optimization import challenger_ready, next_version, parameter_checksum
+from ..services.day_trading_v2_regime_performance import aggregate_regime_performance
 
 
 router = APIRouter(prefix="/day-trading-v2", tags=["day-trading-v2"])
@@ -146,6 +147,7 @@ def _trade_dict(row: DayTradeV2Trade) -> dict[str, object]:
         "transactionTax": str(row.transaction_tax), "slippage": str(row.slippage),
         "otherCost": str(row.other_cost), "netPnl": str(row.net_pnl),
         "netReturnPct": str(row.net_return_pct), "entryReason": row.entry_reason, "exitReason": row.exit_reason,
+        "entryMarketRegime": row.entry_market_regime,
     }
 
 
@@ -697,6 +699,8 @@ class PaperEntryBody(BaseModel):
     controller_candidate_id: str = ""
     risk_multiplier: Decimal = Field(default=Decimal("1"), ge=0, le=1)
     capital_multiplier: Decimal = Field(default=Decimal("1"), ge=0, le=1)
+    market_regime: str = REGIME_UNKNOWN
+    market_context: dict[str, object] = Field(default_factory=dict)
 
 
 @router.post("/paper/entries")
@@ -755,12 +759,14 @@ def paper_entry(body: PaperEntryBody, user_id: str = Depends(_user_id), db: Sess
     signal_id, order_id, position_id = body.signal_id or str(uuid4()), str(uuid4()), str(uuid4())
     risk_reward = (body.target_price - body.fill_price) / (body.fill_price - body.stop_price)
     version = active_version(db, user_id, body.strategy_id)
+    entry_regime = body.market_regime if body.market_regime in REGIME_LABELS else REGIME_UNKNOWN
+    market_context = {**body.market_context, "sector": body.sector, "marketRegime": entry_regime}
     db.add(DayTradeV2Signal(
         id=signal_id, user_id=user_id, mode="PAPER", strategy_id=body.strategy_id, strategy_version=version,
         symbol=body.symbol, stock_name=body.stock_name, sector=body.sector, side="LONG", signal_time=body.signal_time,
         signal_price=body.signal_price, confidence=body.confidence, risk_reward=risk_reward,
         stop_price=body.stop_price, target_price=body.target_price, status="EXECUTED",
-        reasons_json=json.dumps(body.reasons, ensure_ascii=False), market_context_json=json.dumps({"sector": body.sector}, ensure_ascii=False),
+        reasons_json=json.dumps(body.reasons, ensure_ascii=False), market_context_json=json.dumps(market_context, ensure_ascii=False, default=str),
         controller_decision_id=body.controller_decision_id,
     ))
     db.add(DayTradeV2Order(
@@ -1009,6 +1015,7 @@ def _legacy_scan_now(user_id: str, db: Session, coordinator_now: datetime | None
                 signal_price=winner.entry_price, fill_price=winner.entry_price, stop_price=winner.stop_price,
                 target_price=winner.target_price, confidence=winner.confidence, signal_time=bars[-1].timestamp,
                 reasons=list(winner.reasons), sector=str((candidate.get("themes") or [""])[0]),
+                market_regime=REGIME_UNKNOWN, market_context={"legacyMarketRegime": regime},
             ), user_id, db)
             executed += 1
             generated += 1
@@ -1285,6 +1292,12 @@ def _scan_now(user_id: str, db: Session, coordinator_now: datetime | None = None
                 reasons=list(ranked_row.candidate.reasons), sector=ranked_row.candidate.sector,
                 controller_decision_id=cycle.id, controller_candidate_id=candidate_row.id,
                 risk_multiplier=risk_multiplier, capital_multiplier=capital_multiplier,
+                market_regime=snapshot.effective_regime,
+                market_context={
+                    "marketRegimeConfidence": str(snapshot.confidence),
+                    "marketRegimeReasons": _json(snapshot.reasons_json, []),
+                    "marketRegimeBucketAt": snapshot.bucket_at,
+                },
             ), user_id, db)
             candidate_row.status = "EXECUTED"
             executed = 1
@@ -1391,16 +1404,23 @@ def close_position(position_id: str, body: CloseBody, user_id: str = Depends(_us
         "strategy": _json(strategy_version_row.parameters_json, {}) if strategy_version_row else {},
         "versionChecksum": strategy_version_row.checksum if strategy_version_row else "",
     }
+    signal = db.get(DayTradeV2Signal, position.signal_id)
+    market_context = _json(signal.market_context_json, {}) if signal else {}
+    entry_regime = str(market_context.get("marketRegime") or REGIME_UNKNOWN)
+    if entry_regime not in REGIME_LABELS:
+        entry_regime = REGIME_UNKNOWN
     trade_id = str(uuid4())
     trade = DayTradeV2Trade(
         id=trade_id, user_id=user_id, mode=position.mode, symbol=position.symbol, stock_name=position.stock_name,
-        strategy_id=position.strategy_id, strategy_version=position.strategy_version, quantity=quantity,
+        strategy_id=position.strategy_id, strategy_version=position.strategy_version,
+        entry_market_regime=entry_regime, quantity=quantity,
         signal_time=position.entry_time, entry_order_time=position.entry_time, entry_fill_time=position.entry_time,
         entry_price=position.entry_price, exit_signal_time=now, exit_order_time=now, exit_fill_time=now,
         exit_price=body.fill_price, gross_pnl=result["grossPnl"], buy_fee=result["buy_fee"], sell_fee=result["sell_fee"],
         transaction_tax=result["transaction_tax"], slippage=result["slippage"], other_cost=result["other_cost"],
         net_pnl=result["netPnl"], net_return_pct=result["netReturnPct"], entry_reason="、".join(_json(position.entry_reasons_json, [])),
-        exit_reason=body.reason, strategy_parameters_json=json.dumps(frozen_parameters, ensure_ascii=False, default=str),
+        exit_reason=body.reason, market_context_json=json.dumps(market_context, ensure_ascii=False, default=str),
+        strategy_parameters_json=json.dumps(frozen_parameters, ensure_ascii=False, default=str),
     )
     db.add(trade)
     position.quantity -= quantity
@@ -1482,6 +1502,113 @@ def controller_decisions(
             DayTradeV2ControllerCandidate.cycle_id == cycle.id,
         ).order_by(DayTradeV2ControllerCandidate.final_score.desc())).all()],
     } for cycle in cycles]}
+
+
+def _regime_trade_record(row: DayTradeV2Trade) -> dict[str, object]:
+    return {
+        "id": row.id, "symbol": row.symbol, "strategyId": row.strategy_id,
+        "marketRegime": row.entry_market_regime, "entryTime": row.entry_fill_time,
+        "exitTime": row.exit_fill_time, "grossPnl": row.gross_pnl,
+        "cost": row.buy_fee + row.sell_fee + row.transaction_tax + row.slippage + row.other_cost,
+        "netPnl": row.net_pnl,
+    }
+
+
+def _backtest_regime_records(result: dict[str, object]) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    individual = result.get("individual")
+    sources = list(individual.values()) if isinstance(individual, dict) else [result]
+    for source in sources:
+        if not isinstance(source, dict) or not isinstance(source.get("trades"), list):
+            continue
+        for raw in source["trades"]:
+            if not isinstance(raw, dict):
+                continue
+            verified = raw.get("marketRegimeVerified") is True
+            records.append({
+                **raw,
+                "marketRegime": str(raw.get("marketRegime") or REGIME_UNKNOWN) if verified else REGIME_UNKNOWN,
+            })
+    return records
+
+
+@router.get("/performance/by-regime")
+def performance_by_market_regime(
+    source: str = Query(default="PAPER"), period: str = Query(default="ALL"),
+    source_id: str = Query(default=""), role: str = Query(default="CHALLENGER"),
+    user_id: str = Depends(_user_id), db: Session = Depends(get_db),
+) -> dict[str, object]:
+    source = source.upper()
+    period = period.upper()
+    role = role.upper()
+    if source not in {"PAPER", "LIVE", "BACKTEST", "CHALLENGER"}:
+        raise HTTPException(422, "資料來源必須是PAPER、LIVE、BACKTEST或CHALLENGER")
+    if period not in {"RECENT_20", "RECENT_50", "MONTH", "ALL"}:
+        raise HTTPException(422, "統計期間不正確")
+    setting, _ = _ensure_defaults(db, user_id)
+    config = merged_config(_json(setting.config_json, {}))
+    minimum_sample = int(config.get("healthMinTrades", 20))
+    records: list[dict[str, object]] = []
+    source_name = source
+    selected_id = source_id
+
+    if source in {"PAPER", "LIVE"}:
+        rows = list(db.scalars(select(DayTradeV2Trade).where(
+            DayTradeV2Trade.user_id == user_id, DayTradeV2Trade.mode == source,
+        ).order_by(DayTradeV2Trade.exit_fill_time)).all())
+        if period == "MONTH":
+            start, end = _month_bounds()
+            rows = [row for row in rows if start <= row.exit_fill_time < end]
+        elif period in {"RECENT_20", "RECENT_50"}:
+            limit = 20 if period == "RECENT_20" else 50
+            grouped: dict[str, list[DayTradeV2Trade]] = {}
+            for row in rows:
+                grouped.setdefault(row.strategy_id, []).append(row)
+            rows = [row for strategy_rows in grouped.values() for row in strategy_rows[-limit:]]
+        records = [_regime_trade_record(row) for row in rows]
+        source_name = "模擬交易" if source == "PAPER" else "真實交易"
+    elif source == "BACKTEST":
+        job = db.scalar(select(DayTradeV2BacktestJob).where(
+            DayTradeV2BacktestJob.user_id == user_id,
+            DayTradeV2BacktestJob.id == source_id,
+        )) if source_id else db.scalar(select(DayTradeV2BacktestJob).where(
+            DayTradeV2BacktestJob.user_id == user_id,
+            DayTradeV2BacktestJob.status == "COMPLETED",
+        ).order_by(DayTradeV2BacktestJob.created_at.desc()))
+        if not job:
+            raise HTTPException(404, "找不到已完成的回測任務")
+        selected_id = job.id
+        records = _backtest_regime_records(_json(job.result_json, {}))
+        source_name = f"回測 {job.start_date}～{job.end_date}"
+    else:
+        if role not in {"CHAMPION", "CHALLENGER"}:
+            raise HTTPException(422, "平行模擬角色必須是CHAMPION或CHALLENGER")
+        run = db.scalar(select(DayTradeV2ChallengerRun).where(
+            DayTradeV2ChallengerRun.user_id == user_id,
+            DayTradeV2ChallengerRun.id == source_id,
+        )) if source_id else db.scalar(select(DayTradeV2ChallengerRun).where(
+            DayTradeV2ChallengerRun.user_id == user_id,
+        ).order_by(DayTradeV2ChallengerRun.started_at.desc()))
+        if not run:
+            raise HTTPException(404, "找不到Challenger模擬批次")
+        selected_id = run.id
+        rows = list(db.scalars(select(DayTradeV2ChallengerTrade).where(
+            DayTradeV2ChallengerTrade.run_id == run.id,
+            DayTradeV2ChallengerTrade.role == role,
+        ).order_by(DayTradeV2ChallengerTrade.exit_time)).all())
+        records = [{
+            "id": row.id, "symbol": row.symbol, "strategyId": run.strategy_id,
+            "marketRegime": row.entry_market_regime, "entryTime": row.entry_time,
+            "exitTime": row.exit_time, "grossPnl": row.net_pnl + row.cost,
+            "cost": row.cost, "netPnl": row.net_pnl,
+        } for row in rows]
+        source_name = f"{role.title()} {run.challenger_version if role == 'CHALLENGER' else run.champion_version}"
+
+    return {
+        "source": source, "sourceName": source_name, "sourceId": selected_id,
+        "period": period, "role": role if source == "CHALLENGER" else None,
+        **aggregate_regime_performance(records, minimum_sample=minimum_sample),
+    }
 
 
 @router.get("/optimization")
@@ -1665,12 +1792,14 @@ def challenger_run_detail(
         "positions": [{
             "id": row.id, "role": row.role, "strategyVersion": row.strategy_version,
             "signalKey": row.signal_key, "symbol": row.symbol, "quantity": row.quantity,
+            "entryMarketRegime": row.entry_market_regime,
             "entryPrice": str(row.entry_price), "stopPrice": str(row.stop_price),
             "targetPrice": str(row.target_price), "openedAt": row.opened_at,
             "status": row.status, "closedAt": row.closed_at,
         } for row in positions],
         "trades": [{
             "id": row.id, "role": row.role, "symbol": row.symbol,
+            "entryMarketRegime": row.entry_market_regime,
             "entryTime": row.entry_time, "exitTime": row.exit_time, "quantity": row.quantity,
             "entryPrice": str(row.entry_price), "exitPrice": str(row.exit_price),
             "netPnl": str(row.net_pnl), "cost": str(row.cost),

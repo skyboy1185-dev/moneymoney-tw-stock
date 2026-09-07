@@ -168,7 +168,10 @@ class DayTradeV2Position(Base):
 
 class DayTradeV2Trade(Base):
     __tablename__ = "day_trade_v2_trades"
-    __table_args__ = (Index("ix_dtv2_trade_user_exit", "user_id", "exit_fill_time"),)
+    __table_args__ = (
+        Index("ix_dtv2_trade_user_exit", "user_id", "exit_fill_time"),
+        Index("ix_dtv2_trade_regime", "user_id", "mode", "strategy_id", "entry_market_regime"),
+    )
 
     id: Mapped[str] = mapped_column(String(80), primary_key=True)
     user_id: Mapped[str] = mapped_column(String(80), nullable=False)
@@ -177,6 +180,7 @@ class DayTradeV2Trade(Base):
     stock_name: Mapped[str] = mapped_column(String(80), nullable=False, default="")
     strategy_id: Mapped[str] = mapped_column(String(60), nullable=False)
     strategy_version: Mapped[str] = mapped_column(String(30), nullable=False)
+    entry_market_regime: Mapped[str] = mapped_column(String(30), nullable=False, default="UNKNOWN")
     side: Mapped[str] = mapped_column(String(10), nullable=False, default="LONG")
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     signal_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -543,6 +547,7 @@ class DayTradeV2ChallengerPosition(Base):
     run_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
     role: Mapped[str] = mapped_column(String(20), nullable=False)
     strategy_version: Mapped[str] = mapped_column(String(30), nullable=False)
+    entry_market_regime: Mapped[str] = mapped_column(String(30), nullable=False, default="UNKNOWN")
     signal_key: Mapped[str] = mapped_column(String(180), nullable=False)
     symbol: Mapped[str] = mapped_column(String(12), nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -556,10 +561,12 @@ class DayTradeV2ChallengerPosition(Base):
 
 class DayTradeV2ChallengerTrade(Base):
     __tablename__ = "day_trade_v2_challenger_trades"
+    __table_args__ = (Index("ix_dtv2_challenger_trade_regime", "run_id", "role", "entry_market_regime"),)
 
     id: Mapped[str] = mapped_column(String(80), primary_key=True)
     run_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
     role: Mapped[str] = mapped_column(String(20), nullable=False)
+    entry_market_regime: Mapped[str] = mapped_column(String(30), nullable=False, default="UNKNOWN")
     symbol: Mapped[str] = mapped_column(String(12), nullable=False)
     entry_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     exit_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

@@ -502,6 +502,8 @@ def run_backtest(
     Signals are calculated from completed bars through index ``i`` and filled
     at bar ``i + 1`` open. This makes future-bar access explicit and testable.
     """
+    from .day_trading_v2_controller import REGIME_MILD, REGIME_UNKNOWN
+
     cfg = merged_config(config)
     initial = dec(cfg["initialCapital"])
     cash = initial
@@ -523,7 +525,7 @@ def run_backtest(
         # Portfolio backtests use the same unified ranking rule as the live
         # controller. When no index series is supplied, the disclosed fallback
         # is a mild-bull regime; qualified optimization datasets should provide it.
-        from .day_trading_v2_controller import ControllerCandidateInput, REGIME_MILD, rank_candidates, score_candidate
+        from .day_trading_v2_controller import ControllerCandidateInput, rank_candidates, score_candidate
         selected_keys: set[tuple[datetime, str, str]] = set()
         grouped: dict[datetime, list[tuple[tuple[datetime, str, StrategySignal, MinuteBar, Sequence[MinuteBar]], object]]] = {}
         for row in candidates:
@@ -593,6 +595,8 @@ def run_backtest(
         cash += result["netPnl"]
         trades.append({
             "symbol": symbol, "strategyId": signal.strategy_id, "signalTime": signal_time,
+            "marketRegime": (market_regime_by_time or {}).get(signal_time, REGIME_UNKNOWN),
+            "marketRegimeVerified": signal_time in (market_regime_by_time or {}),
             "entryTime": fill_bar.timestamp, "entryPrice": str(money(entry)), "quantity": quantity,
             "exitTime": exit_bar.timestamp, "exitPrice": str(money(exit_price)), "exitReason": exit_reason,
             "grossPnl": str(result["grossPnl"]), "cost": str(result["total"]), "netPnl": str(result["netPnl"]),

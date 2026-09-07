@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Activity, Bell, Bot, CircleDollarSign, Clock3, History, OctagonX, Pause, Play, RefreshCw, Settings, ShieldAlert, SlidersHorizontal, Square, WalletCards } from "lucide-react";
-import type { Dashboard, Performance, TradingMode } from "@/lib/day-trading-v2-types";
+import type { Dashboard, Performance, RegimePerformance, RegimePerformanceRow, TradingMode } from "@/lib/day-trading-v2-types";
 import { dayTradingV2Client } from "@/services/day-trading-v2-client";
 
 type Section = "overview" | "controller" | "optimization" | "robots" | "positions" | "trades" | "backtest" | "performance" | "notifications" | "risk" | "settings";
@@ -172,6 +172,30 @@ function OptimizationDetailPanel({ detail, onClose }: { detail: OptimizationDeta
   </article>;
 }
 
+function RegimePerformancePanel({ data }: { data: RegimePerformance }) {
+  const [selected, setSelected] = useState<RegimePerformanceRow | null>(null);
+  const strategyRows = Array.from(new Map(data.rows.map((row) => [row.strategyId, row.strategyName])).entries());
+  const profitable = data.mostProfitable;
+  const largestLoss = data.largestLoss;
+  return <>
+    <div className="dt2-metric-grid compact dt2-regime-summary">
+      <article><span>資料辨識率</span><strong>{number(data.coverage.classifiedPct, 1)}%</strong><small>{data.coverage.classifiedTrades}／{data.coverage.totalTrades}筆有可靠進場盤勢</small></article>
+      <article><span>最賺策略 × 盤勢</span><strong className="gain">{profitable ? signedMoney(profitable.netPnl) : "—"}</strong><small>{profitable ? `${profitable.strategyName}｜${profitable.marketRegimeLabel}｜${profitable.tradeCount}筆` : "尚無獲利組合"}</small></article>
+      <article><span>虧損最多策略 × 盤勢</span><strong className="loss">{largestLoss ? signedMoney(largestLoss.netPnl) : "—"}</strong><small>{largestLoss ? `${largestLoss.strategyName}｜${largestLoss.marketRegimeLabel}｜${largestLoss.tradeCount}筆` : "尚無虧損組合"}</small></article>
+      <article><span>最佳判定門檻</span><strong>{data.minimumSample}筆</strong><small>正期望值、淨損益為正且獲利因子至少1</small></article>
+    </div>
+    <div className="dt2-table dt2-regime-heatmap"><table><thead><tr><th>策略</th>{data.regimes.map((regime) => <th key={regime.id}>{regime.label}</th>)}</tr></thead><tbody>{strategyRows.map(([strategyId, strategyName]) => <tr key={strategyId}><th>{strategyName}<small>{strategyId}</small></th>{data.regimes.map((regime) => {
+      const row = data.rows.find((item) => item.strategyId === strategyId && item.marketRegime === regime.id);
+      if (!row) return <td key={regime.id}>—</td>;
+      const cellTone = row.tradeCount === 0 ? "flat" : Number(row.netPnl) > 0 ? "gain" : Number(row.netPnl) < 0 ? "loss" : "flat";
+      return <td key={regime.id}><button className={`dt2-regime-cell ${cellTone} ${row.sampleSufficient ? "" : "insufficient"}`} onClick={() => setSelected(row)}><b>{signedMoney(row.netPnl)}</b><span>勝率 {row.tradeCount ? `${number(row.winRate, 1)}%` : "—"}</span><small>{row.tradeCount}筆｜PF {row.profitFactor ?? "—"}</small><em>{row.fitRank === 1 ? "最適合" : row.sampleSufficient ? row.suitability === "CAUTION" ? "績效警戒" : `第${row.fitRank}名` : "樣本不足"}</em></button></td>;
+    })}</tr>)}</tbody></table></div>
+    <div className="dt2-table dt2-regime-best"><table><thead><tr><th>盤勢</th><th>最適合策略</th><th>平均期望值</th><th>淨損益</th><th>獲利因子</th><th>最大回撤</th><th>樣本</th></tr></thead><tbody>{data.bestByRegime.map((item) => <tr key={item.marketRegime}><td>{item.marketRegimeLabel}</td>{item.best ? <><td><b>{item.best.strategyName}</b></td><td className={tone(item.best.expectancy)}>{signedMoney(item.best.expectancy)}</td><td className={tone(item.best.netPnl)}>{signedMoney(item.best.netPnl)}</td><td>{item.best.profitFactor ?? "—"}</td><td>{number(item.best.maxDrawdown)}元</td><td>{item.best.tradeCount}筆</td></> : <td colSpan={6} className="warn">沒有達到{data.minimumSample}筆且維持正期望值的策略</td>}</tr>)}</tbody></table></div>
+    <div className="dt2-table dt2-regime-best"><table><thead><tr><th>策略</th><th>最適合盤勢</th><th>平均期望值</th><th>淨損益</th><th>勝率</th><th>樣本</th></tr></thead><tbody>{data.bestByStrategy.map((item) => <tr key={item.strategyId}><td>{item.strategyName}</td>{item.best ? <><td><b>{item.best.marketRegimeLabel}</b></td><td className={tone(item.best.expectancy)}>{signedMoney(item.best.expectancy)}</td><td className={tone(item.best.netPnl)}>{signedMoney(item.best.netPnl)}</td><td>{number(item.best.winRate, 1)}%</td><td>{item.best.tradeCount}筆</td></> : <td colSpan={5} className="warn">尚無達到判定門檻的盤勢</td>}</tr>)}</tbody></table></div>
+    {selected && <div className="dt2-regime-detail"><header><strong>{selected.strategyName}｜{selected.marketRegimeLabel}</strong><button onClick={() => setSelected(null)}>關閉</button></header><PerfCards data={selected} /><dl className="dt2-rules"><div><dt>平均每筆期望值</dt><dd className={tone(selected.expectancy)}>{signedMoney(selected.expectancy)}</dd></div><div><dt>最大回撤</dt><dd>{number(selected.maxDrawdown)}元</dd></div><div><dt>適配判定</dt><dd>{selected.suitability === "SUITABLE" ? selected.fitRank === 1 ? "此盤勢最適合" : `此盤勢第${selected.fitRank}名` : selected.suitability === "CAUTION" ? "績效警戒" : "樣本不足"}</dd></div></dl><div className="dt2-table"><table><thead><tr><th>股票</th><th>進場時間</th><th>出場時間</th><th>毛損益</th><th>成本</th><th>淨損益</th></tr></thead><tbody>{(selected.trades ?? []).map((trade, index) => <tr key={trade.id || `${trade.symbol}-${index}`}><td>{trade.symbol || "—"}</td><td>{dateTime(trade.entryTime)}</td><td>{dateTime(trade.exitTime)}</td><td className={tone(trade.grossPnl)}>{signedMoney(trade.grossPnl)}</td><td>{number(trade.cost)}元</td><td className={tone(trade.netPnl)}>{signedMoney(trade.netPnl)}</td></tr>)}</tbody></table></div>{!(selected.trades ?? []).length && <p className="dt2-empty">此組合尚無已平倉交易。</p>}</div>}
+  </>;
+}
+
 export function DayTradingV2Page({ userId }: { userId: string }) {
   const [section, setSection] = useState<Section>("overview");
   const [data, setData] = useState<Dashboard | null>(null);
@@ -190,6 +214,13 @@ export function DayTradingV2Page({ userId }: { userId: string }) {
   const [backtestJobId, setBacktestJobId] = useState("");
   const [optimizationFile, setOptimizationFile] = useState<File | null>(null);
   const [optimizationDetail, setOptimizationDetail] = useState<OptimizationDetail | null>(null);
+  const [backtestHistory, setBacktestHistory] = useState<Array<Record<string, unknown>>>([]);
+  const [regimeSource, setRegimeSource] = useState<"PAPER" | "LIVE" | "BACKTEST" | "CHALLENGER">("PAPER");
+  const [regimePeriod, setRegimePeriod] = useState("ALL");
+  const [regimeSourceId, setRegimeSourceId] = useState("");
+  const [regimeRole, setRegimeRole] = useState("CHALLENGER");
+  const [regimePerformance, setRegimePerformance] = useState<RegimePerformance | null>(null);
+  const [regimeLoading, setRegimeLoading] = useState(false);
   const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
   const monthStart = `${today.slice(0, 8)}01`;
   const [startDate, setStartDate] = useState(monthStart);
@@ -198,9 +229,14 @@ export function DayTradingV2Page({ userId }: { userId: string }) {
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
     try {
-      const [dashboard, noteData] = await Promise.all([dayTradingV2Client.dashboard(userId), dayTradingV2Client.notifications(userId)]);
+      const [dashboard, noteData, backtestData] = await Promise.all([
+        dayTradingV2Client.dashboard(userId),
+        dayTradingV2Client.notifications(userId),
+        dayTradingV2Client.backtests(userId).catch(() => ({ items: [] as Array<Record<string, unknown>> })),
+      ]);
       setData(dashboard);
       setNotifications(noteData);
+      setBacktestHistory(backtestData.items);
       setError("");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "讀取失敗");
@@ -237,6 +273,24 @@ export function DayTradingV2Page({ userId }: { userId: string }) {
     const timer = window.setInterval(() => { void poll(); }, 2_000);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [backtestJobId, load, userId]);
+
+  useEffect(() => {
+    if (section !== "optimization") return;
+    let cancelled = false;
+    const refresh = async () => {
+      setRegimeLoading(true);
+      try {
+        const result = await dayTradingV2Client.regimePerformance(userId, { source: regimeSource, period: regimePeriod, sourceId: regimeSourceId, role: regimeRole });
+        if (!cancelled) { setRegimePerformance(result); setError(""); }
+      } catch (caught) {
+        if (!cancelled) { setRegimePerformance(null); setError(caught instanceof Error ? caught.message : "讀取盤勢績效失敗"); }
+      } finally {
+        if (!cancelled) setRegimeLoading(false);
+      }
+    };
+    void refresh();
+    return () => { cancelled = true; };
+  }, [section, regimePeriod, regimeRole, regimeSource, regimeSourceId, userId]);
 
   const robotById = useMemo(() => new Map(data?.robots.map((robot) => [robot.strategyId, robot.name]) ?? []), [data]);
   const backtestDatasets = data?.optimization.datasets.filter((raw) => String((raw as Record<string, unknown>).qualityStatus ?? "") !== "FAILED") ?? [];
@@ -403,6 +457,7 @@ export function DayTradingV2Page({ userId }: { userId: string }) {
     {section === "optimization" && <div className="dt2-stack">
       <article className="dt2-panel"><header><History size={17} /><strong>合格分鐘資料</strong><small>資料需含時區、OHLCV、產業及同時間市場脈絡；原始檔保存在伺服器持久化磁碟。</small></header><div className="dt2-form"><label>CSV／Parquet<input type="file" accept=".csv,.parquet" onChange={(event) => setOptimizationFile(event.target.files?.[0] ?? null)} /></label><button disabled={busy || !optimizationFile} onClick={() => optimizationFile && void run(() => dayTradingV2Client.uploadOptimizationDataset(userId, optimizationFile), "分鐘資料已匯入並完成品質檢查")}>匯入資料</button></div><div className="dt2-table"><table><thead><tr><th>資料集</th><th>期間</th><th>交易日</th><th>股票</th><th>列數</th><th>品質</th><th>雜湊</th></tr></thead><tbody>{data.optimization.datasets.map((raw, index) => { const dataset = raw as Record<string, unknown>; return <tr key={String(dataset.id ?? index)}><td>{String(dataset.name ?? "—")}</td><td>{String(dataset.startDate ?? "—")}～{String(dataset.endDate ?? "—")}</td><td>{String(dataset.tradingDayCount ?? 0)}</td><td>{String(dataset.symbolCount ?? 0)}</td><td>{number(String(dataset.rowCount ?? 0))}</td><td>{String(dataset.qualityStatus ?? "—")}</td><td><small>{String(dataset.checksum ?? "").slice(0, 12)}</small></td></tr>; })}</tbody></table></div>{!data.optimization.datasets.length && <p className="dt2-data-warning">尚未設定 DTV2_OPTIMIZATION_DATA_DIR 或匯入合格資料時，優化任務會安全停在 DATA_INSUFFICIENT。</p>}</article>
       <article className="dt2-panel"><header><Bot size={17} /><strong>五策略健康狀態</strong><small>至少20筆才判斷；首日警戒降為50%，連續兩日警戒暫停新交易並啟動離線優化。</small><button disabled={busy} onClick={() => void run(() => dayTradingV2Client.diagnoseStrategies(userId), "策略健康診斷已完成")}>立即診斷</button></header><div className="dt2-table"><table><thead><tr><th>策略</th><th>版本</th><th>健康狀態</th><th>最近20筆</th><th>最近50筆</th><th>原因</th><th>資金／風險乘數</th><th>操作</th></tr></thead><tbody>{data.optimization.health.map((health) => { const last20 = (health.metrics.last20 ?? {}) as Record<string, unknown>; const last50 = (health.metrics.last50 ?? {}) as Record<string, unknown>; return <tr key={health.strategyId}><td><b>{health.name}</b><small>{health.strategyId}</small></td><td>v{health.version}</td><td className={health.status === "ALERT" || health.status === "PAUSED" ? "loss" : health.status === "NORMAL" ? "gain" : "warn"}>{health.status}</td><td>{String(last20.netPnl ?? "—")}元<small>{String(last20.tradeCount ?? 0)}筆｜PF {String(last20.profitFactor ?? "—")}</small></td><td>{String(last50.netPnl ?? "—")}元<small>{String(last50.tradeCount ?? 0)}筆｜回撤 {String(last50.maxDrawdown ?? "—")}</small></td><td>{health.reasons.join("、") || "正常"}</td><td>{health.capitalMultiplier}／{health.riskMultiplier}</td><td><div className="dt2-inline-actions"><button disabled={busy} onClick={() => void showOptimizationDetail("HEALTH", `${health.name}診斷歷史`, () => dayTradingV2Client.optimizationHealthHistory(userId, health.strategyId))}>診斷歷史</button><button disabled={busy} onClick={() => void run(() => dayTradingV2Client.createOptimizationJob(userId, health.strategyId), "優化任務已建立；缺少合格資料時會保持資料不足")}>啟動離線優化</button></div></td></tr>; })}</tbody></table></div></article>
+      <article className="dt2-panel"><header><Activity size={17} /><strong>策略 × 盤勢績效</strong><small>使用進場當下的可靠盤勢；回測、模擬、真實交易與Challenger分開計算。</small></header><div className="dt2-regime-controls"><label>資料來源<select value={regimeSource} onChange={(event) => { setRegimeSource(event.target.value as "PAPER" | "LIVE" | "BACKTEST" | "CHALLENGER"); setRegimeSourceId(""); }}><option value="PAPER">模擬交易</option><option value="LIVE">真實交易</option><option value="BACKTEST">歷史回測</option><option value="CHALLENGER">Champion／Challenger</option></select></label>{(regimeSource === "PAPER" || regimeSource === "LIVE") && <label>期間<select value={regimePeriod} onChange={(event) => setRegimePeriod(event.target.value)}><option value="ALL">全期間</option><option value="MONTH">本月</option><option value="RECENT_20">每策略最近20筆</option><option value="RECENT_50">每策略最近50筆</option></select></label>}{regimeSource === "BACKTEST" && <label>回測任務<select value={regimeSourceId} onChange={(event) => setRegimeSourceId(event.target.value)}><option value="">最新完成回測</option>{backtestHistory.filter((job) => String(job.status) === "COMPLETED").map((job) => <option key={String(job.id)} value={String(job.id)}>{String(job.startDate ?? "")}～{String(job.endDate ?? "")}｜{String(job.mode ?? "")}｜{String(job.strategyId ?? "ALL")}</option>)}</select></label>}{regimeSource === "CHALLENGER" && <><label>模擬批次<select value={regimeSourceId} onChange={(event) => setRegimeSourceId(event.target.value)}><option value="">最新批次</option>{data.optimization.challengers.map((raw, index) => { const run = raw as Record<string, unknown>; return <option key={String(run.id ?? index)} value={String(run.id ?? "")}>{robotById.get(String(run.strategyId ?? "")) ?? String(run.strategyId ?? "策略")}｜v{String(run.challengerVersion ?? "—")}</option>; })}</select></label><label>比較角色<select value={regimeRole} onChange={(event) => setRegimeRole(event.target.value)}><option value="CHALLENGER">Challenger</option><option value="CHAMPION">Champion</option></select></label></>}</div>{regimeLoading ? <p className="dt2-empty">盤勢績效計算中…</p> : regimePerformance ? <RegimePerformancePanel data={regimePerformance} /> : <p className="dt2-empty">目前沒有可統計的已平倉交易。</p>}</article>
       <article className="dt2-panel"><header><History size={17} /><strong>離線 Walk-Forward 優化進度</strong><small>按時間順序切割訓練、驗證與樣本外資料。</small></header><div className="dt2-table"><table><thead><tr><th>策略</th><th>候選版本</th><th>狀態</th><th>進度</th><th>結果／錯誤</th><th>完整比較</th><th>試驗紀錄</th></tr></thead><tbody>{data.optimization.jobs.map((raw, index) => { const job = raw as Record<string, unknown>; const result = (job.result ?? {}) as Record<string, unknown>; return <tr key={String(job.id ?? index)}><td>{String(job.strategyId ?? "—")}</td><td>{String(job.candidateVersion ?? "—")}</td><td>{String(job.status ?? "—")}</td><td>{String(job.progressPct ?? 0)}%</td><td><small>{String(job.error || result.reason || "等待執行")}</small></td><td><details><summary>查看報告</summary><pre className="dt2-result">{JSON.stringify(result, null, 2)}</pre></details></td><td><button disabled={busy} onClick={() => void showOptimizationDetail("JOB", `${String(job.strategyId ?? "策略")} ${String(job.candidateVersion ?? "")} 試驗紀錄`, () => dayTradingV2Client.optimizationJob(userId, String(job.id)))}>查看試驗</button></td></tr>; })}</tbody></table></div>{!data.optimization.jobs.length && <p className="dt2-empty">尚無優化任務</p>}</article>
       <article className="dt2-panel"><header><Bot size={17} /><strong>Champion／Challenger 平行模擬</strong><small>兩者使用同一批即時行情；Challenger 沒有券商下單程式路徑。</small></header><div className="dt2-table"><table><thead><tr><th>策略</th><th>正式版</th><th>挑戰版</th><th>狀態</th><th>完整交易日</th><th>模擬筆數</th><th>錯誤</th><th>正式版績效</th><th>挑戰版績效</th><th>紀錄</th></tr></thead><tbody>{data.optimization.challengers.map((raw, index) => { const run = raw as Record<string, unknown>; const champion = (run.championMetrics ?? {}) as Record<string, unknown>; const challenger = (run.challengerMetrics ?? {}) as Record<string, unknown>; return <tr key={String(run.id ?? index)}><td>{robotById.get(String(run.strategyId ?? "")) ?? String(run.strategyId ?? "—")}</td><td>v{String(run.championVersion ?? "—")}</td><td>v{String(run.challengerVersion ?? "—")}</td><td>{String(run.status ?? "—")}</td><td>{String(run.fullTradingDays ?? 0)}／10</td><td>{String(run.tradeCount ?? 0)}／30</td><td>{String(run.errorCount ?? 0)}</td><td>淨損益 {String(champion.netPnl ?? "—")}<small>回撤 {String(champion.maxDrawdown ?? "—")}</small></td><td>淨損益 {String(challenger.netPnl ?? "—")}<small>回撤 {String(challenger.maxDrawdown ?? "—")}</small></td><td><button disabled={busy} onClick={() => void showOptimizationDetail("CHALLENGER", `${robotById.get(String(run.strategyId ?? "")) ?? String(run.strategyId ?? "策略")} 模擬紀錄`, () => dayTradingV2Client.challengerRun(userId, String(run.id)))}>交易明細</button></td></tr>; })}</tbody></table></div>{!data.optimization.challengers.length && <p className="dt2-empty">目前沒有通過樣本外驗證的 Challenger</p>}</article>
       {optimizationDetail && <OptimizationDetailPanel detail={optimizationDetail} onClose={() => setOptimizationDetail(null)} />}

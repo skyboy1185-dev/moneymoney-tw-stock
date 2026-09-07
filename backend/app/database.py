@@ -308,11 +308,22 @@ def create_tables() -> None:
                 "ALTER TABLE day_trade_v2_backtest_jobs ADD COLUMN IF NOT EXISTS lease_owner VARCHAR(120) NOT NULL DEFAULT ''",
                 "ALTER TABLE day_trade_v2_backtest_jobs ADD COLUMN IF NOT EXISTS lease_until TIMESTAMPTZ",
                 "ALTER TABLE day_trade_v2_backtest_jobs ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE day_trade_v2_trades ADD COLUMN IF NOT EXISTS entry_market_regime VARCHAR(30) NOT NULL DEFAULT 'UNKNOWN'",
+                "ALTER TABLE day_trade_v2_challenger_positions ADD COLUMN IF NOT EXISTS entry_market_regime VARCHAR(30) NOT NULL DEFAULT 'UNKNOWN'",
+                "ALTER TABLE day_trade_v2_challenger_trades ADD COLUMN IF NOT EXISTS entry_market_regime VARCHAR(30) NOT NULL DEFAULT 'UNKNOWN'",
             ):
                 connection.execute(text(statement))
             connection.execute(text(
                 "CREATE INDEX IF NOT EXISTS ix_dtv2_backtest_status "
                 "ON day_trade_v2_backtest_jobs(status, created_at)"
+            ))
+            connection.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_dtv2_trade_regime "
+                "ON day_trade_v2_trades(user_id, mode, strategy_id, entry_market_regime)"
+            ))
+            connection.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_dtv2_challenger_trade_regime "
+                "ON day_trade_v2_challenger_trades(run_id, role, entry_market_regime)"
             ))
     # Database synchronization can merge two independently created portfolio
     # batches. Quarantine overflow before enforcing one open row per symbol.
