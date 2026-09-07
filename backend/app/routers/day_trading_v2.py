@@ -147,6 +147,18 @@ def _trade_dict(row: DayTradeV2Trade) -> dict[str, object]:
     }
 
 
+def _performance_trade(row: DayTradeV2Trade) -> dict[str, object]:
+    return {
+        "grossPnl": row.gross_pnl,
+        "buyFee": row.buy_fee,
+        "sellFee": row.sell_fee,
+        "transactionTax": row.transaction_tax,
+        "slippage": row.slippage,
+        "otherCost": row.other_cost,
+        "netPnl": row.net_pnl,
+    }
+
+
 def _position_dict(row: DayTradeV2Position) -> dict[str, object]:
     unrealized = money((row.current_price - row.entry_price) * row.quantity)
     return {
@@ -420,9 +432,9 @@ def _dashboard(db: Session, user_id: str) -> dict[str, object]:
     positions = list(db.scalars(select(DayTradeV2Position).where(
         DayTradeV2Position.user_id == user_id, DayTradeV2Position.mode == mode, DayTradeV2Position.status == "OPEN",
     )).all())
-    today_perf = performance([{"netPnl": row.net_pnl} for row in today_trades], config["initialCapital"])
-    month_perf = performance([{"netPnl": row.net_pnl} for row in month_trades], config["initialCapital"])
-    all_perf = performance([{"netPnl": row.net_pnl} for row in all_trades], config["initialCapital"])
+    today_perf = performance([_performance_trade(row) for row in today_trades], config["initialCapital"])
+    month_perf = performance([_performance_trade(row) for row in month_trades], config["initialCapital"])
+    all_perf = performance([_performance_trade(row) for row in all_trades], config["initialCapital"])
     realized = sum((row.net_pnl for row in today_trades), Decimal("0"))
     unrealized = sum(((row.current_price - row.entry_price) * row.quantity for row in positions), Decimal("0"))
     used = sum((row.used_capital for row in positions), Decimal("0"))
@@ -470,9 +482,9 @@ def _dashboard(db: Session, user_id: str) -> dict[str, object]:
             "id": robot.id, "strategyId": robot.strategy_id, "name": robot.name, "enabled": robot.enabled,
             "side": robot.side, "allocation": str(robot.allocation), "status": robot.status,
             "consecutiveLosses": robot.consecutive_losses,
-            "today": performance([{"netPnl": row.net_pnl} for row in robot_today], config["initialCapital"]),
-            "month": performance([{"netPnl": row.net_pnl} for row in robot_month], config["initialCapital"]),
-            "all": performance([{"netPnl": row.net_pnl} for row in robot_trades], config["initialCapital"]),
+            "today": performance([_performance_trade(row) for row in robot_today], config["initialCapital"]),
+            "month": performance([_performance_trade(row) for row in robot_month], config["initialCapital"]),
+            "all": performance([_performance_trade(row) for row in robot_trades], config["initialCapital"]),
             "usedCapital": str(sum((row.used_capital for row in positions if row.strategy_id == robot.strategy_id), Decimal("0"))),
             "lastTradeTime": robot_trades[0].exit_fill_time if robot_trades else None,
         })
@@ -1710,14 +1722,32 @@ class BacktestBody(BaseModel):
     symbols: list[str] = Field(default_factory=list, max_length=200)
 
 
+def _enrich_backtest_result(result: dict[str, object]) -> dict[str, object]:
+    summary = result.get("summary")
+    trades = result.get("trades")
+    if isinstance(summary, dict) and isinstance(trades, list):
+        result["summary"] = performance(trades, summary.get("initialCapital", "3000000"))
+    individual = result.get("individual")
+    if isinstance(individual, dict):
+        for run in individual.values():
+            if not isinstance(run, dict):
+                continue
+            run_summary = run.get("summary")
+            run_trades = run.get("trades")
+            if isinstance(run_summary, dict) and isinstance(run_trades, list):
+                run["summary"] = performance(run_trades, run_summary.get("initialCapital", "3000000"))
+    return result
+
+
 def _backtest_job_dict(row: DayTradeV2BacktestJob) -> dict[str, object]:
+    result = _enrich_backtest_result(_json(row.result_json, {}))
     return {
         "id": row.id, "mode": row.backtest_mode, "strategyId": row.strategy_id,
         "startDate": row.start_date, "endDate": row.end_date, "status": row.status,
         "dataSource": row.data_source, "dataPrecision": row.data_precision,
         "datasetId": row.dataset_id, "progressPct": str(row.progress_pct),
         "progress": _json(row.progress_json, {}), "universe": _json(row.universe_json, []),
-        "result": _json(row.result_json, {}), "error": row.error_message,
+        "result": result, "error": row.error_message,
         "createdAt": row.created_at, "completedAt": row.completed_at,
     }
 

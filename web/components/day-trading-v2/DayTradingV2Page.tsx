@@ -23,6 +23,11 @@ function signedMoney(value: string | number) {
   return `${parsed > 0 ? "+" : ""}${number(parsed)}元`;
 }
 
+function lossMoney(value: string | number) {
+  const parsed = Math.abs(Number(value));
+  return `${parsed > 0 ? "-" : ""}${number(parsed)}元`;
+}
+
 function tone(value: string | number) {
   const parsed = Number(value);
   return parsed > 0 ? "gain" : parsed < 0 ? "loss" : "flat";
@@ -37,16 +42,66 @@ function ModeBadge({ mode }: { mode: TradingMode }) {
 }
 
 function PerfCards({ data }: { data: Performance }) {
+  const winRate = data.tradeCount === 0 ? "—" : `${number(data.winRate, 1)}%`;
   return <div className="dt2-metric-grid compact">
     <article><span>淨損益</span><strong className={tone(data.netPnl)}>{signedMoney(data.netPnl)}</strong></article>
+    <article><span>獲利交易合計</span><strong className="gain">{signedMoney(data.totalProfit)}</strong></article>
+    <article><span>虧損交易合計</span><strong className="loss">{lossMoney(data.totalLoss)}</strong></article>
+    <article><span>勝率</span><strong>{winRate}</strong><small>{data.tradeCount === 0 ? "無已完成交易" : `${data.winCount}勝／${data.lossCount}敗／${data.flatCount}平${data.sampleSufficient ? "" : `｜樣本不足（${data.tradeCount}筆）`}`}</small></article>
+    <article><span>總交易成本</span><strong>{number(data.totalCost)}元</strong><small>手續費、交易稅、滑價及其他成本</small></article>
+    <article><span>未扣成本損益</span><strong className={tone(data.grossPnl)}>{signedMoney(data.grossPnl)}</strong></article>
     <article><span>淨報酬率</span><strong className={tone(data.netReturnPct)}>{Number(data.netReturnPct) > 0 ? "+" : ""}{number(data.netReturnPct, 2)}%</strong></article>
     <article><span>交易筆數</span><strong>{data.tradeCount}筆</strong></article>
-    <article><span>勝率</span><strong>{data.sampleSufficient ? `${number(data.winRate, 1)}%` : `樣本不足（${data.tradeCount}筆）`}</strong></article>
     <article><span>平均獲利</span><strong className="gain">{signedMoney(data.averageWin)}</strong></article>
     <article><span>平均虧損</span><strong className="loss">{signedMoney(data.averageLoss)}</strong></article>
     <article><span>賺賠比</span><strong>{data.payoffRatio ?? "—"}</strong></article>
     <article><span>獲利因子</span><strong>{data.profitFactor ?? "—"}</strong></article>
   </div>;
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function performanceFrom(value: unknown): Performance | null {
+  const item = record(value);
+  return item && typeof item.netPnl === "string" && typeof item.tradeCount === "number" ? item as Performance : null;
+}
+
+function BacktestPerformance({ job, robotById }: { job: Record<string, unknown>; robotById: Map<string, string> }) {
+  const result = record(job.result) ?? job;
+  const summary = performanceFrom(result.summary);
+  const individual = record(result.individual);
+  const robotResults = individual ? Object.entries(individual).flatMap(([strategyId, value]) => {
+    const run = record(value);
+    const performance = performanceFrom(run?.summary);
+    return performance ? [{ strategyId, performance }] : [];
+  }) : [];
+
+  if (summary) return <div className="dt2-backtest-performance">
+    <h3>回測績效統計</h3>
+    <PerfCards data={summary} />
+  </div>;
+
+  if (robotResults.length) return <div className="dt2-backtest-performance">
+    <h3>五台機器人獨立績效</h3>
+    <p className="dt2-data-warning">每台機器人各自使用3,000,000元初始資金，績效不可直接加總。</p>
+    <div className="dt2-table backtest-performance"><table><thead><tr><th>機器人</th><th>勝率</th><th>勝／敗／平</th><th>獲利交易合計</th><th>虧損交易合計</th><th>總交易成本</th><th>淨損益</th><th>淨報酬率</th><th>期末資金</th></tr></thead><tbody>
+      {robotResults.map(({ strategyId, performance }) => <tr key={strategyId}>
+        <td><b>{robotById.get(strategyId) ?? strategyId}</b><small>{strategyId}</small></td>
+        <td>{performance.tradeCount ? `${number(performance.winRate, 1)}%` : "—"}<small>{performance.tradeCount === 0 ? "無已完成交易" : performance.sampleSufficient ? "" : "樣本不足"}</small></td>
+        <td>{performance.winCount}／{performance.lossCount}／{performance.flatCount}</td>
+        <td className="gain">+{number(performance.totalProfit)}元</td>
+        <td className="loss">{lossMoney(performance.totalLoss)}</td>
+        <td>{number(performance.totalCost)}元</td>
+        <td className={tone(performance.netPnl)}>{signedMoney(performance.netPnl)}</td>
+        <td className={tone(performance.netReturnPct)}>{Number(performance.netReturnPct) > 0 ? "+" : ""}{number(performance.netReturnPct, 2)}%</td>
+        <td>{number(performance.endingCapital)}元</td>
+      </tr>)}
+    </tbody></table></div>
+  </div>;
+
+  return null;
 }
 
 export function DayTradingV2Page({ userId }: { userId: string }) {
@@ -306,7 +361,8 @@ export function DayTradingV2Page({ userId }: { userId: string }) {
         {backtestResult ? <>
           <dl className="dt2-rules"><div><dt>狀態</dt><dd>{String(backtestResult.status ?? "—")}</dd></div><div><dt>進度</dt><dd>{number(String(backtestResult.progressPct ?? 0), 1)}%</dd></div><div><dt>資料來源</dt><dd>{String(backtestResult.dataSource ?? "—")}</dd></div><div><dt>資料精度</dt><dd>{String(backtestResult.dataPrecision ?? "—")}</dd></div></dl>
           <p className="dt2-data-warning">{String(((backtestResult.progress ?? {}) as Record<string, unknown>).message ?? backtestResult.error ?? "任務資料已更新")}</p>
-          <pre className="dt2-result">{JSON.stringify(backtestResult.result ?? backtestResult, null, 2)}</pre>
+          <BacktestPerformance job={backtestResult} robotById={robotById} />
+          <details className="dt2-result-details"><summary>查看完整回測結果與交易明細</summary><pre className="dt2-result">{JSON.stringify(backtestResult.result ?? backtestResult, null, 2)}</pre></details>
         </> : <div className="dt2-data-warning"><ShieldAlert size={22} /><b>請設定日期與模式後執行</b><p>完成後會顯示實際分鐘資料期間、股票池、品質、交易明細與扣除成本後績效。</p></div>}
       </article>
     </div>}

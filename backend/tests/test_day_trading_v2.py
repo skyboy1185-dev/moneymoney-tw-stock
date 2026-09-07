@@ -16,8 +16,34 @@ def test_win_rate_uses_closed_trades_only():
     assert result["tradeCount"] == 3
     assert result["winCount"] == 1
     assert result["lossCount"] == 1
+    assert result["flatCount"] == 1
     assert result["winRate"] == "33.3"
     assert result["sampleSufficient"] is False
+
+
+def test_performance_summarizes_profit_loss_and_costs():
+    result = performance([
+        {"grossPnl": 120, "cost": 20, "netPnl": 100},
+        {"grossPnl": -30, "cost": 10, "netPnl": -40},
+    ])
+    assert result["grossPnl"] == "90.00"
+    assert result["totalCost"] == "30.00"
+    assert result["totalProfit"] == "100.00"
+    assert result["totalLoss"] == "40.00"
+    assert result["netPnl"] == "60.00"
+    assert Decimal(result["totalProfit"]) - Decimal(result["totalLoss"]) == Decimal(result["netPnl"])
+    assert Decimal(result["grossPnl"]) - Decimal(result["totalCost"]) == Decimal(result["netPnl"])
+
+
+def test_performance_without_trades_has_zero_totals_and_no_wins():
+    result = performance([])
+    assert result["tradeCount"] == 0
+    assert result["winCount"] == 0
+    assert result["lossCount"] == 0
+    assert result["flatCount"] == 0
+    assert result["totalProfit"] == "0.00"
+    assert result["totalLoss"] == "0.00"
+    assert result["totalCost"] == "0.00"
 
 
 def test_gross_and_net_pnl_include_all_costs():

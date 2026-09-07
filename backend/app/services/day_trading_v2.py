@@ -229,6 +229,22 @@ def calculate_trade_result(*, entry_price: object, exit_price: object, quantity:
 def performance(trades: Iterable[Mapping[str, object]], initial_capital: object = "3000000") -> dict[str, object]:
     rows = list(trades)
     pnls = [dec(row.get("netPnl", row.get("net_pnl", 0))) for row in rows]
+    costs = [
+        dec(row.get("cost", row.get("total", 0)))
+        if "cost" in row or "total" in row
+        else sum((
+            dec(row.get("buyFee", row.get("buy_fee", 0))),
+            dec(row.get("sellFee", row.get("sell_fee", 0))),
+            dec(row.get("transactionTax", row.get("transaction_tax", 0))),
+            dec(row.get("slippage", 0)),
+            dec(row.get("otherCost", row.get("other_cost", 0))),
+        ), ZERO)
+        for row in rows
+    ]
+    gross_pnls = [
+        dec(row.get("grossPnl", row.get("gross_pnl", pnls[index] + costs[index])))
+        for index, row in enumerate(rows)
+    ]
     winners = [pnl for pnl in pnls if pnl > 0]
     losers = [pnl for pnl in pnls if pnl < 0]
     gross_profit = sum(winners, ZERO)
@@ -244,7 +260,10 @@ def performance(trades: Iterable[Mapping[str, object]], initial_capital: object 
     return {
         "initialCapital": str(money(initial)), "endingCapital": str(money(initial + net)),
         "netPnl": str(net), "netReturnPct": str((net / initial * 100).quantize(Decimal("0.01")) if initial else ZERO),
+        "grossPnl": str(money(sum(gross_pnls, ZERO))), "totalCost": str(money(sum(costs, ZERO))),
+        "totalProfit": str(money(gross_profit)), "totalLoss": str(money(abs(gross_loss))),
         "tradeCount": total, "winCount": len(winners), "lossCount": len(losers),
+        "flatCount": total - len(winners) - len(losers),
         "winRate": str(win_rate), "sampleSufficient": total >= 10,
         "averageWin": str(avg_win), "averageLoss": str(avg_loss),
         "payoffRatio": str(payoff) if payoff is not None else None,

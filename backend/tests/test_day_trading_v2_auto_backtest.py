@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base
 from app.day_trading_v2_models import DayTradeV2BacktestJob, DayTradeV2OptimizationDataset
+from app.routers.day_trading_v2 import _enrich_backtest_result
 from app.services import day_trading_v2_backtests as backtest_service
 from app.services.day_trading_v2_backtests import (
     BacktestPreparationError,
@@ -21,6 +22,26 @@ from app.services.day_trading_v2_backtests import (
 
 
 TAIPEI = ZoneInfo("Asia/Taipei")
+
+
+def test_legacy_backtest_results_are_enriched_without_rerunning():
+    result = _enrich_backtest_result({
+        "individual": {
+            "OPENING_RANGE_BREAKOUT": {
+                "summary": {"initialCapital": "3000000.00", "netPnl": "60.00"},
+                "trades": [
+                    {"grossPnl": "120", "cost": "20", "netPnl": "100"},
+                    {"grossPnl": "-30", "cost": "10", "netPnl": "-40"},
+                ],
+            },
+        },
+    })
+    summary = result["individual"]["OPENING_RANGE_BREAKOUT"]["summary"]
+    assert summary["winRate"] == "50.0"
+    assert summary["totalProfit"] == "100.00"
+    assert summary["totalLoss"] == "40.00"
+    assert summary["totalCost"] == "30.00"
+    assert summary["netPnl"] == "60.00"
 
 
 def test_fugle_minute_client_keeps_timezone_and_converts_equity_lots_to_shares():

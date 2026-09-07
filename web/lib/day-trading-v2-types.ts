@@ -3,11 +3,16 @@ export type TradingMode = "PAPER" | "BACKTEST" | "LIVE";
 export type Performance = {
   initialCapital: string;
   endingCapital: string;
+  grossPnl: string;
+  totalCost: string;
+  totalProfit: string;
+  totalLoss: string;
   netPnl: string;
   netReturnPct: string;
   tradeCount: number;
   winCount: number;
   lossCount: number;
+  flatCount: number;
   winRate: string;
   sampleSufficient: boolean;
   averageWin: string;
