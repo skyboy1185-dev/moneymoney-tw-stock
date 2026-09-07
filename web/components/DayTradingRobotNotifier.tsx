@@ -11,7 +11,7 @@ const AUTOMATION_USER_ID = "system-automation";
 const STORAGE_KEY = "day-trading-robot-web-notifications";
 type RobotTarget = "day-trading" | "adaptive-electronic" | "rocket-radar" | "long-term";
 
-type RobotToastKind = "activation" | "buy" | "short" | "reduce" | "sell" | "cover" | "stop";
+type RobotToastKind = "activation" | "buy" | "short" | "reduce" | "sell" | "cover" | "stop" | "skip";
 
 interface RobotToast {
   id: string;
@@ -307,14 +307,15 @@ export function DayTradingRobotNotifier({ onOpen }: { onOpen?: (target: RobotTar
         const addLongTermSignals = (rows: LongTermTradeMessage[], modeLabel: string) => {
           rows.filter((signal) => signal.tradeDate === signals.tradingDate).forEach((signal) => {
             const replacement = signal.reason.includes("汰換") || signal.reason.includes("換股");
-            const action = signal.eventType === "BUY" ? "買進" : "賣出";
+            const isSkip = signal.eventType === "SKIP";
+            const action = signal.eventType === "BUY" ? "買進" : isSkip ? "未成交" : "賣出";
             items.push({
               id: `long-term-signal:${signal.id}`,
-              kind: signal.eventType === "BUY" ? "buy" : "sell",
+              kind: signal.eventType === "BUY" ? "buy" : isSkip ? "skip" : "sell",
               target: "long-term",
-              title: `長線選股｜${replacement ? `換股${action}` : `模擬${action}`}（${modeLabel}）`,
+              title: `長線選股｜${isSkip ? action : replacement ? `換股${action}` : `模擬${action}`}（${modeLabel}）`,
               stock: `${signal.stockCode} ${signal.stockName}`,
-              message: `價格 ${fixed(signal.price)}・${integer(signal.quantity)} 股`,
+              message: isSkip ? `不列績效・參考價 ${fixed(signal.price)}` : `價格 ${fixed(signal.price)}・${integer(signal.quantity)} 股`,
               reason: signal.reason,
               timestamp: signal.timestamp,
             });

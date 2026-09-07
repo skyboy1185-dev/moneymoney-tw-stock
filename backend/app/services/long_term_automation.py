@@ -19,6 +19,7 @@ from .long_term_selection import (
     benchmark_quote_requests,
     long_term_portfolio_has_vacancies,
     replenish_long_term_vacancies,
+    repair_long_term_unfilled_entries,
     run_long_term_selection,
     update_benchmarks,
 )
@@ -104,14 +105,23 @@ class LongTermSelectionAutomation:
                 benchmark_prices = {}
 
             if already_ran is not None and not force:
-                with SessionLocal() as db:
-                    has_vacancies = long_term_portfolio_has_vacancies(db)
+                repaired = {"long_only": 0, "focused_long": 0}
                 replenished = {"long_only": 0, "focused_long": 0}
-                if has_vacancies:
+                maintenance_error = None
+                try:
                     payload = await fetch_adaptive_scan_payload()
                     if payload.market.trade_date == local.date():
                         with SessionLocal() as db:
-                            replenished = replenish_long_term_vacancies(db, payload, current)
+                            repaired = repair_long_term_unfilled_entries(db, payload, current)
+                            db.commit()
+                        with SessionLocal() as db:
+                            has_vacancies = long_term_portfolio_has_vacancies(db)
+                        if has_vacancies:
+                            with SessionLocal() as db:
+                                replenished = replenish_long_term_vacancies(db, payload, current)
+                except Exception as error:
+                    logger.warning("Long-term already-ran maintenance unavailable", exc_info=True)
+                    maintenance_error = str(error)
                 with SessionLocal() as db:
                     update_benchmarks(
                         db, local.date(), current, benchmark_prices, active_benchmarks,
@@ -121,7 +131,9 @@ class LongTermSelectionAutomation:
                     "status": "already_ran",
                     "tradeDate": local.date().isoformat(),
                     "benchmarkCount": len(active_benchmarks),
+                    "repairedUnfilled": repaired,
                     "replenished": replenished,
+                    "maintenanceError": maintenance_error,
                 }
                 self._state["lastSuccessAt"] = datetime.now(UTC).isoformat()
             else:

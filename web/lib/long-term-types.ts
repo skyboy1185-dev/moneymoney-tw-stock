@@ -113,7 +113,7 @@ export interface LongTermTradeMessage {
   positionId: number;
   stockCode: string;
   stockName: string;
-  eventType: "BUY" | "SELL";
+  eventType: "BUY" | "SELL" | "SKIP";
   price: number;
   allocationWeightPercent: number;
   allocatedCapital: number;

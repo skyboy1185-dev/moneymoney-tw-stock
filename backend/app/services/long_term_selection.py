@@ -36,10 +36,14 @@ PORTFOLIO_SIZE = 10
 FOCUSED_PORTFOLIO_SIZE = 3
 MINIMUM_HOLDING_TRADING_DAYS = 5
 SIMULATION_CAPITAL = 1_000_000.0
+LONG_TERM_MAX_ENTRY_PREMIUM_PCT = 3.0
+LONG_TERM_SKIP_GAP_PCT = 7.0
+LONG_TERM_SKIP_RETURN_PCT = 9.0
 PortfolioMode = Literal["long_only", "focused_long"]
 Direction = Literal["long", "short"]
 MODE_TARGET_COUNTS: dict[str, int] = {"long_only": PORTFOLIO_SIZE, "focused_long": FOCUSED_PORTFOLIO_SIZE}
 SYNC_DUPLICATE_STATUS = "cancelled_duplicate"
+SKIPPED_UNFILLED_STATUS = "skipped_unfilled"
 TAIPEI = ZoneInfo("Asia/Taipei")
 BENCHMARK_DEFINITIONS = (
     {"symbol": "0050", "name": "元大台灣50", "market": "上市"},
@@ -72,8 +76,20 @@ class LongTermPick:
     model_name: str
     score: float
     price: float
+    open_price: float
+    low_price: float
+    gap_percent: float
+    return_1d: float
     predicted_month_return_pct: float
     reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LongTermEntryDecision:
+    executable: bool
+    entry_price: float
+    max_entry_price: float
+    reason: str
 
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
@@ -244,14 +260,22 @@ def _pick(stock: AdaptiveStockInput, direction: Direction) -> LongTermPick:
         model_name=names[model_key],
         score=scores[model_key],
         price=stock.price,
+        open_price=float(getattr(stock, "open", stock.price) or stock.price),
+        low_price=float(getattr(stock, "low", stock.price) or stock.price),
+        gap_percent=float(getattr(stock, "gap_percent", 0) or 0),
+        return_1d=float(getattr(stock, "return_1d", 0) or 0),
         predicted_month_return_pct=_expected_return(stock, direction),
         reasons=reasons,
     )
 
 
-def rank_long_term_candidates(payload: AdaptiveScanPayload, mode: PortfolioMode) -> list[LongTermPick]:
+def _rank_all_long_term_candidates(payload: AdaptiveScanPayload) -> list[LongTermPick]:
     stocks = [stock for stock in payload.stocks if _eligible(stock)]
-    longs = sorted((_pick(stock, "long") for stock in stocks), key=lambda item: item.score, reverse=True)
+    return sorted((_pick(stock, "long") for stock in stocks), key=lambda item: item.score, reverse=True)
+
+
+def rank_long_term_candidates(payload: AdaptiveScanPayload, mode: PortfolioMode) -> list[LongTermPick]:
+    longs = _rank_all_long_term_candidates(payload)
     if mode == "long_only":
         return longs[:PORTFOLIO_SIZE]
     return longs[:FOCUSED_PORTFOLIO_SIZE]
@@ -259,6 +283,50 @@ def rank_long_term_candidates(payload: AdaptiveScanPayload, mode: PortfolioMode)
 
 def _decimal(value: float) -> Decimal:
     return Decimal(str(round(value, 4)))
+
+
+def _previous_close_for_pick(pick: LongTermPick) -> float:
+    gap_base = 1 + pick.gap_percent / 100
+    if pick.open_price > 0 and abs(gap_base) > 0.01:
+        previous = pick.open_price / gap_base
+        if previous > 0:
+            return previous
+    return_base = 1 + pick.return_1d / 100
+    if pick.price > 0 and abs(return_base) > 0.01:
+        previous = pick.price / return_base
+        if previous > 0:
+            return previous
+    return pick.price
+
+
+def long_term_entry_decision(pick: LongTermPick) -> LongTermEntryDecision:
+    previous_close = _previous_close_for_pick(pick)
+    max_entry_price = round(previous_close * (1 + LONG_TERM_MAX_ENTRY_PREMIUM_PCT / 100), 4)
+    day_low = pick.low_price if pick.low_price > 0 else pick.price
+    overheated = (
+        pick.gap_percent >= LONG_TERM_SKIP_GAP_PCT
+        or pick.return_1d >= LONG_TERM_SKIP_RETURN_PCT
+    )
+    if pick.direction == "long" and day_low > max_entry_price and (overheated or pick.price > max_entry_price):
+        return LongTermEntryDecision(
+            executable=False,
+            entry_price=pick.price,
+            max_entry_price=max_entry_price,
+            reason=(
+                f"開高未成交：今日最低 {day_low:.2f} 高於長線買進上限 "
+                f"{max_entry_price:.2f}（昨收推算 +{LONG_TERM_MAX_ENTRY_PREMIUM_PCT:.0f}%），"
+                "不納入持倉績效。"
+            ),
+        )
+    entry_price = min(pick.price, max_entry_price) if pick.direction == "long" else pick.price
+    return LongTermEntryDecision(
+        executable=True,
+        entry_price=round(entry_price, 4),
+        max_entry_price=max_entry_price,
+        reason=(
+            f"保守成交價 {entry_price:.2f}；長線買進上限 {max_entry_price:.2f}。"
+        ),
+    )
 
 
 def allocation_weights(picks: list[LongTermPick], mode: PortfolioMode) -> dict[tuple[str, str], float]:
@@ -365,9 +433,11 @@ def _new_position(
     at: datetime,
     allocation_weight_pct: float,
     allocated_capital: float | None = None,
+    entry_price: float | None = None,
 ) -> LongTermPosition:
     capital = allocated_capital if allocated_capital is not None else SIMULATION_CAPITAL * allocation_weight_pct / 100
-    quantity = int(capital / pick.price) if pick.price > 0 else 0
+    executed_price = entry_price if entry_price is not None and entry_price > 0 else pick.price
+    quantity = int(capital / executed_price) if executed_price > 0 else 0
     return LongTermPosition(
         entry_key=f"{mode}:{trade_date.isoformat()}:{pick.stock_code}:{pick.direction}:{at.strftime('%H%M%S%f')}",
         portfolio_mode=mode,
@@ -381,7 +451,7 @@ def _new_position(
         entry_date=trade_date,
         entry_time=at,
         minimum_exit_date=minimum_exit_date(trade_date),
-        entry_price=_decimal(pick.price),
+        entry_price=_decimal(executed_price),
         last_price=_decimal(pick.price),
         selection_score=_decimal(pick.score),
         current_score=_decimal(pick.score),
@@ -397,10 +467,35 @@ def _new_position(
     )
 
 
+def _skipped_position(
+    mode: str,
+    pick: LongTermPick,
+    trade_date: date,
+    at: datetime,
+    allocation_weight_pct: float,
+    allocated_capital: float,
+    reason: str,
+) -> LongTermPosition:
+    position = _new_position(
+        mode,
+        pick,
+        trade_date,
+        at,
+        allocation_weight_pct,
+        allocated_capital,
+        entry_price=pick.price,
+    )
+    position.quantity = 0
+    position.status = SKIPPED_UNFILLED_STATUS
+    position.actual_return_pct = Decimal("0")
+    position.exit_reason = reason
+    return position
+
+
 def _record_trade_event(
     db: Session,
     position: LongTermPosition,
-    event_type: Literal["BUY", "SELL"],
+    event_type: Literal["BUY", "SELL", "SKIP"],
     trade_date: date,
     at: datetime,
     reason: str,
@@ -412,7 +507,7 @@ def _record_trade_event(
     if existing is not None:
         return existing
     price = position.entry_price if event_type == "BUY" else (position.exit_price or position.last_price)
-    pnl_percent = None if event_type == "BUY" else position.actual_return_pct
+    pnl_percent = None if event_type in {"BUY", "SKIP"} else position.actual_return_pct
     pnl = None
     if pnl_percent is not None:
         pnl = Decimal(str(round(
@@ -463,6 +558,89 @@ def _trade_event_payload(event: LongTermTradeEvent) -> dict[str, object]:
     }
 
 
+def _record_skip_event(
+    db: Session,
+    position: LongTermPosition,
+    trade_date: date,
+    at: datetime,
+    reason: str,
+) -> LongTermTradeEvent:
+    existing = db.scalar(select(LongTermTradeEvent).where(
+        LongTermTradeEvent.position_id == position.id,
+        LongTermTradeEvent.event_type == "BUY",
+    ))
+    if existing is not None:
+        existing.event_type = "SKIP"
+        existing.price = position.last_price
+        existing.quantity = 0
+        existing.pnl = None
+        existing.pnl_percent = None
+        existing.reason = reason
+        existing.created_at = at
+        existing.is_read = False
+        return existing
+    return _record_trade_event(db, position, "SKIP", trade_date, at, reason)
+
+
+def _add_skipped_unfilled_position(
+    db: Session,
+    mode: str,
+    pick: LongTermPick,
+    trade_date: date,
+    at: datetime,
+    decision: LongTermEntryDecision,
+    allocation_weight_pct: float = 0.0,
+    allocated_capital: float = 0.0,
+) -> LongTermPosition:
+    position = _skipped_position(
+        mode,
+        pick,
+        trade_date,
+        at,
+        allocation_weight_pct,
+        allocated_capital,
+        decision.reason,
+    )
+    db.add(position)
+    db.flush()
+    _record_skip_event(db, position, trade_date, at, decision.reason)
+    return position
+
+
+def repair_long_term_unfilled_entries(
+    db: Session,
+    payload: AdaptiveScanPayload,
+    at: datetime,
+) -> dict[str, int]:
+    trade_date = payload.market.trade_date
+    stocks_by_code = {stock.stock_code: stock for stock in payload.stocks}
+    repaired: dict[str, int] = {"long_only": 0, "focused_long": 0}
+    positions = list(db.scalars(select(LongTermPosition).where(
+        LongTermPosition.status == "open",
+        LongTermPosition.entry_date == trade_date,
+    )).all())
+    for position in positions:
+        source = stocks_by_code.get(position.stock_code)
+        if source is None:
+            continue
+        pick = _pick(source, position.direction)  # type: ignore[arg-type]
+        decision = long_term_entry_decision(pick)
+        if decision.executable:
+            continue
+        position.status = SKIPPED_UNFILLED_STATUS
+        position.quantity = 0
+        position.last_price = _decimal(pick.price)
+        position.actual_return_pct = Decimal("0")
+        position.exit_date = None
+        position.exit_time = None
+        position.exit_price = None
+        position.exit_reason = decision.reason
+        position.updated_at = at
+        _record_skip_event(db, position, trade_date, at, decision.reason)
+        repaired[position.portfolio_mode] = repaired.get(position.portfolio_mode, 0) + 1
+    return repaired
+
+
 def list_long_term_trade_events(
     db: Session,
     mode: PortfolioMode,
@@ -507,8 +685,10 @@ def run_long_term_selection(
         db, trade_date, at, benchmark_prices or {},
         active_benchmark_definitions,
     )
+    repaired = repair_long_term_unfilled_entries(db, payload, at)
     total_opened = 0
     total_closed = 0
+    total_skipped = sum(repaired.values())
     mode_results: dict[str, object] = {}
     for mode in ("long_only", "focused_long"):
         existing_run = db.scalar(select(LongTermPortfolioRun).where(
@@ -518,8 +698,8 @@ def run_long_term_selection(
         if existing_run is not None:
             mode_results[mode] = {"status": "already_ran"}
             continue
-        picks = rank_long_term_candidates(payload, mode)
-        target_weights = allocation_weights(picks, mode)
+        all_picks = _rank_all_long_term_candidates(payload)
+        picks = all_picks[:MODE_TARGET_COUNTS[mode]]
         targets = {(pick.stock_code, pick.direction): pick for pick in picks}
         positions = list(db.scalars(select(LongTermPosition).where(
             LongTermPosition.portfolio_mode == mode,
@@ -546,6 +726,7 @@ def run_long_term_selection(
         portfolio_nav = previous_nav * (1 + daily_return / 100)
         opened = 0
         closed = 0
+        skipped = repaired.get(mode, 0)
         released_allocations: dict[str, list[tuple[float, float]]] = {"long": [], "short": []}
         for position in positions:
             latest = prices.get(position.stock_code)
@@ -588,20 +769,56 @@ def run_long_term_selection(
         quotas = {"long": MODE_TARGET_COUNTS[mode], "short": 0}
         for direction, quota in quotas.items():
             direction_open = [position for position in open_positions if position.direction == direction]
-            for pick in (item for item in picks if item.direction == direction):
-                if len(direction_open) >= quota:
+            vacancies = max(0, quota - len(direction_open))
+            selected: list[tuple[LongTermPick, LongTermEntryDecision]] = []
+            blocked_symbols = {position.stock_code for position in open_positions}
+            blocked_symbols.update(
+                position.stock_code for position in positions
+                if (
+                    (position.status == SKIPPED_UNFILLED_STATUS and position.entry_date == trade_date)
+                    or (position.status == "closed" and position.exit_date == trade_date)
+                )
+            )
+            for pick in (item for item in all_picks if item.direction == direction):
+                if len(selected) >= vacancies:
                     break
-                if any(position.stock_code == pick.stock_code for position in open_positions):
+                if pick.stock_code in blocked_symbols:
                     continue
+                decision = long_term_entry_decision(pick)
+                if not decision.executable:
+                    _add_skipped_unfilled_position(db, mode, pick, trade_date, at, decision)
+                    blocked_symbols.add(pick.stock_code)
+                    skipped += 1
+                    total_skipped += 1
+                    continue
+                selected.append((pick, decision))
+                blocked_symbols.add(pick.stock_code)
+
+            selected_weights = allocation_weights([pick for pick, _ in selected], mode)
+            assigned_weight = 0.0
+            assigned_capital = 0.0
+            available_weight = max(0.0, 100.0 - sum(float(item.allocation_weight_pct) for item in open_positions))
+            available_capital = max(0.0, SIMULATION_CAPITAL - sum(float(item.allocated_capital) for item in open_positions))
+            for index, (pick, decision) in enumerate(selected):
                 released = released_allocations[direction].pop(0) if released_allocations[direction] else None
-                weight = released[0] if released else target_weights.get((pick.stock_code, pick.direction), 10.0)
-                capital = released[1] if released else SIMULATION_CAPITAL * weight / 100
-                position = _new_position(mode, pick, trade_date, at, weight, capital)
+                if released:
+                    weight, capital = released
+                else:
+                    raw_weight = selected_weights.get((pick.stock_code, pick.direction), 0.0)
+                    if index == len(selected) - 1:
+                        weight = round(available_weight - assigned_weight, 4)
+                        capital = round(available_capital - assigned_capital, 2)
+                    else:
+                        weight = round(available_weight * raw_weight / 100, 4)
+                        capital = round(available_capital * raw_weight / 100, 2)
+                position = _new_position(mode, pick, trade_date, at, weight, capital, decision.entry_price)
                 db.add(position)
                 db.flush()
                 _record_trade_event(db, position, "BUY", trade_date, at, "模型建立模擬買進部位")
                 open_positions.append(position)
                 direction_open.append(position)
+                assigned_weight += weight
+                assigned_capital += capital
                 opened += 1
 
         for position in open_positions:
@@ -620,9 +837,22 @@ def run_long_term_selection(
         db.add(run)
         total_opened += opened
         total_closed += closed
-        mode_results[mode] = {"status": "completed", "open": len(open_positions), "opened": opened, "closed": closed}
+        mode_results[mode] = {
+            "status": "completed",
+            "open": len(open_positions),
+            "opened": opened,
+            "closed": closed,
+            "skippedUnfilled": skipped,
+        }
     db.commit()
-    return {"status": "completed", "tradeDate": trade_date.isoformat(), "opened": total_opened, "closed": total_closed, "modes": mode_results}
+    return {
+        "status": "completed",
+        "tradeDate": trade_date.isoformat(),
+        "opened": total_opened,
+        "closed": total_closed,
+        "skippedUnfilled": total_skipped,
+        "modes": mode_results,
+    }
 
 
 def repair_long_term_position_overflow(
@@ -684,6 +914,7 @@ def replenish_long_term_vacancies(
 ) -> dict[str, int]:
     """Immediately refill any open slot without waiting for the next daily run."""
     trade_date = payload.market.trade_date
+    repair_long_term_unfilled_entries(db, payload, at)
     opened_by_mode: dict[str, int] = {"long_only": 0, "focused_long": 0}
     for mode in ("long_only", "focused_long"):
         positions = list(db.scalars(select(LongTermPosition).where(
@@ -699,16 +930,25 @@ def replenish_long_term_vacancies(
         blocked_symbols = {item.stock_code for item in open_positions}
         blocked_symbols.update(
             item.stock_code for item in positions
-            if item.status == "closed" and item.exit_date == trade_date
+            if (
+                (item.status == "closed" and item.exit_date == trade_date)
+                or (item.status == SKIPPED_UNFILLED_STATUS and item.entry_date == trade_date)
+            )
         )
-        candidates = sorted(
-            (_pick(stock, "long") for stock in payload.stocks if _eligible(stock)),
-            key=lambda item: item.score,
-            reverse=True,
-        )
-        replacements = [
-            item for item in candidates if item.stock_code not in blocked_symbols
-        ][:vacancy_count]
+        candidates = _rank_all_long_term_candidates(payload)
+        replacements: list[tuple[LongTermPick, LongTermEntryDecision]] = []
+        for item in candidates:
+            if len(replacements) >= vacancy_count:
+                break
+            if item.stock_code in blocked_symbols:
+                continue
+            decision = long_term_entry_decision(item)
+            if not decision.executable:
+                _add_skipped_unfilled_position(db, mode, item, trade_date, at, decision)
+                blocked_symbols.add(item.stock_code)
+                continue
+            replacements.append((item, decision))
+            blocked_symbols.add(item.stock_code)
         if not replacements:
             continue
 
@@ -720,10 +960,10 @@ def replenish_long_term_vacancies(
             0.0,
             SIMULATION_CAPITAL - sum(float(item.allocated_capital) for item in open_positions),
         )
-        score_total = sum(max(20.0, item.score) for item in replacements)
+        score_total = sum(max(20.0, item.score) for item, _ in replacements)
         assigned_weight = 0.0
         assigned_capital = 0.0
-        for index, replacement in enumerate(replacements):
+        for index, (replacement, decision) in enumerate(replacements):
             is_last = index == len(replacements) - 1
             score_share = max(20.0, replacement.score) / score_total
             weight = (
@@ -734,7 +974,7 @@ def replenish_long_term_vacancies(
                 round(available_capital - assigned_capital, 4)
                 if is_last else round(available_capital * score_share, 4)
             )
-            position = _new_position(mode, replacement, trade_date, at, weight, capital)
+            position = _new_position(mode, replacement, trade_date, at, weight, capital, decision.entry_price)
             db.add(position)
             db.flush()
             _record_trade_event(
@@ -782,10 +1022,28 @@ def replace_long_term_position(
             continue
         replacement_candidates.append(_pick(stock, "long"))
     replacement_candidates.sort(key=lambda item: item.score, reverse=True)
-    replacement = next((
-        pick for pick in replacement_candidates
-        if pick.stock_code not in open_symbols
-    ), None)
+    replacement: LongTermPick | None = None
+    replacement_decision: LongTermEntryDecision | None = None
+    for pick in replacement_candidates:
+        if pick.stock_code in open_symbols:
+            continue
+        decision = long_term_entry_decision(pick)
+        if not decision.executable:
+            _add_skipped_unfilled_position(
+                db,
+                mode,
+                pick,
+                trade_date,
+                at,
+                decision,
+                float(position.allocation_weight_pct),
+                float(position.allocated_capital),
+            )
+            open_symbols.add(pick.stock_code)
+            continue
+        replacement = pick
+        replacement_decision = decision
+        break
     if replacement is None:
         raise ValueError("目前沒有同方向且分數合格的補位標的")
     latest = next((stock.price for stock in payload.stocks if stock.stock_code == position.stock_code), None)
@@ -804,6 +1062,7 @@ def replace_long_term_position(
     new_position = _new_position(
         mode, replacement, trade_date, at,
         float(position.allocation_weight_pct), float(position.allocated_capital),
+        replacement_decision.entry_price if replacement_decision is not None else replacement.price,
     )
     db.add(new_position)
     db.flush()

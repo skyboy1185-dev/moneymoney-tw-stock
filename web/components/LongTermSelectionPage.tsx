@@ -26,6 +26,21 @@ function returnClass(value: number): string {
   return value > 0 ? "profit" : value < 0 ? "loss" : "";
 }
 
+type LongTermEventFilter = "ALL" | "BUY" | "SELL" | "SKIP";
+
+function tradeEventKind(item: LongTermTradeMessage): string {
+  if (item.eventType === "BUY") return "🟢 BUY";
+  if (item.eventType === "SKIP") return "⚪ 未成交";
+  return item.pnl !== null && item.pnl >= 0 ? "💰 SELL" : "🔴 SELL";
+}
+
+function eventFilterLabel(filter: LongTermEventFilter): string {
+  if (filter === "BUY") return "買進";
+  if (filter === "SELL") return "賣出";
+  if (filter === "SKIP") return "未成交";
+  return "交易";
+}
+
 function eventTime(value: string): string {
   return new Intl.DateTimeFormat("zh-TW", {
     month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
@@ -46,7 +61,7 @@ export function LongTermSelectionPage({ onSelectStock }: { onSelectStock: (symbo
   const [backtesting, setBacktesting] = useState(false);
   const [backtestError, setBacktestError] = useState("");
   const [error, setError] = useState("");
-  const [eventFilter, setEventFilter] = useState<"ALL" | "BUY" | "SELL">("ALL");
+  const [eventFilter, setEventFilter] = useState<LongTermEventFilter>("ALL");
   const eventCursor = useRef<Record<LongTermMode, number>>({ long_only: 0, focused_long: 0 });
   const eventInitialized = useRef<Record<LongTermMode, boolean>>({ long_only: false, focused_long: false });
 
@@ -312,15 +327,15 @@ export function LongTermSelectionPage({ onSelectStock }: { onSelectStock: (symbo
           <span className="long-term-event-count">共 {data.tradeMessages.length} 筆{data.unreadTradeMessageCount > 0 ? `・未讀 ${data.unreadTradeMessageCount}` : ""}</span>
         </div>
         <div className="long-term-event-filters">
-          {([{"key":"ALL","label":"全部"},{"key":"BUY","label":"買進"},{"key":"SELL","label":"賣出"}] as const).map((filter) => <button key={filter.key} type="button" className={eventFilter === filter.key ? "active" : ""} onClick={() => setEventFilter(filter.key)}>{filter.label}</button>)}
+          {([{"key":"ALL","label":"全部"},{"key":"BUY","label":"買進"},{"key":"SELL","label":"賣出"},{"key":"SKIP","label":"未成交"}] as const).map((filter) => <button key={filter.key} type="button" className={eventFilter === filter.key ? "active" : ""} onClick={() => setEventFilter(filter.key)}>{filter.label}</button>)}
         </div>
-        {!visibleMessages.length ? <div className="long-term-event-empty">目前尚無{eventFilter === "BUY" ? "買進" : eventFilter === "SELL" ? "賣出" : "交易"}訊息，模型建立部位後會自動記錄在這裡。</div> : <div className="long-term-event-list">
+        {!visibleMessages.length ? <div className="long-term-event-empty">目前尚無{eventFilterLabel(eventFilter)}訊息，模型建立部位後會自動記錄在這裡。</div> : <div className="long-term-event-list">
           {visibleMessages.map((item) => <article key={item.id} className={item.eventType.toLowerCase()}>
             <time>{eventTime(item.timestamp)}</time>
-            <span className="event-kind">{item.eventType === "BUY" ? "🟢 BUY" : item.pnl !== null && item.pnl >= 0 ? "💰 SELL" : "🔴 SELL"}</span>
+            <span className="event-kind">{tradeEventKind(item)}</span>
             <div><strong>{item.stockCode} {item.stockName}</strong><p>{item.reason}</p></div>
             <div className="event-numbers"><strong>{price(item.price)} 元・{item.quantity.toLocaleString("zh-TW")} 股</strong><small>配置 {item.allocationWeightPercent.toFixed(2)}%・{money(item.allocatedCapital)}</small></div>
-            <div>{item.pnlPercent === null ? <strong>建立部位</strong> : <><strong className={returnClass(item.pnlPercent)}>{percent(item.pnlPercent)}</strong><small className={returnClass(item.pnl ?? 0)}>{money(item.pnl ?? 0)}</small></>}</div>
+            <div>{item.eventType === "SKIP" ? <strong>不列績效</strong> : item.pnlPercent === null ? <strong>建立部位</strong> : <><strong className={returnClass(item.pnlPercent)}>{percent(item.pnlPercent)}</strong><small className={returnClass(item.pnl ?? 0)}>{money(item.pnl ?? 0)}</small></>}</div>
           </article>)}
         </div>}
       </section>

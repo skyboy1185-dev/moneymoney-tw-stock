@@ -17,6 +17,7 @@ from app.models import (
 )
 from app.services.long_term_selection import (
     LONG_TERM_START_DATE,
+    SKIPPED_UNFILLED_STATUS,
     SIMULATION_CAPITAL,
     actual_return_percent,
     allocation_weights,
@@ -24,6 +25,8 @@ from app.services.long_term_selection import (
     minimum_exit_date,
     portfolio_payload,
     rank_long_term_candidates,
+    long_term_entry_decision,
+    repair_long_term_unfilled_entries,
     repair_long_term_position_overflow,
     replenish_long_term_vacancies,
     replace_long_term_position,
@@ -52,7 +55,8 @@ def stock(index: int) -> SimpleNamespace:
     return SimpleNamespace(
         stock_code=f"{2000 + index}", stock_name=f"測試股{index}", market_type="上市",
         sub_industry="半導體" if index % 2 == 0 else "電腦及週邊",
-        price=price, data_completeness=1, average_volume_20d_shares=2_000_000,
+        price=price, open=price, high=price, low=price,
+        data_completeness=1, average_volume_20d_shares=2_000_000,
         average_turnover_20d=300_000_000, has_recent_trade=True,
         is_full_delivery=False, is_alternate_trading=False, is_disposed=False,
         is_suspended=False, is_delisted=False, abnormal_trading=False,
@@ -60,6 +64,7 @@ def stock(index: int) -> SimpleNamespace:
         ma20_slope=1 if strong else -1, ma60_slope=0.5 if strong else -0.5,
         higher_low=strong, breakout_20d=strong, return_20d=12 - index * 2,
         return_5d=4 - index, return_1d=1 if strong else -2,
+        gap_percent=1 if strong else -2,
         relative_strength_market=10 - index * 1.5,
         relative_strength_electronic=8 - index,
         macd_histogram_rising=strong, trailing_eps=5, revenue_yoy=10,
@@ -75,6 +80,20 @@ def payload(day: date = LONG_TERM_START_DATE) -> SimpleNamespace:
         market=SimpleNamespace(trade_date=day),
         stocks=[stock(index) for index in range(15)],
     )
+
+
+def unfilled_gap_payload(day: date = LONG_TERM_START_DATE, stock_code: str = "1815") -> SimpleNamespace:
+    data = payload(day)
+    candidate = data.stocks[0]
+    candidate.stock_code = stock_code
+    candidate.stock_name = "富喬"
+    candidate.price = 118
+    candidate.open = 118
+    candidate.high = 118
+    candidate.low = 118
+    candidate.return_1d = 10
+    candidate.gap_percent = 10
+    return data
 
 
 def test_directional_actual_return_calculation() -> None:
@@ -209,6 +228,80 @@ def test_focused_long_ranking_keeps_three_long_positions() -> None:
     assert len({item.stock_code for item in picks}) == 3
     weights = allocation_weights(picks, "focused_long")
     assert round(sum(weights[(item.stock_code, item.direction)] for item in picks), 4) == 100
+
+
+def test_open_high_candidate_is_skipped_when_intraday_low_never_reaches_entry_limit() -> None:
+    picks = rank_long_term_candidates(unfilled_gap_payload(), "focused_long")
+    decision = long_term_entry_decision(picks[0])
+
+    assert picks[0].stock_code == "1815"
+    assert decision.executable is False
+    assert decision.max_entry_price < 118
+
+
+def test_first_run_skips_unfilled_open_high_candidate_and_backfills_portfolios() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    at = datetime(2026, 8, 10, 1, 15, tzinfo=UTC)
+    with Session(engine) as db:
+        result = run_long_term_selection(db, unfilled_gap_payload(), at)
+        open_positions = list(db.scalars(select(LongTermPosition).where(
+            LongTermPosition.status == "open",
+        )).all())
+        skipped_positions = list(db.scalars(select(LongTermPosition).where(
+            LongTermPosition.status == SKIPPED_UNFILLED_STATUS,
+        )).all())
+        events = list(db.scalars(select(LongTermTradeEvent)).all())
+
+    assert result["opened"] == 13
+    assert result["skippedUnfilled"] == 2
+    assert sum(item.portfolio_mode == "long_only" for item in open_positions) == 10
+    assert sum(item.portfolio_mode == "focused_long" for item in open_positions) == 3
+    assert "1815" not in {item.stock_code for item in open_positions}
+    assert sum(item.stock_code == "1815" for item in skipped_positions) == 2
+    assert all(item.quantity == 0 for item in skipped_positions)
+    assert sum(item.event_type == "SKIP" for item in events) == 2
+
+
+def test_same_day_unfilled_open_entry_is_repaired_and_vacancy_is_refilled() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    at = datetime(2026, 8, 10, 1, 15, tzinfo=UTC)
+    repair_at = datetime(2026, 8, 10, 2, 0, tzinfo=UTC)
+    with Session(engine) as db:
+        run_long_term_selection(db, payload(), at)
+        repaired = repair_long_term_unfilled_entries(db, unfilled_gap_payload(stock_code="2000"), repair_at)
+        db.commit()
+        repaired_positions = list(db.scalars(select(LongTermPosition).where(
+            LongTermPosition.stock_code == "2000",
+            LongTermPosition.status == SKIPPED_UNFILLED_STATUS,
+        )).all())
+        skip_events = list(db.scalars(select(LongTermTradeEvent).where(
+            LongTermTradeEvent.stock_code == "2000",
+            LongTermTradeEvent.event_type == "SKIP",
+        )).all())
+
+        replenished = replenish_long_term_vacancies(db, unfilled_gap_payload(stock_code="2000"), repair_at)
+        open_positions = list(db.scalars(select(LongTermPosition).where(
+            LongTermPosition.status == "open",
+        )).all())
+
+    assert repaired == {"long_only": 1, "focused_long": 1}
+    assert len(repaired_positions) == 2
+    assert all(item.quantity == 0 for item in repaired_positions)
+    assert len(skip_events) == 2
+    assert replenished == {"long_only": 1, "focused_long": 1}
+    assert sum(item.portfolio_mode == "long_only" for item in open_positions) == 10
+    assert sum(item.portfolio_mode == "focused_long" for item in open_positions) == 3
+    assert "2000" not in {item.stock_code for item in open_positions}
 
 
 def test_first_run_creates_ten_and_three_stock_portfolios_with_buy_events() -> None:

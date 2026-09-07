@@ -509,7 +509,6 @@ function Top10QuickRows({
   </div>;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function MomentumHistory({ alert, direction = "long" }: { alert: ElectronicChipFlowAlert; direction?: "long" | "short" }) {
   const points = alert.history.slice(-12);
   const series = [
@@ -864,6 +863,7 @@ function MomentumPanel({
             <small>強度分</small>
             <strong>{Math.round(alert.rankScore ?? 0)}</strong>
           </div>
+          <MomentumHistory alert={alert} direction={direction} />
           <div className="chip-strength-metrics">
             <span><small>{facts.sessionBased ? "開盤累計" : `近 ${data.windowMinutes} 分`}{sideLabel}</small><strong>{formatLots(facts.forceLots)} 張</strong></span>
             <span><small>{ratioLabel}</small><strong>{facts.ratio ? `${facts.ratio.toFixed(2)}x` : "—"}</strong></span>
