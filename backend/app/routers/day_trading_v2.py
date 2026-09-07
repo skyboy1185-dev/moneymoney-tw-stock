@@ -28,7 +28,7 @@ from ..day_trading_v2_models import (
 from ..services.day_trading_v2 import (
     DEFAULT_CONFIG, DEFAULT_STRATEGY_PARAMETERS, STRATEGIES, MinuteBar, calculate_position_size,
     calculate_trade_result, dec, evaluate_strategies, exit_action, market_gate_reasons,
-    merged_config, money, performance, resolve_duplicate_signals, risk_status, signal_level,
+    merged_config, money, performance, performance_by_strategy, resolve_duplicate_signals, risk_status, signal_level,
     run_backtest,
 )
 from ..services.day_trading import day_trading_engine
@@ -1722,11 +1722,15 @@ class BacktestBody(BaseModel):
     symbols: list[str] = Field(default_factory=list, max_length=200)
 
 
-def _enrich_backtest_result(result: dict[str, object]) -> dict[str, object]:
+def _enrich_backtest_result(result: dict[str, object], strategy_id: str = "ALL") -> dict[str, object]:
     summary = result.get("summary")
     trades = result.get("trades")
     if isinstance(summary, dict) and isinstance(trades, list):
         result["summary"] = performance(trades, summary.get("initialCapital", "3000000"))
+        if strategy_id == "ALL":
+            result["strategySummaries"] = performance_by_strategy(
+                trades, [item[0] for item in STRATEGIES], summary.get("initialCapital", "3000000"),
+            )
     individual = result.get("individual")
     if isinstance(individual, dict):
         for run in individual.values():
@@ -1740,7 +1744,7 @@ def _enrich_backtest_result(result: dict[str, object]) -> dict[str, object]:
 
 
 def _backtest_job_dict(row: DayTradeV2BacktestJob) -> dict[str, object]:
-    result = _enrich_backtest_result(_json(row.result_json, {}))
+    result = _enrich_backtest_result(_json(row.result_json, {}), row.strategy_id)
     return {
         "id": row.id, "mode": row.backtest_mode, "strategyId": row.strategy_id,
         "startDate": row.start_date, "endDate": row.end_date, "status": row.status,

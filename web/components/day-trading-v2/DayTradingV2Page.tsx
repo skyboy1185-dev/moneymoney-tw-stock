@@ -71,6 +71,11 @@ function performanceFrom(value: unknown): Performance | null {
 function BacktestPerformance({ job, robotById }: { job: Record<string, unknown>; robotById: Map<string, string> }) {
   const result = record(job.result) ?? job;
   const summary = performanceFrom(result.summary);
+  const strategySummaries = record(result.strategySummaries);
+  const strategyResults = strategySummaries ? Object.entries(strategySummaries).flatMap(([strategyId, value]) => {
+    const performance = performanceFrom(value);
+    return performance ? [{ strategyId, performance }] : [];
+  }) : [];
   const individual = record(result.individual);
   const robotResults = individual ? Object.entries(individual).flatMap(([strategyId, value]) => {
     const run = record(value);
@@ -79,7 +84,26 @@ function BacktestPerformance({ job, robotById }: { job: Record<string, unknown>;
   }) : [];
 
   if (summary) return <div className="dt2-backtest-performance">
-    <h3>回測績效統計</h3>
+    {strategyResults.length > 0 && <>
+      <h3>五策略分項績效</h3>
+      <p className="dt2-data-warning">每列只統計該策略在共用300萬元組合中實際成交的交易；最後一列為完整組合總計。</p>
+      <div className="dt2-table backtest-performance"><table><thead><tr><th>機器人</th><th>勝率</th><th>勝／敗／平</th><th>獲利交易合計</th><th>虧損交易合計</th><th>總交易成本</th><th>未扣成本損益</th><th>淨損益</th><th>平均獲利</th><th>平均虧損</th><th>獲利因子</th></tr></thead><tbody>
+        {strategyResults.map(({ strategyId, performance }) => <tr key={strategyId}>
+          <td><b>{robotById.get(strategyId) ?? strategyId}</b><small>{strategyId}</small></td>
+          <td>{performance.tradeCount ? `${number(performance.winRate, 1)}%` : "—"}<small>{performance.tradeCount === 0 ? "無已完成交易" : performance.sampleSufficient ? "" : "樣本不足"}</small></td>
+          <td>{performance.winCount}／{performance.lossCount}／{performance.flatCount}</td>
+          <td className="gain">{signedMoney(performance.totalProfit)}</td>
+          <td className="loss">{lossMoney(performance.totalLoss)}</td>
+          <td>{number(performance.totalCost)}元</td>
+          <td className={tone(performance.grossPnl)}>{signedMoney(performance.grossPnl)}</td>
+          <td className={tone(performance.netPnl)}>{signedMoney(performance.netPnl)}</td>
+          <td className="gain">{signedMoney(performance.averageWin)}</td>
+          <td className="loss">{signedMoney(performance.averageLoss)}</td>
+          <td>{performance.profitFactor ?? "—"}</td>
+        </tr>)}
+      </tbody><tfoot><tr><th>五策略組合總計</th><th>{summary.tradeCount ? `${number(summary.winRate, 1)}%` : "—"}</th><th>{summary.winCount}／{summary.lossCount}／{summary.flatCount}</th><th className="gain">{signedMoney(summary.totalProfit)}</th><th className="loss">{lossMoney(summary.totalLoss)}</th><th>{number(summary.totalCost)}元</th><th className={tone(summary.grossPnl)}>{signedMoney(summary.grossPnl)}</th><th className={tone(summary.netPnl)}>{signedMoney(summary.netPnl)}</th><th className="gain">{signedMoney(summary.averageWin)}</th><th className="loss">{signedMoney(summary.averageLoss)}</th><th>{summary.profitFactor ?? "—"}</th></tr></tfoot></table></div>
+    </>}
+    <h3 className={strategyResults.length ? "dt2-total-heading" : ""}>{strategyResults.length ? "五策略組合總計" : "回測績效統計"}</h3>
     <PerfCards data={summary} />
   </div>;
 

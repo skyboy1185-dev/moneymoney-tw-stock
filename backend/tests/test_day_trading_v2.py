@@ -4,9 +4,9 @@ from decimal import Decimal
 import pytest
 
 from app.services.day_trading_v2 import (
-    DisabledLiveBrokerAdapter, LiveTradingUnavailable, MinuteBar, StrategySignal, apply_execution_report,
+    STRATEGIES, DisabledLiveBrokerAdapter, LiveTradingUnavailable, MinuteBar, StrategySignal, apply_execution_report,
     calculate_costs, calculate_position_size, calculate_trade_result,
-    evaluate_strategies, exit_action, market_gate_reasons, performance,
+    evaluate_strategies, exit_action, market_gate_reasons, performance, performance_by_strategy,
     resolve_duplicate_signals, risk_status, run_backtest,
 )
 
@@ -44,6 +44,25 @@ def test_performance_without_trades_has_zero_totals_and_no_wins():
     assert result["totalProfit"] == "0.00"
     assert result["totalLoss"] == "0.00"
     assert result["totalCost"] == "0.00"
+
+
+def test_performance_can_be_split_by_strategy_and_reconciled_to_total():
+    trades = [
+        {"strategyId": "OPENING_RANGE_BREAKOUT", "grossPnl": 120, "cost": 20, "netPnl": 100},
+        {"strategyId": "OPENING_RANGE_BREAKOUT", "grossPnl": -30, "cost": 10, "netPnl": -40},
+        {"strategyId": "VWAP_TREND_PULLBACK", "grossPnl": 70, "cost": 10, "netPnl": 60},
+    ]
+    strategy_ids = ["OPENING_RANGE_BREAKOUT", "VWAP_TREND_PULLBACK", "VOLUME_HIGH_BREAKOUT"]
+    split = performance_by_strategy(trades, strategy_ids)
+    total = performance(trades)
+    assert list(split) == strategy_ids
+    assert split["OPENING_RANGE_BREAKOUT"]["winRate"] == "50.0"
+    assert split["VWAP_TREND_PULLBACK"]["winRate"] == "100.0"
+    assert split["VOLUME_HIGH_BREAKOUT"]["tradeCount"] == 0
+    assert sum(Decimal(item["netPnl"]) for item in split.values()) == Decimal(total["netPnl"])
+    assert sum(Decimal(item["totalProfit"]) for item in split.values()) == Decimal(total["totalProfit"])
+    assert sum(Decimal(item["totalLoss"]) for item in split.values()) == Decimal(total["totalLoss"])
+    assert sum(Decimal(item["totalCost"]) for item in split.values()) == Decimal(total["totalCost"])
 
 
 def test_gross_and_net_pnl_include_all_costs():
@@ -172,6 +191,15 @@ def test_backtest_fills_on_next_bar_not_signal_price():
     trade = result["trades"][0]
     assert trade["entryPrice"] == "110.00"
     assert trade["signalTime"] < trade["entryTime"]
+
+
+def test_all_strategy_backtest_includes_five_strategy_summaries():
+    result = run_backtest(
+        {"2330": _opening_breakout_bars()}, strategy_id="ALL",
+        config={"minimumConfidence": "0", "allowOddLots": True, "slippageBps": "0"},
+    )
+    assert list(result["strategySummaries"]) == [item[0] for item in STRATEGIES]
+    assert sum(item["tradeCount"] for item in result["strategySummaries"].values()) == result["summary"]["tradeCount"]
 
 
 def test_shared_portfolio_never_exceeds_three_million():

@@ -272,6 +272,20 @@ def performance(trades: Iterable[Mapping[str, object]], initial_capital: object 
     }
 
 
+def performance_by_strategy(
+    trades: Iterable[Mapping[str, object]], strategy_ids: Iterable[str],
+    initial_capital: object = "3000000",
+) -> dict[str, dict[str, object]]:
+    rows = list(trades)
+    return {
+        strategy_id: performance(
+            [row for row in rows if str(row.get("strategyId", row.get("strategy_id", ""))) == strategy_id],
+            initial_capital,
+        )
+        for strategy_id in strategy_ids
+    }
+
+
 def risk_status(realized_pnl: object, config: Mapping[str, object] | None = None) -> str:
     cfg = merged_config(config)
     loss = max(-dec(realized_pnl), ZERO)
@@ -585,4 +599,11 @@ def run_backtest(
         })
         occupied.append((exit_bar.timestamp, symbol))
         traded_keys.add(day_key)
-    return {"summary": performance(trades, initial), "trades": trades, "endingCapital": str(money(cash))}
+    result: dict[str, object] = {
+        "summary": performance(trades, initial), "trades": trades, "endingCapital": str(money(cash)),
+    }
+    if strategy_id == "ALL":
+        result["strategySummaries"] = performance_by_strategy(
+            trades, [item[0] for item in STRATEGIES], initial,
+        )
+    return result

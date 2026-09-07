@@ -44,6 +44,20 @@ def test_legacy_backtest_results_are_enriched_without_rerunning():
     assert summary["netPnl"] == "60.00"
 
 
+def test_legacy_portfolio_backtest_gets_five_strategy_summaries():
+    result = _enrich_backtest_result({
+        "summary": {"initialCapital": "3000000.00", "netPnl": "60.00"},
+        "trades": [
+            {"strategyId": "OPENING_RANGE_BREAKOUT", "grossPnl": "120", "cost": "20", "netPnl": "100"},
+            {"strategyId": "VWAP_TREND_PULLBACK", "grossPnl": "-30", "cost": "10", "netPnl": "-40"},
+        ],
+    }, "ALL")
+    assert len(result["strategySummaries"]) == 5
+    assert result["strategySummaries"]["OPENING_RANGE_BREAKOUT"]["netPnl"] == "100.00"
+    assert result["strategySummaries"]["VWAP_TREND_PULLBACK"]["netPnl"] == "-40.00"
+    assert result["summary"]["netPnl"] == "60.00"
+
+
 def test_fugle_minute_client_keeps_timezone_and_converts_equity_lots_to_shares():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["X-API-KEY"] == "secret"
