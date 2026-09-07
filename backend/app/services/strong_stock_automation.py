@@ -12,10 +12,14 @@ from sqlalchemy import select
 
 from ..config import get_settings
 from ..database import BackgroundSessionLocal as SessionLocal
-from ..strong_stock_models import StrongStockDataRun, StrongStockNotification, StrongStockSetting
+from ..strong_stock_models import (
+    StrongStockDataRun, StrongStockNotification, StrongStockOrder, StrongStockPosition,
+    StrongStockRanking, StrongStockSetting,
+)
 from .adaptive_electronic_automation import fetch_adaptive_scan_payload
 from .day_trading_schedule import is_twse_trading_day
 from .gmail_messaging import gmail_notification_dispatcher
+from .official_market_data import StockQuoteRequest, official_market_data_provider
 from .strong_stock import (
     fill_pending_orders, merged_config, monitor_positions, notify, queue_paper_orders, scan_and_persist,
     snapshot_equity, strategy_health,
@@ -101,7 +105,7 @@ class StrongStockAutomation:
                     self._state.update({"status": "running", "lastResult": result, "lastError": None})
                     return result
                 self._last_close_attempt_at = current
-            payload = await fetch_adaptive_scan_payload()
+            payload = await fetch_adaptive_scan_payload(timeout_seconds=180)
             if not force and (payload.market.trade_date != local.date() or payload.market.market_open or len(payload.stocks) < 60):
                 result = {"status": "waiting_complete_close_data", "payloadTradeDate": payload.market.trade_date.isoformat()}
             else:
@@ -126,12 +130,22 @@ class StrongStockAutomation:
             if not force and self._last_intraday_minute == minute_key:
                 result = {"status": "intraday_wait"}
             else:
-                payload = await fetch_adaptive_scan_payload()
-                prices = {stock.stock_code: stock.price for stock in payload.stocks if stock.price > 0}
                 from .strong_stock import dec
-                decimal_prices = {symbol: dec(price) for symbol, price in prices.items()}
                 with SessionLocal() as db:
                     users = list(db.scalars(select(StrongStockSetting.user_id).where(StrongStockSetting.paper_enabled.is_(True))).all())
+                    pending = list(db.scalars(select(StrongStockOrder).where(StrongStockOrder.status == "PENDING")).all())
+                    positions = list(db.scalars(select(StrongStockPosition).where(StrongStockPosition.status == "OPEN")).all())
+                    names = {row.symbol: row.name for row in [*pending, *positions]}
+                    requests: list[StockQuoteRequest] = []
+                    for symbol, name in names.items():
+                        ranking = db.scalar(select(StrongStockRanking).where(
+                            StrongStockRanking.symbol == symbol,
+                        ).order_by(StrongStockRanking.trade_date.desc()).limit(1))
+                        if ranking:
+                            requests.append(StockQuoteRequest(symbol=symbol, name=name, market=ranking.market))
+                quotes = await official_market_data_provider.get_quotes(requests, force_refresh=True) if requests else {}
+                decimal_prices = {symbol: dec(quote.price) for symbol, quote in quotes.items() if quote.is_realtime}
+                with SessionLocal() as db:
                     fills = {uid: fill_pending_orders(db, uid, decimal_prices, local) for uid in users}
                     exits = {uid: monitor_positions(db, uid, decimal_prices, local) for uid in users}
                 self._last_intraday_minute = minute_key

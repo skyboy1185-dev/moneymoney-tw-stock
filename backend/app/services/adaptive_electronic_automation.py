@@ -126,7 +126,7 @@ def _list(value: str) -> list[str]:
         return []
 
 
-async def fetch_adaptive_scan_payload() -> AdaptiveScanPayload:
+async def fetch_adaptive_scan_payload(timeout_seconds: float | None = None) -> AdaptiveScanPayload:
     settings = get_settings()
     url = settings.adaptive_electronic_scanner_url.strip()
     if not url or urlparse(url).scheme not in {"http", "https"}:
@@ -138,16 +138,20 @@ async def fetch_adaptive_scan_payload() -> AdaptiveScanPayload:
     if settings.adaptive_electronic_scanner_token:
         headers["X-Adaptive-Scanner-Token"] = settings.adaptive_electronic_scanner_token
     last_error: Exception | None = None
+    effective_timeout = min(
+        timeout_seconds if timeout_seconds is not None else settings.adaptive_electronic_scanner_timeout_seconds,
+        300.0 if timeout_seconds is not None else 25.0,
+    )
     async with httpx.AsyncClient(
-        timeout=min(settings.adaptive_electronic_scanner_timeout_seconds, 25.0),
+        timeout=effective_timeout,
         follow_redirects=True,
     ) as client:
-        timeout_seconds = min(settings.adaptive_electronic_scanner_timeout_seconds, 25.0)
-        for attempt in range(3):
+        attempts = 1 if timeout_seconds is not None else 3
+        for attempt in range(attempts):
             try:
                 response = await asyncio.wait_for(
                     client.get(url, headers=headers),
-                    timeout=timeout_seconds,
+                    timeout=effective_timeout,
                 )
                 try:
                     raw = response.json()
@@ -171,14 +175,14 @@ async def fetch_adaptive_scan_payload() -> AdaptiveScanPayload:
                     message = first.get("msg") or str(error)
                     raise RuntimeError(f"scanner payload invalid at {location}: {message}") from error
             except TimeoutError as error:
-                last_error = RuntimeError(f"scanner total timeout after {timeout_seconds:g}s")
-                if attempt < 2:
+                last_error = RuntimeError(f"scanner total timeout after {effective_timeout:g}s")
+                if attempt < attempts - 1:
                     await asyncio.sleep(1.5 * (attempt + 1))
                     continue
                 raise last_error from error
             except (RuntimeError, httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError, httpx.TimeoutException) as error:
                 last_error = error
-                if attempt < 2:
+                if attempt < attempts - 1:
                     await asyncio.sleep(1.5 * (attempt + 1))
                     continue
                 raise
