@@ -28,7 +28,7 @@ from ..day_trading_v2_models import (
     DayTradeV2StrategyDeployment, DayTradeV2StrategyHealthSnapshot, DayTradeV2StrategyRiskOverride,
 )
 from ..services.day_trading_v2 import (
-    DEFAULT_CONFIG, DEFAULT_STRATEGY_PARAMETERS, STRATEGIES, MinuteBar, calculate_position_size,
+    BACKTEST_ENGINE_VERSION, DEFAULT_CONFIG, DEFAULT_STRATEGY_PARAMETERS, STRATEGIES, MinuteBar, calculate_position_size,
     calculate_trade_result, dec, evaluate_strategies, exit_action, market_gate_reasons,
     merged_config, money, performance, performance_by_strategy, resolve_duplicate_signals, risk_status, signal_level,
     run_backtest,
@@ -1969,6 +1969,16 @@ class BacktestBody(BaseModel):
 
 
 def _enrich_backtest_result(result: dict[str, object], strategy_id: str = "ALL") -> dict[str, object]:
+    has_result = bool(result.get("summary") or result.get("individual") or result.get("trades"))
+    if has_result and not result.get("engineVersion"):
+        result["engineVersion"] = "LEGACY"
+        result["validationStatus"] = "LEGACY_UNVERIFIED"
+        result["validationWarning"] = (
+            "此結果由舊版回測引擎產生，可能包含跨日指標、隔日出場或資金重複使用；"
+            "僅保留作歷史參考，請用新版引擎重新執行。"
+        )
+    elif result.get("engineVersion") == BACKTEST_ENGINE_VERSION:
+        result.setdefault("validationStatus", "VALIDATED")
     summary = result.get("summary")
     trades = result.get("trades")
     if isinstance(summary, dict) and isinstance(trades, list):
@@ -1996,6 +2006,9 @@ def _backtest_job_dict(row: DayTradeV2BacktestJob) -> dict[str, object]:
         "startDate": row.start_date, "endDate": row.end_date, "status": row.status,
         "dataSource": row.data_source, "dataPrecision": row.data_precision,
         "datasetId": row.dataset_id, "progressPct": str(row.progress_pct),
+        "engineVersion": result.get("engineVersion"),
+        "validationStatus": result.get("validationStatus"),
+        "validationWarning": result.get("validationWarning"),
         "progress": _json(row.progress_json, {}), "universe": _json(row.universe_json, []),
         "result": result, "error": row.error_message,
         "createdAt": row.created_at, "completedAt": row.completed_at,
@@ -2100,6 +2113,28 @@ def create_backtest(body: BacktestBody, user_id: str = Depends(_user_id), db: Se
 def backtests(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -> dict[str, object]:
     rows = list(db.scalars(select(DayTradeV2BacktestJob).where(DayTradeV2BacktestJob.user_id == user_id).order_by(DayTradeV2BacktestJob.created_at.desc()).limit(50)).all())
     return {"items": [_backtest_job_dict(row) for row in rows]}
+
+
+@router.get("/backtests/presets")
+def backtest_date_presets(db: Session = Depends(get_db)) -> dict[str, object]:
+    """Return calendar-aware ranges so month-to-date is not confused with 20 sessions."""
+    holidays = set(db.scalars(select(DayTradeV2CalendarHoliday.holiday_date)).all())
+    end = datetime.now(TAIPEI).date()
+    while end.weekday() >= 5 or end in holidays:
+        end -= timedelta(days=1)
+    sessions: list[date] = []
+    cursor = end
+    while len(sessions) < 20:
+        if cursor.weekday() < 5 and cursor not in holidays:
+            sessions.append(cursor)
+        cursor -= timedelta(days=1)
+    return {
+        "endDate": end.isoformat(),
+        "monthToDate": {"startDate": end.replace(day=1).isoformat(), "endDate": end.isoformat()},
+        "recent20TradingDays": {
+            "startDate": sessions[-1].isoformat(), "endDate": end.isoformat(), "tradingDays": 20,
+        },
+    }
 
 
 @router.get("/backtests/{job_id}")

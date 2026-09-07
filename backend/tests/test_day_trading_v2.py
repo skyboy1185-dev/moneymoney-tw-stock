@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
+from app.services import day_trading_v2 as dtv2
 
 from app.services.day_trading_v2 import (
     STRATEGIES, DisabledLiveBrokerAdapter, LiveTradingUnavailable, MinuteBar, StrategySignal, apply_execution_report,
@@ -215,8 +216,9 @@ def _opening_breakout_bars() -> list[MinuteBar]:
     start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)  # 09:00 Asia/Taipei
     rows = [MinuteBar(start + timedelta(minutes=i), Decimal("99.5"), Decimal("100"), Decimal("99"), Decimal("99.8"), 1000) for i in range(15)]
     rows.append(MinuteBar(start + timedelta(minutes=15), Decimal("100"), Decimal("102.5"), Decimal("100"), Decimal("102"), 2500))
-    rows.append(MinuteBar(start + timedelta(minutes=16), Decimal("110"), Decimal("111"), Decimal("109"), Decimal("110"), 2500))
+    rows.append(MinuteBar(start + timedelta(minutes=16), Decimal("101.9"), Decimal("103"), Decimal("101.8"), Decimal("102.5"), 2500))
     rows.append(MinuteBar(start + timedelta(minutes=17), Decimal("106"), Decimal("107"), Decimal("105"), Decimal("106"), 1500))
+    rows.append(MinuteBar(start.replace(hour=5, minute=25), Decimal("106"), Decimal("106"), Decimal("105.5"), Decimal("105.8"), 1200))
     return rows
 
 
@@ -229,7 +231,7 @@ def test_opening_breakout_strategy_is_long_only():
 def test_backtest_fills_on_next_bar_not_signal_price():
     result = run_backtest({"2330": _opening_breakout_bars()}, strategy_id="OPENING_RANGE_BREAKOUT", config={"minimumConfidence": "0", "allowOddLots": True, "slippageBps": "0"})
     trade = result["trades"][0]
-    assert trade["entryPrice"] == "110.00"
+    assert trade["entryPrice"] == "101.90"
     assert trade["signalTime"] < trade["entryTime"]
     assert trade["marketRegime"] == "UNKNOWN"
     assert trade["marketRegimeVerified"] is False
@@ -286,6 +288,85 @@ def test_portfolio_backtest_uses_controller_and_opens_at_most_one_position_per_d
     for trade in result["trades"]:
         counts[trade["entryTime"]] = counts.get(trade["entryTime"], 0) + 1
     assert max(counts.values(), default=0) <= 1
+
+
+def test_backtest_resets_opening_range_and_vwap_each_trading_day():
+    first = _opening_breakout_bars()
+    first = [MinuteBar(bar.timestamp, Decimal("199"), Decimal("200"), Decimal("198"), Decimal("199"), bar.volume) for bar in first]
+    second = [MinuteBar(bar.timestamp + timedelta(days=1), bar.open, bar.high, bar.low, bar.close, bar.volume) for bar in _opening_breakout_bars()]
+    result = run_backtest(
+        {"2330": [*first, *second]}, strategy_id="OPENING_RANGE_BREAKOUT",
+        config={"minimumConfidence": "0", "allowOddLots": True, "slippageBps": "0"},
+    )
+    assert len(result["trades"]) == 1
+    assert result["trades"][0]["signalTime"].date() == second[15].timestamp.date()
+    assert result["validationChecks"]["dailyIndicatorReset"] is True
+
+
+def test_backtest_never_uses_a_later_day_as_forced_close():
+    bars = _opening_breakout_bars()
+    next_day = MinuteBar(
+        bars[-1].timestamp + timedelta(days=1), Decimal("120"), Decimal("120"),
+        Decimal("120"), Decimal("120"), 1000,
+    )
+    result = run_backtest(
+        {"2330": [*bars, next_day]}, strategy_id="OPENING_RANGE_BREAKOUT",
+        config={"minimumConfidence": "0", "allowOddLots": True, "slippageBps": "0"},
+    )
+    assert result["trades"]
+    assert all(trade["entryTime"].date() == trade["exitTime"].date() for trade in result["trades"])
+
+
+def test_backtest_rejects_an_untradeable_next_bar_gap():
+    bars = _opening_breakout_bars()
+    bars[16] = MinuteBar(
+        bars[16].timestamp, Decimal("110"), Decimal("111"), Decimal("109"), Decimal("110"), 2500,
+    )
+    result = run_backtest(
+        {"2330": bars}, strategy_id="OPENING_RANGE_BREAKOUT",
+        config={"minimumConfidence": "0", "allowOddLots": True, "slippageBps": "0"},
+    )
+    assert any(row["reason"] == "NEXT_BAR_CHASE_TOO_LARGE" for row in result["skipReasons"])
+    assert all(trade["signalTime"] != bars[15].timestamp for trade in result["trades"])
+
+
+def test_individual_backtest_also_applies_controller_time_window(monkeypatch):
+    start = datetime(2026, 9, 7, 3, 30, tzinfo=UTC)  # 11:30 Taipei, after opening strategy window
+    bars = [MinuteBar(start + timedelta(minutes=i), Decimal("100"), Decimal("101"), Decimal("99"), Decimal("100"), 1000) for i in range(18)]
+    bars.append(MinuteBar(start.replace(hour=5, minute=25), Decimal("100"), Decimal("101"), Decimal("99"), Decimal("100"), 1000))
+
+    def fake_evaluate(rows, **_kwargs):
+        return [StrategySignal("OPENING_RANGE_BREAKOUT", Decimal("95"), Decimal("100"), Decimal("99"), Decimal("103"), ("test",))]
+
+    monkeypatch.setattr(dtv2, "evaluate_strategies", fake_evaluate)
+    result = run_backtest(
+        {"2330": bars}, strategy_id="OPENING_RANGE_BREAKOUT", portfolio=False,
+        config={"minimumConfidence": "0", "allowOddLots": True, "slippageBps": "0"},
+    )
+    assert result["trades"] == []
+    assert result["validationChecks"]["controllerApplied"] is True
+    assert any(row["reason"].startswith("CONTROLLER:") for row in result["skipReasons"])
+
+
+def test_individual_backtest_reserves_the_shared_three_million(monkeypatch):
+    bars = _opening_breakout_bars()
+
+    def fake_evaluate(rows, **_kwargs):
+        if len(rows) == 16:
+            return [StrategySignal("OPENING_RANGE_BREAKOUT", Decimal("95"), Decimal("100"), Decimal("90"), Decimal("130"), ("test",))]
+        return []
+
+    monkeypatch.setattr(dtv2, "evaluate_strategies", fake_evaluate)
+    result = run_backtest(
+        {str(2300 + index): bars for index in range(4)}, strategy_id="OPENING_RANGE_BREAKOUT",
+        portfolio=False, controller_filter=False,
+        config={
+            "minimumConfidence": "0", "allowOddLots": True, "slippageBps": "0",
+            "maxRiskPerTrade": "3000000",
+        },
+    )
+    simultaneous = [trade for trade in result["trades"] if trade["entryTime"] == bars[16].timestamp]
+    assert sum(Decimal(trade["entryPrice"]) * trade["quantity"] for trade in simultaneous) <= Decimal("3000000")
 
 
 def test_restart_broker_sync_fails_closed_without_credentials():

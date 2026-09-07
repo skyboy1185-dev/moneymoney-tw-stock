@@ -1,5 +1,5 @@
 import asyncio
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -42,6 +42,9 @@ def test_legacy_backtest_results_are_enriched_without_rerunning():
     assert summary["totalLoss"] == "40.00"
     assert summary["totalCost"] == "30.00"
     assert summary["netPnl"] == "60.00"
+    assert result["engineVersion"] == "LEGACY"
+    assert result["validationStatus"] == "LEGACY_UNVERIFIED"
+    assert result["validationWarning"]
 
 
 def test_legacy_portfolio_backtest_gets_five_strategy_summaries():
@@ -158,6 +161,46 @@ def test_background_job_persists_validated_parquet_and_completes(monkeypatch, tm
         assert job.data_precision == "1_MINUTE"
         assert job.dataset_id
         assert db.get(DayTradeV2OptimizationDataset, job.dataset_id).quality_status == "BACKTEST_READY"
+
+
+def test_stale_running_job_reuses_its_persisted_dataset(monkeypatch):
+    engine = create_engine("sqlite+pysqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+    monkeypatch.setattr(backtest_service, "SessionLocal", sessions)
+    day = date(2026, 8, 3)
+    dataset_id = "saved-dataset"
+    with sessions() as db:
+        db.add(DayTradeV2OptimizationDataset(
+            id=dataset_id, user_id="test-user", name="saved", storage_path="saved.parquet",
+            checksum="a" * 64, data_format="PARQUET", start_date=day, end_date=day,
+            trading_day_count=1, symbol_count=1, row_count=241,
+            quality_status="BACKTEST_READY", quality_json='{"includedTradingDays": 1}',
+        ))
+        db.add(DayTradeV2BacktestJob(
+            id="stale-job", user_id="test-user", backtest_mode="PORTFOLIO", strategy_id="ALL",
+            start_date=day, end_date=day, status="RUNNING", data_source=f"FUGLE_AUTO:{dataset_id}",
+            data_precision="1_MINUTE", dataset_id=dataset_id, progress_pct=Decimal(85),
+            progress_json="{}", universe_json='[{"symbol":"2330"}]',
+            request_json='{"backtest_mode":"PORTFOLIO","strategy_id":"ALL"}', result_json="{}",
+            lease_until=datetime.now(UTC) - timedelta(minutes=1),
+        ))
+        db.commit()
+
+    monkeypatch.setattr(backtest_service, "load_dataset", lambda *_args: ({}, {}, {}, {"rowCount": 241}))
+    monkeypatch.setattr(backtest_service, "execute_backtest", lambda *_args, **_kwargs: {
+        "engineVersion": "3.0.0", "validationStatus": "VALIDATED", "summary": {}, "trades": [],
+    })
+
+    async def should_not_download(_request):
+        raise AssertionError("persisted recovery must not download market data again")
+
+    monkeypatch.setattr(backtest_service, "_resolve_universe", should_not_download)
+    assert backtest_service.process_next_backtest_job() == "stale-job"
+    with sessions() as db:
+        job = db.get(DayTradeV2BacktestJob, "stale-job")
+        assert job.status == "COMPLETED"
+        assert '"recoveredFromStaleJob": true' in job.result_json
 
 
 def test_backtest_api_queues_auto_minute_data_without_requiring_dataset():

@@ -30,6 +30,11 @@ export const dayTradingV2Client = {
   backtest: (userId: string, payload: Record<string, unknown>) => request<Record<string, unknown>>("backtests", userId, { method: "POST", body: JSON.stringify(payload) }),
   backtestJob: (userId: string, jobId: string) => request<Record<string, unknown>>(`backtests/${jobId}`, userId),
   backtests: (userId: string) => request<{ items: Array<Record<string, unknown>> }>("backtests", userId),
+  backtestPresets: (userId: string) => request<{
+    endDate: string;
+    monthToDate: { startDate: string; endDate: string };
+    recent20TradingDays: { startDate: string; endDate: string; tradingDays: number };
+  }>("backtests/presets", userId),
   controller: (userId: string) => request<Dashboard["controller"]>("controller", userId),
   controllerDecisions: (userId: string, date?: string) => request<{ items: Array<Record<string, unknown>> }>(`controller/decisions${date ? `?trading_date=${date}` : ""}`, userId),
   optimization: (userId: string) => request<Dashboard["optimization"]>("optimization", userId),

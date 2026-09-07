@@ -27,7 +27,7 @@ from ..day_trading_v2_models import (
     DayTradeV2BacktestJob,
     DayTradeV2OptimizationDataset,
 )
-from .day_trading_v2 import MinuteBar, STRATEGIES, run_backtest
+from .day_trading_v2 import BACKTEST_ENGINE_VERSION, MinuteBar, STRATEGIES, run_backtest
 from .day_trading_v2_datasets import (
     DatasetValidationError,
     load_dataset,
@@ -346,6 +346,8 @@ def execute_backtest(
 ) -> dict[str, object]:
     if backtest_mode == "INDIVIDUAL" and strategy_id == "ALL":
         return {
+            "engineVersion": BACKTEST_ENGINE_VERSION,
+            "validationStatus": "VALIDATED",
             "individual": {
                 strategy: run_backtest(
                     datasets, strategy_id=strategy, portfolio=False, sector_by_symbol=sectors,
@@ -369,7 +371,33 @@ def _progress(job_id: str, status: str, percent: Decimal, details: Mapping[str, 
         row.status = status
         row.progress_pct = percent
         row.progress_json = json.dumps(dict(details), ensure_ascii=False, default=str)
-        row.lease_until = datetime.now(UTC) + timedelta(minutes=5)
+        row.lease_until = datetime.now(UTC) + timedelta(minutes=30 if status == "RUNNING" else 5)
+        db.commit()
+
+
+def _complete_backtest_job(job_id: str, result: Mapping[str, object], *, dataset_id: str) -> None:
+    with SessionLocal() as db:
+        job = db.get(DayTradeV2BacktestJob, job_id)
+        if job is None:
+            return
+        job.status = "COMPLETED"
+        job.progress_pct = Decimal(100)
+        job.progress_json = json.dumps({
+            "stage": "COMPLETED", "message": "回測完成",
+            "engineVersion": BACKTEST_ENGINE_VERSION,
+        }, ensure_ascii=False)
+        job.result_json = json.dumps(dict(result), ensure_ascii=False, default=str)
+        job.completed_at = datetime.now(UTC)
+        job.lease_owner = ""
+        job.lease_until = None
+        db.add(DayTradeV2AuditEvent(
+            user_id=job.user_id, action="BACKTEST_COMPLETED", mode="BACKTEST",
+            entity_type="BACKTEST_JOB", entity_id=job.id,
+            details_json=json.dumps({
+                "dataSource": job.data_source, "datasetId": dataset_id,
+                "engineVersion": BACKTEST_ENGINE_VERSION,
+            }, ensure_ascii=False),
+        ))
         db.commit()
 
 
@@ -413,6 +441,34 @@ async def _prepare_and_run(job_id: str) -> None:
             return
         request = json.loads(job.request_json)
         requested_start, requested_end = job.start_date, job.end_date
+        existing_dataset_id = job.dataset_id
+        stored_universe = json.loads(job.universe_json or "[]")
+        user_id = job.user_id
+    if existing_dataset_id:
+        with SessionLocal() as db:
+            dataset = db.get(DayTradeV2OptimizationDataset, existing_dataset_id)
+            if dataset is None or dataset.user_id != user_id:
+                raise BacktestPreparationError(
+                    "RECOVERY_DATASET_MISSING", "回測暫存分鐘資料不存在，無法安全恢復。", status="FAILED",
+                )
+            datasets, sectors, regimes, quality = load_dataset(
+                dataset.storage_path, dataset.checksum, dataset.data_format,
+            )
+            quality.update(json.loads(dataset.quality_json or "{}"))
+        _progress(job_id, "RUNNING", Decimal(85), {
+            "stage": "RUNNING", "message": "沿用已驗證的分鐘資料恢復回測",
+            "datasetId": existing_dataset_id, "engineVersion": BACKTEST_ENGINE_VERSION,
+        })
+        result = execute_backtest(
+            datasets, sectors, regimes,
+            backtest_mode=str(request.get("backtest_mode") or "PORTFOLIO"),
+            strategy_id=str(request.get("strategy_id") or "ALL"),
+        )
+        result["dataQuality"] = quality
+        result["universeNotice"] = f"回測使用任務建立時凍結的 {len(stored_universe)} 檔股票池。"
+        result["recoveredFromStaleJob"] = True
+        _complete_backtest_job(job_id, result, dataset_id=existing_dataset_id)
+        return
     universe = await _resolve_universe(request)
     with SessionLocal() as db:
         job = db.get(DayTradeV2BacktestJob, job_id)
@@ -555,7 +611,7 @@ def process_next_backtest_job() -> str | None:
     worker_id = f"backtest:{uuid4()}"
     with SessionLocal() as db:
         job = db.scalar(select(DayTradeV2BacktestJob).where(
-            DayTradeV2BacktestJob.data_source == "FUGLE_AUTO",
+            DayTradeV2BacktestJob.data_source.like("FUGLE_AUTO%"),
             or_(
                 DayTradeV2BacktestJob.status == "QUEUED",
                 (

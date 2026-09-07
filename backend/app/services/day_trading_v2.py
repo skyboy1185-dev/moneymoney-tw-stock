@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 TAIPEI = ZoneInfo("Asia/Taipei")
 ZERO = Decimal("0")
 CENT = Decimal("0.01")
+BACKTEST_ENGINE_VERSION = "3.0.0"
 
 STRATEGIES = (
     ("OPENING_RANGE_BREAKOUT", "開盤15分鐘區間突破", Decimal("750000")),
@@ -50,6 +51,7 @@ DEFAULT_CONFIG: dict[str, object] = {
     "minimumCommission": "20",
     "dayTradeTaxRate": "0.0015",
     "slippageBps": "5",
+    "maximumFillChasePct": "1.0",
     "otherCost": "0",
     "forceCloseEnabled": True,
     "autoStart": True,
@@ -169,6 +171,295 @@ def merged_config(custom: Mapping[str, object] | None = None) -> dict[str, objec
     result = dict(DEFAULT_CONFIG)
     if custom:
         result.update({key: value for key, value in custom.items() if key in result})
+    return result
+
+
+def run_backtest(
+    datasets: Mapping[str, Sequence[MinuteBar]], *, strategy_id: str = "ALL",
+    config: Mapping[str, object] | None = None, portfolio: bool = True,
+    strategy_parameters: Mapping[str, Mapping[str, object]] | None = None,
+    market_regime_by_time: Mapping[datetime, str] | None = None,
+    sector_by_symbol: Mapping[str, str] | None = None,
+    controller_filter: bool | None = None,
+) -> dict[str, object]:
+    """Run a causal intraday backtest using the same controller and risk gates.
+
+    Indicators only see completed bars from one Taipei trading day. Orders use
+    the next bar, capital stays reserved while positions are open, and every
+    accepted trade must have a same-day force-close bar.
+    """
+    from .day_trading_v2_controller import (
+        ControllerCandidateInput, REGIME_MILD, REGIME_UNKNOWN,
+        rank_candidates, risk_multiplier_for_regime, score_candidate,
+    )
+
+    cfg = merged_config(config)
+    initial = dec(cfg["initialCapital"])
+    enabled = {item[0] for item in STRATEGIES} if strategy_id == "ALL" else {strategy_id}
+    regime_map = market_regime_by_time or {}
+    has_verified_regimes = market_regime_by_time is not None
+    apply_controller = True if controller_filter is None else controller_filter
+    force_close = time.fromisoformat(str(cfg["forcedCloseTime"]))
+    latest_entry = time.fromisoformat(str(cfg["latestEntryTime"]))
+    allocation_by_strategy = {sid: amount for sid, _name, amount in STRATEGIES}
+    skip_counts: dict[str, int] = {}
+
+    def skip(reason: str) -> None:
+        skip_counts[reason] = skip_counts.get(reason, 0) + 1
+
+    def taipei_date(value: datetime):
+        return value.astimezone(TAIPEI).date() if value.tzinfo else value.date()
+
+    def taipei_time(value: datetime):
+        return value.astimezone(TAIPEI).time() if value.tzinfo else value.time()
+
+    candidates: list[dict[str, object]] = []
+    trading_days: set[object] = set()
+    for symbol, raw_bars in datasets.items():
+        days: dict[object, list[MinuteBar]] = {}
+        for bar in sorted(raw_bars, key=lambda item: item.timestamp):
+            days.setdefault(taipei_date(bar.timestamp), []).append(bar)
+        previous_bars: list[MinuteBar] | None = None
+        for day, bars in sorted(days.items(), key=lambda item: item[0]):
+            trading_days.add(day)
+            previous_high = max((bar.high for bar in previous_bars), default=None) if previous_bars else None
+            previous_low = min((bar.low for bar in previous_bars), default=None) if previous_bars else None
+            for index in range(15, len(bars) - 1):
+                signal_time = bars[index].timestamp
+                fill_bar = bars[index + 1]
+                evaluation_filter = None if strategy_id == "ALL" else {strategy_id}
+                for signal in evaluate_strategies(
+                    bars[:index + 1], previous_high=previous_high, previous_low=previous_low,
+                    strategy_parameters=strategy_parameters, enabled_strategies=evaluation_filter,
+                ):
+                    if signal.strategy_id in enabled:
+                        candidates.append({
+                            "signalTime": signal_time, "symbol": symbol, "signal": signal,
+                            "fillBar": fill_bar, "dayBars": bars, "fillIndex": index + 1,
+                        })
+            previous_bars = bars
+
+    scored_rows: list[tuple[dict[str, object], object]] = []
+    for row in candidates:
+        signal_time = row["signalTime"]
+        symbol = str(row["symbol"])
+        signal = row["signal"]
+        assert isinstance(signal_time, datetime) and isinstance(signal, StrategySignal)
+        if signal.confidence < dec(cfg["minimumConfidence"]):
+            skip("CONFIDENCE_BELOW_MINIMUM")
+            continue
+        regime = regime_map.get(signal_time, REGIME_MILD if not has_verified_regimes else REGIME_UNKNOWN)
+        risk_reward = ((signal.target_price - signal.entry_price) /
+                       (signal.entry_price - signal.stop_price))
+        controller_input = ControllerCandidateInput(
+            key=f"backtest:{signal_time.isoformat()}:{symbol}:{signal.strategy_id}",
+            symbol=symbol, stock_name=symbol, sector=(sector_by_symbol or {}).get(symbol, "UNKNOWN"),
+            strategy_id=signal.strategy_id, strategy_version=f"BACKTEST-{BACKTEST_ENGINE_VERSION}",
+            signal_time=signal_time, raw_score=signal.confidence,
+            entry_price=signal.entry_price, stop_price=signal.stop_price,
+            target_price=signal.target_price, risk_reward=risk_reward,
+            sector_strength=Decimal("50"), liquidity_score=Decimal("100"),
+        )
+        scored = score_candidate(
+            controller_input, regime=regime, local_time=taipei_time(signal_time), config=cfg,
+        ) if apply_controller else None
+        if scored is not None and not scored.allowed:
+            for reason in scored.blocked_reasons:
+                skip(f"CONTROLLER:{reason}")
+            continue
+        scored_rows.append((row, scored))
+
+    selected: list[tuple[dict[str, object], object]] = []
+    if portfolio and apply_controller:
+        grouped: dict[datetime, list[tuple[dict[str, object], object]]] = {}
+        for row, scored in scored_rows:
+            grouped.setdefault(row["signalTime"], []).append((row, scored))
+        for rows in grouped.values():
+            ranked = rank_candidates(item[1] for item in rows)
+            winner = next((item for item in ranked if item.allowed), None)
+            if winner is None:
+                continue
+            for row, scored in rows:
+                if scored.candidate.key == winner.candidate.key:
+                    selected.append((row, scored))
+                else:
+                    skip("LOWER_RANKED_CANDIDATE")
+    else:
+        selected = scored_rows
+    selected.sort(key=lambda item: (
+        item[0]["signalTime"], -item[0]["signal"].confidence, item[0]["symbol"],
+    ))
+
+    trades: list[dict[str, object]] = []
+    active: list[dict[str, object]] = []
+    realized_total = ZERO
+    realized_by_day: dict[object, Decimal] = {}
+    traded_keys: set[tuple[str, object]] = set()
+    for row, scored in selected:
+        signal_time = row["signalTime"]
+        symbol = str(row["symbol"])
+        signal = row["signal"]
+        fill_bar = row["fillBar"]
+        day_bars = row["dayBars"]
+        fill_index = int(row["fillIndex"])
+        assert isinstance(signal_time, datetime) and isinstance(signal, StrategySignal)
+        assert isinstance(fill_bar, MinuteBar) and isinstance(day_bars, Sequence)
+        day = taipei_date(signal_time)
+
+        still_active: list[dict[str, object]] = []
+        for position in active:
+            if position["exitTime"] <= signal_time:
+                pnl = dec(position["netPnl"])
+                realized_total += pnl
+                position_day = position["day"]
+                realized_by_day[position_day] = realized_by_day.get(position_day, ZERO) + pnl
+            else:
+                still_active.append(position)
+        active = still_active
+        day_key = (symbol, day)
+        if day_key in traded_keys:
+            skip("DUPLICATE_SYMBOL_SIGNAL")
+            continue
+        if taipei_time(fill_bar.timestamp) >= latest_entry:
+            skip("AFTER_LATEST_ENTRY_TIME")
+            continue
+        if len(active) >= int(cfg["maxOpenPositions"]):
+            skip("MAX_OPEN_POSITIONS")
+            continue
+        if any(position["symbol"] == symbol for position in active):
+            skip("DUPLICATE_OPEN_SYMBOL")
+            continue
+        sector = (sector_by_symbol or {}).get(symbol, "UNKNOWN")
+        if sum(position["sector"] == sector for position in active) >= int(cfg["maxSectorPositions"]):
+            skip("MAX_SECTOR_POSITIONS")
+            continue
+        status = risk_status(realized_by_day.get(day, ZERO), cfg)
+        if status == "HALTED":
+            skip("DAILY_LOSS_HALTED")
+            continue
+
+        regime = regime_map.get(signal_time, REGIME_MILD if not has_verified_regimes else REGIME_UNKNOWN)
+        regime_risk = risk_multiplier_for_regime(regime) if has_verified_regimes else Decimal("1")
+        if regime_risk <= 0:
+            skip("MARKET_REGIME_BLOCKED")
+            continue
+        entry = fill_bar.open * (Decimal("1") + dec(cfg["slippageBps"]) / Decimal("10000"))
+        chase_pct = (entry - signal.entry_price) / signal.entry_price * 100 if signal.entry_price else Decimal("999")
+        if chase_pct > dec(cfg["maximumFillChasePct"]):
+            skip("NEXT_BAR_CHASE_TOO_LARGE")
+            continue
+        if entry <= signal.stop_price or signal.target_price <= entry:
+            skip("INVALID_LEVELS_AFTER_FILL")
+            continue
+        actual_rr = (signal.target_price - entry) / (entry - signal.stop_price)
+        required_rr = max(
+            dec(cfg["minimumRiskReward"]),
+            dec(cfg["controllerMinimumRiskReward"]) if apply_controller else ZERO,
+        )
+        if actual_rr < required_rr:
+            skip("RISK_REWARD_BELOW_MINIMUM_AFTER_FILL")
+            continue
+
+        future = [bar for bar in day_bars[fill_index:] if taipei_time(bar.timestamp) <= force_close]
+        close_candidates = [bar for bar in future if taipei_time(bar.timestamp) >= force_close]
+        if not future or not close_candidates:
+            skip("FORCED_CLOSE_MINUTE_MISSING")
+            continue
+        exit_bar = close_candidates[-1]
+        exit_reason = "FORCED_CLOSE"
+        for bar in future:
+            if bar.low <= signal.stop_price:
+                exit_bar, exit_reason = bar, "STOP_LOSS"
+                break
+            if bar.high >= signal.target_price:
+                exit_bar, exit_reason = bar, "PROFIT_TARGET"
+                break
+        raw_exit = (
+            signal.stop_price if exit_reason == "STOP_LOSS"
+            else signal.target_price if exit_reason == "PROFIT_TARGET"
+            else exit_bar.close
+        )
+        exit_price = raw_exit * (Decimal("1") - dec(cfg["slippageBps"]) / Decimal("10000"))
+
+        reserved = sum(dec(position["entryCapital"]) for position in active)
+        available = initial + realized_total - reserved
+        if portfolio:
+            strategy_reserved = sum(
+                dec(position["entryCapital"]) for position in active
+                if position["strategyId"] == signal.strategy_id
+            )
+            strategy_available = allocation_by_strategy.get(signal.strategy_id, initial) - strategy_reserved
+            capital_limit = min(available, strategy_available)
+        else:
+            capital_limit = available
+        risk_budget = dec(cfg["maxRiskPerTrade"]) * regime_risk
+        if status == "REDUCED":
+            risk_budget /= 2
+        quantity = calculate_position_size(
+            price=entry, stop_price=signal.stop_price, risk_budget=risk_budget,
+            capital_limit=capital_limit, lot_size=int(cfg["boardLotSize"]),
+            allow_odd_lots=bool(cfg["allowOddLots"]),
+        )
+        if quantity <= 0:
+            skip("INSUFFICIENT_CAPITAL_OR_RISK_BUDGET")
+            continue
+        entry_capital = money(entry * quantity)
+        if entry_capital > available:
+            skip("CAPITAL_RESERVATION_EXCEEDED")
+            continue
+
+        trade_result = calculate_trade_result(
+            entry_price=entry, exit_price=exit_price, quantity=quantity,
+            commission_rate=cfg["commissionRate"], commission_discount=cfg["commissionDiscount"],
+            minimum_commission=cfg["minimumCommission"], tax_rate=cfg["dayTradeTaxRate"],
+            slippage_bps=0, other_cost=cfg["otherCost"],
+        )
+        trade = {
+            "symbol": symbol, "strategyId": signal.strategy_id, "signalTime": signal_time,
+            "marketRegime": regime if has_verified_regimes else REGIME_UNKNOWN,
+            "marketRegimeVerified": signal_time in regime_map,
+            "controllerFinalScore": str(scored.final_score) if scored is not None else str(signal.confidence),
+            "entryTime": fill_bar.timestamp, "entryPrice": str(money(entry)), "quantity": quantity,
+            "stopPrice": str(money(signal.stop_price)), "targetPrice": str(money(signal.target_price)),
+            "actualRiskReward": str(actual_rr.quantize(Decimal("0.0001"))),
+            "exitTime": exit_bar.timestamp, "exitPrice": str(money(exit_price)), "exitReason": exit_reason,
+            "grossPnl": str(trade_result["grossPnl"]), "cost": str(trade_result["total"]),
+            "netPnl": str(trade_result["netPnl"]), "buyTurnover": str(trade_result["buyTurnover"]),
+            "sellTurnover": str(trade_result["sellTurnover"]), "totalTurnover": str(trade_result["totalTurnover"]),
+            "listedCommission": str(trade_result["listedCommission"]),
+            "paidCommission": str(trade_result["paidCommission"]),
+            "commissionRebate": str(trade_result["commissionRebate"]),
+            "commissionRate": str(cfg["commissionRate"]), "commissionDiscount": str(cfg["commissionDiscount"]),
+            "minimumCommission": str(cfg["minimumCommission"]),
+        }
+        trades.append(trade)
+        active.append({
+            "symbol": symbol, "sector": sector, "strategyId": signal.strategy_id,
+            "entryCapital": entry_capital, "exitTime": exit_bar.timestamp,
+            "netPnl": trade_result["netPnl"], "day": day,
+        })
+        traded_keys.add(day_key)
+
+    ending = initial + sum((dec(row["netPnl"]) for row in trades), ZERO)
+    result: dict[str, object] = {
+        "engineVersion": BACKTEST_ENGINE_VERSION,
+        "validationStatus": "VALIDATED",
+        "validationChecks": {
+            "dailyIndicatorReset": True, "nextBarFillRevalidated": True,
+            "sameDayForcedExit": True, "capitalReservedUntilExit": True,
+            "controllerApplied": apply_controller,
+        },
+        "tradingDayCount": len(trading_days),
+        "skipReasons": [
+            {"reason": reason, "count": count} for reason, count in sorted(skip_counts.items())
+        ],
+        "summary": performance(trades, initial), "trades": trades,
+        "endingCapital": str(money(ending)),
+    }
+    if strategy_id == "ALL":
+        result["strategySummaries"] = performance_by_strategy(
+            trades, [item[0] for item in STRATEGIES], initial,
+        )
     return result
 
 
@@ -574,7 +865,7 @@ class DisabledLiveBrokerAdapter:
         return {"connected": False, "positions": [], "orders": [], "reason": "尚未設定券商API"}
 
 
-def run_backtest(
+def _run_backtest_legacy(
     datasets: Mapping[str, Sequence[MinuteBar]], *, strategy_id: str = "ALL",
     config: Mapping[str, object] | None = None, portfolio: bool = True,
     strategy_parameters: Mapping[str, Mapping[str, object]] | None = None,

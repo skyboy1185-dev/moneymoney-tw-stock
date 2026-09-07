@@ -225,6 +225,10 @@ export function DayTradingV2Page({ userId }: { userId: string }) {
   const [optimizationFile, setOptimizationFile] = useState<File | null>(null);
   const [optimizationDetail, setOptimizationDetail] = useState<OptimizationDetail | null>(null);
   const [backtestHistory, setBacktestHistory] = useState<Array<Record<string, unknown>>>([]);
+  const [backtestPresets, setBacktestPresets] = useState<{
+    monthToDate: { startDate: string; endDate: string };
+    recent20TradingDays: { startDate: string; endDate: string; tradingDays: number };
+  } | null>(null);
   const [regimeSource, setRegimeSource] = useState<"PAPER" | "LIVE" | "BACKTEST" | "CHALLENGER">("PAPER");
   const [regimePeriod, setRegimePeriod] = useState("ALL");
   const [regimeSourceId, setRegimeSourceId] = useState("");
@@ -239,14 +243,16 @@ export function DayTradingV2Page({ userId }: { userId: string }) {
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
     try {
-      const [dashboard, noteData, backtestData] = await Promise.all([
+      const [dashboard, noteData, backtestData, presetData] = await Promise.all([
         dayTradingV2Client.dashboard(userId),
         dayTradingV2Client.notifications(userId),
         dayTradingV2Client.backtests(userId).catch(() => ({ items: [] as Array<Record<string, unknown>> })),
+        dayTradingV2Client.backtestPresets(userId).catch(() => null),
       ]);
       setData(dashboard);
       setNotifications(noteData);
       setBacktestHistory(backtestData.items);
+      if (presetData) setBacktestPresets(presetData);
       setError("");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "讀取失敗");
@@ -362,6 +368,7 @@ export function DayTradingV2Page({ userId }: { userId: string }) {
     ["dailyStopLoss", "單日停機門檻", "元"], ["monthlyMaxDrawdown", "單月最大回撤", "元"],
     ["minimumConfidence", "最低信心分數", "分"], ["minimumRiskReward", "最低風險報酬比", "倍"],
     ["maximumSpreadPct", "最大買賣價差", "%"], ["maximumVwapDeviationPct", "最大VWAP偏離", "%"],
+    ["maximumFillChasePct", "下一分鐘最大追價", "%"],
     ["watchThreshold", "觀察名單門檻", "分"], ["nearEntryThreshold", "接近進場門檻", "分"],
     ["riskGateThreshold", "下單前風控門檻", "分"], ["scanIntervalSeconds", "進場掃描間隔", "秒"],
     ["heartbeatSeconds", "心跳更新間隔", "秒"], ["heartbeatTimeoutSeconds", "心跳逾時", "秒"],
@@ -494,6 +501,10 @@ export function DayTradingV2Page({ userId }: { userId: string }) {
           <label>策略<select value={backtestStrategy} onChange={(event) => setBacktestStrategy(event.target.value)}><option value="ALL">五台全部</option>{data.robots.map((robot) => <option key={robot.strategyId} value={robot.strategyId}>{robot.name}</option>)}</select></label>
           <label>開始日期<input type="date" min={backtestSource === "AUTO_FUGLE" ? "2023-05-23" : undefined} value={startDate} onChange={(event) => setStartDate(event.target.value)} /></label>
           <label>結束日期<input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} /></label>
+          <div className="dt2-inline-actions">
+            <button type="button" onClick={() => { const range = backtestPresets?.monthToDate; if (range) { setStartDate(range.startDate); setEndDate(range.endDate); } }}>本月迄今</button>
+            <button type="button" onClick={() => { const range = backtestPresets?.recent20TradingDays; if (range) { setStartDate(range.startDate); setEndDate(range.endDate); } }}>最近20交易日</button>
+          </div>
           <button disabled={busy || Boolean(backtestJobId) || (backtestSource === "UPLOADED_DATASET" && !backtestDatasetId && !backtestFile)} onClick={() => void startBacktest()}>{backtestJobId ? "回測執行中…" : "執行回測"}</button>
           <p className="dt2-data-warning">系統會自動準備1分鐘行情，也可在此上傳CSV／Parquet。日K不會用於當沖回測。自動模式為固定股票池研究回測，結果會標示名單快照與資料品質。</p>
         </div>
@@ -501,7 +512,8 @@ export function DayTradingV2Page({ userId }: { userId: string }) {
       <article className="dt2-panel">
         <header><History size={17} /><strong>回測進度與結果</strong></header>
         {backtestResult ? <>
-          <dl className="dt2-rules"><div><dt>狀態</dt><dd>{String(backtestResult.status ?? "—")}</dd></div><div><dt>進度</dt><dd>{number(String(backtestResult.progressPct ?? 0), 1)}%</dd></div><div><dt>資料來源</dt><dd>{String(backtestResult.dataSource ?? "—")}</dd></div><div><dt>資料精度</dt><dd>{String(backtestResult.dataPrecision ?? "—")}</dd></div></dl>
+          <dl className="dt2-rules"><div><dt>狀態</dt><dd>{String(backtestResult.status ?? "—")}</dd></div><div><dt>進度</dt><dd>{number(String(backtestResult.progressPct ?? 0), 1)}%</dd></div><div><dt>資料來源</dt><dd>{String(backtestResult.dataSource ?? "—")}</dd></div><div><dt>資料精度</dt><dd>{String(backtestResult.dataPrecision ?? "—")}</dd></div><div><dt>引擎版本</dt><dd>{String(backtestResult.engineVersion ?? ((backtestResult.result ?? {}) as Record<string, unknown>).engineVersion ?? "—")}</dd></div><div><dt>驗證狀態</dt><dd>{String(backtestResult.validationStatus ?? ((backtestResult.result ?? {}) as Record<string, unknown>).validationStatus ?? "—")}</dd></div><div><dt>實際交易日</dt><dd>{String((((backtestResult.result ?? {}) as Record<string, unknown>).dataQuality as Record<string, unknown> | undefined)?.includedTradingDays ?? ((backtestResult.result ?? {}) as Record<string, unknown>).tradingDayCount ?? "—")}</dd></div></dl>
+          {Boolean(backtestResult.validationWarning) && <p className="dt2-data-warning">{String(backtestResult.validationWarning)}</p>}
           <p className="dt2-data-warning">{String(((backtestResult.progress ?? {}) as Record<string, unknown>).message ?? backtestResult.error ?? "任務資料已更新")}</p>
           <BacktestPerformance job={backtestResult} robotById={robotById} />
           <details className="dt2-result-details"><summary>查看完整回測結果與交易明細</summary><pre className="dt2-result">{JSON.stringify(backtestResult.result ?? backtestResult, null, 2)}</pre></details>
