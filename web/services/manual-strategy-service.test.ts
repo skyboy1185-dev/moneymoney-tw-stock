@@ -4,6 +4,7 @@ import {
   calculateMultiMovingAverageUpSignal,
   detectSingleKdBullishDivergence,
   detectDoubleKdBullishDivergence,
+  evaluateManualStrategy,
   estimateMacdBarsToPositive,
   isShortTermBullishAlignment,
   MANUAL_STRATEGIES,
@@ -44,6 +45,19 @@ describe("策略選股器嚴格訊號規則", () => {
       timeframe: "day",
       signalMode: "ma-multi-up",
     });
+  });
+
+  it("共用單股策略判斷會回傳相同策略並遵守 as-of 日期", () => {
+    const strategy = MANUAL_STRATEGIES.find((item) => item.id === "day-ma5-ma10-ma20-up")!;
+    const base = candlesFromCloses(Array.from({ length: 65 }, (_, index) => index + 1));
+    const asOfDate = base.at(-1)!.date;
+    const future = candlesFromCloses([1, 1, 1]).map((candle, index) => ({
+      ...candle,
+      date: new Date(Date.UTC(2026, 3, index + 1)).toISOString().slice(0, 10),
+    }));
+    const meta = { symbol: "2330", name: "台積電", market: "上市" as const };
+    expect(evaluateManualStrategy(meta, [...base, ...future], strategy, "confirmed", asOfDate))
+      .toEqual(evaluateManualStrategy(meta, base, strategy, "confirmed"));
   });
 
   it("三條均線今日向上且下一日扣抵推估仍向上時成立", () => {

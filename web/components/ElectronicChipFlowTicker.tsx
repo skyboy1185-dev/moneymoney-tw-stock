@@ -12,6 +12,10 @@ import type {
   ElectronicChipFlowQuote,
 } from "@/lib/electronic-chip-flow-alerts";
 import type { StockDeductionSignals } from "@/lib/deduction-signals";
+import {
+  selectVisibleManualStrategyMatches,
+  type StockManualStrategyMatches,
+} from "@/lib/manual-strategy-matches";
 import type { MarketSnapshot } from "@/lib/market-types";
 import type { MarketIndexDefenseResponse } from "@/lib/market-index-defense";
 import { evaluateThreeGateLevels } from "@/lib/three-gate-price";
@@ -718,6 +722,9 @@ function MomentumPanel({
   trackedSymbols,
   alertSymbols,
   deductionSignals,
+  manualStrategyMatches,
+  manualStrategyLoading,
+  manualStrategyError,
   quotes,
   onTogglePin,
   onClose,
@@ -731,6 +738,9 @@ function MomentumPanel({
   trackedSymbols: Set<string>;
   alertSymbols: Set<string>;
   deductionSignals: Record<string, StockDeductionSignals>;
+  manualStrategyMatches: Record<string, StockManualStrategyMatches>;
+  manualStrategyLoading: boolean;
+  manualStrategyError: string;
   quotes: Record<string, ElectronicChipFlowQuote>;
   onTogglePin: (alert: ElectronicChipFlowAlert) => void;
   onClose: () => void;
@@ -781,6 +791,10 @@ function MomentumPanel({
     const deductionMatchCount = deductionSignals[alert.symbol]?.matches.filter((match) =>
       match.signalDate <= data.tradeDate
     ).length ?? 0;
+    const aiStrategies = selectVisibleManualStrategyMatches(
+      manualStrategyMatches[alert.symbol],
+      data.tradeDate,
+    );
     const tags = [
       alert.currentQualifies ? "仍符合" : "追蹤中",
       deductionMatchCount ? `丁選股 ${deductionMatchCount}` : "",
@@ -793,7 +807,7 @@ function MomentumPanel({
       alert.largeOrderOffsetting ? "多空抵銷" : "",
       alert.isWarning ? "轉弱" : "",
     ].filter(Boolean);
-    return { forceLots, oppositeLots, dayForceLots, changeLots, ratio, steps, groupResonance, tags, sessionBased };
+    return { forceLots, oppositeLots, dayForceLots, changeLots, ratio, steps, groupResonance, tags, sessionBased, aiStrategies };
   };
 
   return <aside className={`chip-momentum-panel ${isShort ? "short-side" : "long-side"}`} aria-label={isShort ? "空方大單動能雷達" : "多方大單動能雷達"}>
@@ -808,6 +822,8 @@ function MomentumPanel({
         {groupResonances.length > 0 && <span className="group-warning"><AlertTriangle size={12} />族群共振 {groupResonances.length} 組・強烈注意</span>}
         {pinnedSymbols.size > 0 && <span className="pinned"><Pin size={12} />已釘選 {pinnedSymbols.size}</span>}
         {(data.extraPinnedTrackingCount ?? 0) > 0 && <span className="pinned"><Pin size={12} />釘選加碼 {data.extraPinnedTrackingCount}/{data.extraPinnedTrackingLimit ?? 10}</span>}
+        {manualStrategyLoading && <span className="pinned">AI策略比對中</span>}
+        {manualStrategyError && <span className="group-warning"><AlertTriangle size={12} />AI策略比對暫時失敗</span>}
         <small>收合仍持續偵測Top{rankingLimit}・釘選加碼 {data.extraPinnedTrackingCount ?? 0}/{data.extraPinnedTrackingLimit ?? 10}・監控池 {data.candidateCount}/{data.candidateTarget ?? data.candidateCount}</small>
       </div>
       <button type="button" onClick={onClose} aria-label="關閉大單動能雷達"><X size={15} /></button>
@@ -858,6 +874,17 @@ function MomentumPanel({
             <div className="chip-strength-tags">
               {facts.tags.map((tag) => <span key={tag}>{tag}</span>)}
             </div>
+            {facts.aiStrategies.all.length > 0 && <div
+              className="chip-ai-strategy-matches"
+              title={facts.aiStrategies.all.map((match) => `${match.strategyName}（${match.signalStatus === "temporary" ? "盤中暫定" : "收盤確認"}）`).join("\n")}
+            >
+              <strong>AI選股策略</strong>
+              {facts.aiStrategies.visible.map((match) => <span
+                className={match.signalStatus}
+                key={match.strategyId}
+              >{match.strategyName}</span>)}
+              {facts.aiStrategies.hiddenCount > 0 && <em>另有 {facts.aiStrategies.hiddenCount} 個</em>}
+            </div>}
           </div>
           <div className="chip-strength-score">
             <small>強度分</small>
@@ -1022,6 +1049,9 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
   const [deductionSignals, setDeductionSignals] = useState<Record<string, StockDeductionSignals>>({});
   const [deductionLoading, setDeductionLoading] = useState(false);
   const [deductionError, setDeductionError] = useState("");
+  const [manualStrategyMatches, setManualStrategyMatches] = useState<Record<string, StockManualStrategyMatches>>({});
+  const [manualStrategyLoading, setManualStrategyLoading] = useState(false);
+  const [manualStrategyError, setManualStrategyError] = useState("");
   const [marketDefense, setMarketDefense] = useState<MarketIndexDefenseResponse | null>(null);
   const [barLayout, setBarLayout] = useState<MomentumBarLayout>("compact");
 
@@ -1489,6 +1519,41 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
   }, [dingRequestPayload, data?.tradeDate]);
 
   useEffect(() => {
+    if (!dingRequestPayload) {
+      setManualStrategyMatches({});
+      setManualStrategyError("");
+      setManualStrategyLoading(false);
+      return;
+    }
+    let stopped = false;
+    const controller = new AbortController();
+    setManualStrategyLoading(true);
+    void fetch("/api/manual-screener/matches", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: `{"asOfDate":${JSON.stringify(data?.tradeDate ?? null)},"items":${dingRequestPayload}}`,
+      cache: "no-store",
+      signal: controller.signal,
+    }).then(async (response) => {
+      const payload = await response.json() as { items?: StockManualStrategyMatches[]; error?: string };
+      if (!response.ok) throw new Error(payload.error ?? `manual strategy matches ${response.status}`);
+      if (stopped) return;
+      setManualStrategyMatches(Object.fromEntries((payload.items ?? []).map((item) => [item.symbol, item])));
+      setManualStrategyError("");
+    }).catch((error) => {
+      if (!stopped && (error as Error).name !== "AbortError") {
+        setManualStrategyError("AI選股策略比對暫時無法取得");
+      }
+    }).finally(() => {
+      if (!stopped) setManualStrategyLoading(false);
+    });
+    return () => {
+      stopped = true;
+      controller.abort();
+    };
+  }, [dingRequestPayload, data?.tradeDate]);
+
+  useEffect(() => {
     if (!technicalSignalRequestPayload || !data?.marketOpen) {
       return;
     }
@@ -1750,6 +1815,9 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
       trackedSymbols={expandedTradeSide === "short" ? trackedShortPanelSymbols : trackedPanelSymbols}
       alertSymbols={expandedTradeSide === "short" ? shortAlertPanelSymbols : alertPanelSymbols}
       deductionSignals={deductionSignals}
+      manualStrategyMatches={manualStrategyMatches}
+      manualStrategyLoading={manualStrategyLoading}
+      manualStrategyError={manualStrategyError}
       quotes={momentumQuotes}
       onTogglePin={togglePin}
       onClose={() => setExpanded(null)}

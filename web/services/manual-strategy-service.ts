@@ -4,7 +4,7 @@ import { calculateIndicators } from "@/lib/indicators";
 import { MANUAL_STRATEGIES } from "@/lib/manual-strategies";
 import type { ManualScreenRow, ManualStrategy } from "@/lib/market-types";
 import type { KDPoint } from "@/lib/market-types";
-import type { DailyPrice } from "@/lib/types";
+import type { DailyPrice, StockMeta } from "@/lib/types";
 import { stockCatalog } from "@/services/stock-service";
 import { getOfficialQuotes } from "@/services/market-data/official-quote-provider";
 import { buildOfficialStockPayload } from "@/services/market-data/official-history-provider";
@@ -277,6 +277,106 @@ export function matchesManualStrategy(strategy: ManualStrategy, values: Strategy
     && (!strategy.requiresKD || kdGoldenCrossBelow50);
 }
 
+export function evaluateManualStrategy(
+  meta: Pick<StockMeta, "symbol" | "name" | "market">,
+  prices: DailyPrice[],
+  strategy: ManualStrategy,
+  signalStatus: "temporary" | "confirmed" = "confirmed",
+  asOfDate?: string | null,
+): ManualScreenRow | null {
+  const effectivePrices = asOfDate ? prices.filter((price) => price.date <= asOfDate) : prices;
+  const dailyLatest = effectivePrices.at(-1);
+  const dailyPrevious = effectivePrices.at(-2);
+  const candles = resampleCandles(effectivePrices, strategy.timeframe);
+  const indicators = calculateIndicators(candles);
+  const kd = calculateKD(candles);
+  const latest = candles.at(-1);
+  const indicator = indicators.at(-1);
+  const previousIndicator = indicators.at(-2);
+  const twoPreviousIndicator = indicators.at(-3);
+  const kdPoint = kd.at(-1);
+  const previousKdPoint = kd.at(-2);
+  const divergence = strategy.signalMode === "kd-bullish-divergence"
+    ? detectSingleKdBullishDivergence(candles, kd, strategy.divergenceLookback ?? 30)
+    : strategy.signalMode === "kd-double-bullish-divergence"
+      ? detectDoubleKdBullishDivergence(candles, kd, strategy.divergenceLookback ?? 45)
+      : null;
+  const multiMaUp = strategy.signalMode === "ma-multi-up"
+    ? calculateMultiMovingAverageUpSignal(candles)
+    : null;
+  if (!dailyLatest || !dailyPrevious || !latest) return null;
+  if (strategy.signalMode === "ma-multi-up" && !multiMaUp?.matches) return null;
+  const deduction = strategy.deductionDirection
+    ? calculateThreePeriodDeductionSignal(
+      candles.map((candle) => candle.close),
+      strategy.maPeriod ?? 20,
+    )
+    : null;
+  const deductionMatches = strategy.deductionDirection === "low"
+    ? deduction?.matchesLow
+    : strategy.deductionDirection === "high"
+      ? deduction?.matchesHigh
+      : false;
+  if (strategy.deductionDirection && !deductionMatches) return null;
+  const kdThresholdStrategy = strategy.signalMode === "kd-below";
+  const kdDivergenceStrategy = strategy.signalMode === "kd-bullish-divergence"
+    || strategy.signalMode === "kd-double-bullish-divergence";
+  if (kdThresholdStrategy && !kdPoint) return null;
+  if (kdDivergenceStrategy && !divergence) return null;
+  if (!strategy.deductionDirection && !kdThresholdStrategy && !kdDivergenceStrategy
+    && strategy.signalMode !== "ma-multi-up"
+    && (!indicator || !previousIndicator || !kdPoint || !previousKdPoint)) return null;
+  const signalValues = {
+    twoPreviousHistogram: twoPreviousIndicator?.histogram ?? null,
+    previousHistogram: previousIndicator?.histogram ?? null,
+    currentHistogram: indicator?.histogram ?? null,
+    previousK: previousKdPoint?.k ?? null,
+    previousD: previousKdPoint?.d ?? null,
+    currentK: kdPoint?.k ?? null,
+    currentD: kdPoint?.d ?? null,
+    dailyVolumeShares: dailyLatest.volume,
+  };
+  if (!strategy.deductionDirection && !kdDivergenceStrategy
+    && strategy.signalMode !== "ma-multi-up"
+    && !matchesManualStrategy(strategy, signalValues)) return null;
+  return {
+    rank: 0, symbol: meta.symbol, name: meta.name, market: meta.market,
+    price: dailyLatest.close, changePercent: ((dailyLatest.close - dailyPrevious.close) / dailyPrevious.close) * 100,
+    volume: dailyLatest.volume, timeframe: strategy.timeframe,
+    dif: indicator?.dif ?? null, signal: indicator?.signal ?? null, histogram: indicator?.histogram ?? null,
+    signalMode: strategy.signalMode,
+    estimatedBarsToCross: strategy.signalMode === "forecast" ? estimateMacdBarsToPositive(signalValues) : null,
+    maPeriod: deduction?.maPeriod,
+    deductionValues: deduction?.deductionValues,
+    deductionAverage: deduction?.deductionAverage,
+    deductionGapPercent: deduction?.deductionGapPercent,
+    projectedMaValues: deduction?.projectedMaValues,
+    ma5: multiMaUp?.ma5,
+    ma10: multiMaUp?.ma10,
+    ma20: multiMaUp?.ma20,
+    ma60: multiMaUp?.ma60,
+    ma5SlopePercent: multiMaUp?.ma5SlopePercent,
+    ma10SlopePercent: multiMaUp?.ma10SlopePercent,
+    ma20SlopePercent: multiMaUp?.ma20SlopePercent,
+    projectedMa5: multiMaUp?.projectedMa5,
+    projectedMa10: multiMaUp?.projectedMa10,
+    projectedMa20: multiMaUp?.projectedMa20,
+    nextDayUpMinimumClose: multiMaUp?.nextDayUpMinimumClose,
+    continuationBufferPercent: multiMaUp?.continuationBufferPercent,
+    bullishAlignment: multiMaUp?.bullishAlignment,
+    signalStatus,
+    divergencePreviousDate: divergence?.previousDate,
+    divergenceMiddleDate: divergence?.middleDate,
+    divergencePreviousLow: divergence?.previousLow,
+    divergenceMiddleLow: divergence?.middleLow,
+    divergenceCurrentLow: divergence?.currentLow,
+    divergenceStrength: divergence?.strength,
+    k: divergence?.currentK ?? kdPoint?.k ?? null,
+    d: divergence?.currentD ?? kdPoint?.d ?? null,
+    signalDate: divergence?.currentDate ?? latest.date,
+  } satisfies ManualScreenRow;
+}
+
 export async function screenStocksByStrategy(strategyId: string): Promise<ManualScreenRow[]> {
   const strategy = MANUAL_STRATEGIES.find((item) => item.id === strategyId);
   if (!strategy) throw new Error("不存在的選股策略");
@@ -284,97 +384,12 @@ export async function screenStocksByStrategy(strategyId: string): Promise<Manual
   const results = await Promise.all(stockCatalog.map(async (meta): Promise<ManualScreenRow | null> => {
     try {
       const stock = await buildOfficialStockPayload(meta, quotes.get(meta.symbol) ?? null);
-      const effectivePrices = stock.prices;
-      const dailyLatest = effectivePrices.at(-1);
-      const dailyPrevious = effectivePrices.at(-2);
-      const candles = resampleCandles(effectivePrices, strategy.timeframe);
-      const indicators = calculateIndicators(candles);
-      const kd = calculateKD(candles);
-      const latest = candles.at(-1);
-      const indicator = indicators.at(-1);
-      const previousIndicator = indicators.at(-2);
-      const twoPreviousIndicator = indicators.at(-3);
-      const kdPoint = kd.at(-1);
-      const previousKdPoint = kd.at(-2);
-      const divergence = strategy.signalMode === "kd-bullish-divergence"
-        ? detectSingleKdBullishDivergence(candles, kd, strategy.divergenceLookback ?? 30)
-        : strategy.signalMode === "kd-double-bullish-divergence"
-          ? detectDoubleKdBullishDivergence(candles, kd, strategy.divergenceLookback ?? 45)
-          : null;
-      const multiMaUp = strategy.signalMode === "ma-multi-up"
-        ? calculateMultiMovingAverageUpSignal(candles)
-        : null;
-      if (!dailyLatest || !dailyPrevious || !latest) return null;
-      if (strategy.signalMode === "ma-multi-up" && !multiMaUp?.matches) return null;
-      const deduction = strategy.deductionDirection
-        ? calculateThreePeriodDeductionSignal(
-          candles.map((candle) => candle.close),
-          strategy.maPeriod ?? 20,
-        )
-        : null;
-      const deductionMatches = strategy.deductionDirection === "low"
-        ? deduction?.matchesLow
-        : strategy.deductionDirection === "high"
-          ? deduction?.matchesHigh
-          : false;
-      if (strategy.deductionDirection && !deductionMatches) return null;
-      const kdThresholdStrategy = strategy.signalMode === "kd-below";
-      const kdDivergenceStrategy = strategy.signalMode === "kd-bullish-divergence"
-        || strategy.signalMode === "kd-double-bullish-divergence";
-      if (kdThresholdStrategy && !kdPoint) return null;
-      if (kdDivergenceStrategy && !divergence) return null;
-      if (!strategy.deductionDirection && !kdThresholdStrategy && !kdDivergenceStrategy
-        && strategy.signalMode !== "ma-multi-up"
-        && (!indicator || !previousIndicator || !kdPoint || !previousKdPoint)) return null;
-      const signalValues = {
-        twoPreviousHistogram: twoPreviousIndicator?.histogram ?? null,
-        previousHistogram: previousIndicator?.histogram ?? null,
-        currentHistogram: indicator?.histogram ?? null,
-        previousK: previousKdPoint?.k ?? null,
-        previousD: previousKdPoint?.d ?? null,
-        currentK: kdPoint?.k ?? null,
-        currentD: kdPoint?.d ?? null,
-        dailyVolumeShares: dailyLatest.volume,
-      };
-      if (!strategy.deductionDirection && !kdDivergenceStrategy
-        && strategy.signalMode !== "ma-multi-up"
-        && !matchesManualStrategy(strategy, signalValues)) return null;
-      return {
-        rank: 0, symbol: meta.symbol, name: meta.name, market: meta.market,
-        price: dailyLatest.close, changePercent: ((dailyLatest.close - dailyPrevious.close) / dailyPrevious.close) * 100,
-        volume: dailyLatest.volume, timeframe: strategy.timeframe,
-        dif: indicator?.dif ?? null, signal: indicator?.signal ?? null, histogram: indicator?.histogram ?? null,
-        signalMode: strategy.signalMode,
-        estimatedBarsToCross: strategy.signalMode === "forecast" ? estimateMacdBarsToPositive(signalValues) : null,
-        maPeriod: deduction?.maPeriod,
-        deductionValues: deduction?.deductionValues,
-        deductionAverage: deduction?.deductionAverage,
-        deductionGapPercent: deduction?.deductionGapPercent,
-        projectedMaValues: deduction?.projectedMaValues,
-        ma5: multiMaUp?.ma5,
-        ma10: multiMaUp?.ma10,
-        ma20: multiMaUp?.ma20,
-        ma60: multiMaUp?.ma60,
-        ma5SlopePercent: multiMaUp?.ma5SlopePercent,
-        ma10SlopePercent: multiMaUp?.ma10SlopePercent,
-        ma20SlopePercent: multiMaUp?.ma20SlopePercent,
-        projectedMa5: multiMaUp?.projectedMa5,
-        projectedMa10: multiMaUp?.projectedMa10,
-        projectedMa20: multiMaUp?.projectedMa20,
-        nextDayUpMinimumClose: multiMaUp?.nextDayUpMinimumClose,
-        continuationBufferPercent: multiMaUp?.continuationBufferPercent,
-        bullishAlignment: multiMaUp?.bullishAlignment,
-        signalStatus: stock.dataQuality?.status === "official_close" ? "confirmed" : "temporary",
-        divergencePreviousDate: divergence?.previousDate,
-        divergenceMiddleDate: divergence?.middleDate,
-        divergencePreviousLow: divergence?.previousLow,
-        divergenceMiddleLow: divergence?.middleLow,
-        divergenceCurrentLow: divergence?.currentLow,
-        divergenceStrength: divergence?.strength,
-        k: divergence?.currentK ?? kdPoint?.k ?? null,
-        d: divergence?.currentD ?? kdPoint?.d ?? null,
-        signalDate: divergence?.currentDate ?? latest.date,
-      } satisfies ManualScreenRow;
+      return evaluateManualStrategy(
+        meta,
+        stock.prices,
+        strategy,
+        stock.dataQuality?.status === "official_close" ? "confirmed" : "temporary",
+      );
     } catch {
       return null;
     }

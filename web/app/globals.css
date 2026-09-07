@@ -432,6 +432,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .chip-deduction-matches span { overflow: hidden; color: #a8b6c6; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .chip-deduction-matches small { color: #76899d; font-size: 10px; }
 .chip-deduction-matches .aligned small { color: #dfb868; }
+.chip-ai-strategy-matches { margin-top: 7px; display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+.chip-ai-strategy-matches > strong { color: #aeb9cc; font-size: 10px; }
+.chip-ai-strategy-matches > span, .chip-ai-strategy-matches > em { max-width: 260px; padding: 3px 7px; overflow: hidden; color: #ff9ba3; background: rgba(255,92,101,.11); border: 1px solid rgba(255,92,101,.25); border-radius: 999px; font-size: 9px; font-style: normal; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
+.chip-ai-strategy-matches > span.temporary { color: #efc66d; background: rgba(239,198,109,.1); border-color: rgba(239,198,109,.25); }
+.chip-ai-strategy-matches > em { color: #aeb9cc; background: rgba(135,148,171,.1); border-color: rgba(135,148,171,.2); }
 .chip-deduction-reminder > small { color: #718399; font-size: 10px; }
 .chip-large-order-guidance { grid-column: 1 / -1; padding: 10px 12px; display: grid; grid-template-columns: 230px minmax(0, 1fr); align-items: center; gap: 7px 14px; color: #aebbc9; background: rgba(22, 31, 44, .86); border: 1px solid #3b4656; border-left: 5px solid #d3aa55; border-radius: 9px; }
 .chip-large-order-guidance > div { display: flex; align-items: baseline; gap: 7px; }
