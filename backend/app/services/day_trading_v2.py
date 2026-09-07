@@ -222,12 +222,88 @@ def calculate_trade_result(*, entry_price: object, exit_price: object, quantity:
     costs = calculate_costs(entry_price=entry_price, exit_price=exit_price, quantity=quantity, **cost_options)
     net = money(gross - costs.total)
     capital = dec(entry_price) * quantity
+    sell_value = dec(exit_price) * quantity
+    commission_rate = dec(cost_options.get("commission_rate", "0.001425"))
+    commission_discount = dec(cost_options.get("commission_discount", "0.2"))
+    minimum_commission = dec(cost_options.get("minimum_commission", "20"))
+    listed_buy_fee = money(max(capital * commission_rate, minimum_commission) if quantity else ZERO)
+    listed_sell_fee = money(max(sell_value * commission_rate, minimum_commission) if quantity else ZERO)
+    listed_commission = money(listed_buy_fee + listed_sell_fee)
+    paid_commission = money(costs.buy_fee + costs.sell_fee)
+    commission_rebate = money(max(listed_commission - paid_commission, ZERO))
     net_return = (net / capital * 100).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP) if capital else ZERO
-    return {"grossPnl": gross, "netPnl": net, "netReturnPct": net_return, **asdict(costs)}
+    return {
+        "grossPnl": gross, "netPnl": net, "netReturnPct": net_return,
+        "buyTurnover": money(capital), "sellTurnover": money(sell_value),
+        "totalTurnover": money(capital + sell_value),
+        "listedCommission": listed_commission, "paidCommission": paid_commission,
+        "commissionRebate": commission_rebate, "commissionDiscount": commission_discount,
+        **asdict(costs),
+    }
+
+
+def _backtest_amounts(row: Mapping[str, object]) -> dict[str, Decimal]:
+    if "totalTurnover" in row or "total_turnover" in row:
+        buy_turnover = dec(row.get("buyTurnover", row.get("buy_turnover", 0)))
+        sell_turnover = dec(row.get("sellTurnover", row.get("sell_turnover", 0)))
+        total_turnover = dec(row.get("totalTurnover", row.get("total_turnover", buy_turnover + sell_turnover)))
+        listed_commission = dec(row.get("listedCommission", row.get("listed_commission", 0)))
+        paid_commission = dec(row.get("paidCommission", row.get("paid_commission", 0)))
+        commission_rebate = dec(row.get(
+            "commissionRebate", row.get("commission_rebate", max(listed_commission - paid_commission, ZERO)),
+        ))
+        return {
+            "buyTurnover": buy_turnover, "sellTurnover": sell_turnover,
+            "totalTurnover": total_turnover, "listedCommission": listed_commission,
+            "paidCommission": paid_commission, "commissionRebate": commission_rebate,
+            "commissionDiscount": dec(row.get("commissionDiscount", row.get("commission_discount", "0.2"))),
+        }
+    if not all(key in row for key in ("entryPrice", "exitPrice", "quantity")):
+        return {
+            "buyTurnover": ZERO, "sellTurnover": ZERO, "totalTurnover": ZERO,
+            "listedCommission": ZERO, "paidCommission": ZERO, "commissionRebate": ZERO,
+            "commissionDiscount": Decimal("0.2"),
+        }
+    entry_price = dec(row["entryPrice"])
+    exit_price = dec(row["exitPrice"])
+    quantity = int(row["quantity"])
+    rate = dec(row.get("commissionRate", "0.001425"))
+    discount = dec(row.get("commissionDiscount", "0.2"))
+    minimum = dec(row.get("minimumCommission", "20"))
+    buy_turnover = money(entry_price * quantity)
+    sell_turnover = money(exit_price * quantity)
+    listed = money(
+        (max(buy_turnover * rate, minimum) if quantity else ZERO)
+        + (max(sell_turnover * rate, minimum) if quantity else ZERO)
+    )
+    paid = money(
+        (max(buy_turnover * rate * discount, minimum) if quantity else ZERO)
+        + (max(sell_turnover * rate * discount, minimum) if quantity else ZERO)
+    )
+    return {
+        "buyTurnover": buy_turnover, "sellTurnover": sell_turnover,
+        "totalTurnover": money(buy_turnover + sell_turnover),
+        "listedCommission": listed, "paidCommission": paid,
+        "commissionRebate": money(max(listed - paid, ZERO)), "commissionDiscount": discount,
+    }
+
+
+def _discount_label(discount: Decimal) -> str:
+    tenths = (discount * Decimal("10")).normalize()
+    return f"{tenths}折"
+
+
+def _has_backtest_amounts(row: Mapping[str, object]) -> bool:
+    return (
+        "totalTurnover" in row or "total_turnover" in row
+        or all(key in row for key in ("entryPrice", "exitPrice", "quantity"))
+    )
 
 
 def performance(trades: Iterable[Mapping[str, object]], initial_capital: object = "3000000") -> dict[str, object]:
     rows = list(trades)
+    transaction_amounts = [_backtest_amounts(row) for row in rows]
+    transaction_metrics_available = all(_has_backtest_amounts(row) for row in rows)
     pnls = [dec(row.get("netPnl", row.get("net_pnl", 0))) for row in rows]
     costs = [
         dec(row.get("cost", row.get("total", 0)))
@@ -257,10 +333,19 @@ def performance(trades: Iterable[Mapping[str, object]], initial_capital: object 
     payoff = (avg_win / abs(avg_loss)).quantize(Decimal("0.01")) if avg_loss else None
     net = money(sum(pnls, ZERO))
     initial = dec(initial_capital)
+    discount = transaction_amounts[0]["commissionDiscount"] if transaction_amounts else Decimal("0.2")
     return {
         "initialCapital": str(money(initial)), "endingCapital": str(money(initial + net)),
         "netPnl": str(net), "netReturnPct": str((net / initial * 100).quantize(Decimal("0.01")) if initial else ZERO),
         "grossPnl": str(money(sum(gross_pnls, ZERO))), "totalCost": str(money(sum(costs, ZERO))),
+        "buyTurnover": str(money(sum((item["buyTurnover"] for item in transaction_amounts), ZERO))),
+        "sellTurnover": str(money(sum((item["sellTurnover"] for item in transaction_amounts), ZERO))),
+        "totalTurnover": str(money(sum((item["totalTurnover"] for item in transaction_amounts), ZERO))),
+        "listedCommission": str(money(sum((item["listedCommission"] for item in transaction_amounts), ZERO))),
+        "paidCommission": str(money(sum((item["paidCommission"] for item in transaction_amounts), ZERO))),
+        "commissionRebate": str(money(sum((item["commissionRebate"] for item in transaction_amounts), ZERO))),
+        "commissionDiscount": str(discount), "commissionDiscountLabel": _discount_label(discount),
+        "transactionMetricsAvailable": transaction_metrics_available,
         "totalProfit": str(money(gross_profit)), "totalLoss": str(money(abs(gross_loss))),
         "tradeCount": total, "winCount": len(winners), "lossCount": len(losers),
         "flatCount": total - len(winners) - len(losers),
@@ -600,6 +685,12 @@ def run_backtest(
             "entryTime": fill_bar.timestamp, "entryPrice": str(money(entry)), "quantity": quantity,
             "exitTime": exit_bar.timestamp, "exitPrice": str(money(exit_price)), "exitReason": exit_reason,
             "grossPnl": str(result["grossPnl"]), "cost": str(result["total"]), "netPnl": str(result["netPnl"]),
+            "buyTurnover": str(result["buyTurnover"]), "sellTurnover": str(result["sellTurnover"]),
+            "totalTurnover": str(result["totalTurnover"]),
+            "listedCommission": str(result["listedCommission"]), "paidCommission": str(result["paidCommission"]),
+            "commissionRebate": str(result["commissionRebate"]),
+            "commissionRate": str(cfg["commissionRate"]), "commissionDiscount": str(cfg["commissionDiscount"]),
+            "minimumCommission": str(cfg["minimumCommission"]),
         })
         occupied.append((exit_bar.timestamp, symbol))
         traded_keys.add(day_key)

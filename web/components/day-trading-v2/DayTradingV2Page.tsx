@@ -33,6 +33,10 @@ function tone(value: string | number) {
   return parsed > 0 ? "gain" : parsed < 0 ? "loss" : "flat";
 }
 
+function transactionAmount(data: Performance, field: "totalTurnover" | "commissionRebate") {
+  return data.transactionMetricsAvailable ? `${field === "commissionRebate" ? "+" : ""}${number(data[field])}元` : "—";
+}
+
 function dateTime(value: string | null | undefined) {
   return value ? new Date(value).toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" }) : "—";
 }
@@ -41,7 +45,7 @@ function ModeBadge({ mode }: { mode: TradingMode }) {
   return <span className={`dt2-mode ${mode.toLowerCase()}`}>【{mode === "PAPER" ? "模擬交易" : mode === "LIVE" ? "真實交易" : "歷史回測"}】</span>;
 }
 
-function PerfCards({ data }: { data: Performance }) {
+function PerfCards({ data, showTransactionStats = false }: { data: Performance; showTransactionStats?: boolean }) {
   const winRate = data.tradeCount === 0 ? "—" : `${number(data.winRate, 1)}%`;
   return <div className="dt2-metric-grid compact">
     <article><span>淨損益</span><strong className={tone(data.netPnl)}>{signedMoney(data.netPnl)}</strong></article>
@@ -49,6 +53,8 @@ function PerfCards({ data }: { data: Performance }) {
     <article><span>虧損交易合計</span><strong className="loss">{lossMoney(data.totalLoss)}</strong></article>
     <article><span>勝率</span><strong>{winRate}</strong><small>{data.tradeCount === 0 ? "無已完成交易" : `${data.winCount}勝／${data.lossCount}敗／${data.flatCount}平${data.sampleSufficient ? "" : `｜樣本不足（${data.tradeCount}筆）`}`}</small></article>
     <article><span>總交易成本</span><strong>{number(data.totalCost)}元</strong><small>手續費、交易稅、滑價及其他成本</small></article>
+    {showTransactionStats && <article><span>總交易額度</span><strong>{transactionAmount(data, "totalTurnover")}</strong><small>{data.transactionMetricsAvailable ? `買進 ${number(data.buyTurnover)}元＋賣出 ${number(data.sellTurnover)}元` : "成交價或股數資料不足"}</small></article>}
+    {showTransactionStats && <article><span>手續費退水（{data.commissionDiscountLabel}）</span><strong className="gain">{transactionAmount(data, "commissionRebate")}</strong><small>{data.transactionMetricsAvailable ? `牌告 ${number(data.listedCommission)}元－實付 ${number(data.paidCommission)}元` : "成交價或股數資料不足"}</small></article>}
     <article><span>未扣成本損益</span><strong className={tone(data.grossPnl)}>{signedMoney(data.grossPnl)}</strong></article>
     <article><span>淨報酬率</span><strong className={tone(data.netReturnPct)}>{Number(data.netReturnPct) > 0 ? "+" : ""}{number(data.netReturnPct, 2)}%</strong></article>
     <article><span>交易筆數</span><strong>{data.tradeCount}筆</strong></article>
@@ -86,8 +92,8 @@ function BacktestPerformance({ job, robotById }: { job: Record<string, unknown>;
   if (summary) return <div className="dt2-backtest-performance">
     {strategyResults.length > 0 && <>
       <h3>五策略分項績效</h3>
-      <p className="dt2-data-warning">每列只統計該策略在共用300萬元組合中實際成交的交易；最後一列為完整組合總計。</p>
-      <div className="dt2-table backtest-performance"><table><thead><tr><th>機器人</th><th>勝率</th><th>勝／敗／平</th><th>獲利交易合計</th><th>虧損交易合計</th><th>總交易成本</th><th>未扣成本損益</th><th>淨損益</th><th>平均獲利</th><th>平均虧損</th><th>獲利因子</th></tr></thead><tbody>
+      <p className="dt2-data-warning">每列只統計該策略在共用300萬元組合中實際成交的交易；退水已反映在實付手續費與淨損益，不會再次加回獲利。</p>
+      <div className="dt2-table backtest-performance"><table><thead><tr><th>機器人</th><th>勝率</th><th>勝／敗／平</th><th>獲利交易合計</th><th>虧損交易合計</th><th>總交易成本</th><th>總交易額度</th><th>手續費退水</th><th>未扣成本損益</th><th>淨損益</th><th>平均獲利</th><th>平均虧損</th><th>獲利因子</th></tr></thead><tbody>
         {strategyResults.map(({ strategyId, performance }) => <tr key={strategyId}>
           <td><b>{robotById.get(strategyId) ?? strategyId}</b><small>{strategyId}</small></td>
           <td>{performance.tradeCount ? `${number(performance.winRate, 1)}%` : "—"}<small>{performance.tradeCount === 0 ? "無已完成交易" : performance.sampleSufficient ? "" : "樣本不足"}</small></td>
@@ -95,22 +101,24 @@ function BacktestPerformance({ job, robotById }: { job: Record<string, unknown>;
           <td className="gain">{signedMoney(performance.totalProfit)}</td>
           <td className="loss">{lossMoney(performance.totalLoss)}</td>
           <td>{number(performance.totalCost)}元</td>
+          <td>{transactionAmount(performance, "totalTurnover")}</td>
+          <td className="gain">{transactionAmount(performance, "commissionRebate")}<small>{performance.transactionMetricsAvailable ? performance.commissionDiscountLabel : "資料不足"}</small></td>
           <td className={tone(performance.grossPnl)}>{signedMoney(performance.grossPnl)}</td>
           <td className={tone(performance.netPnl)}>{signedMoney(performance.netPnl)}</td>
           <td className="gain">{signedMoney(performance.averageWin)}</td>
           <td className="loss">{signedMoney(performance.averageLoss)}</td>
           <td>{performance.profitFactor ?? "—"}</td>
         </tr>)}
-      </tbody><tfoot><tr><th>五策略組合總計</th><th>{summary.tradeCount ? `${number(summary.winRate, 1)}%` : "—"}</th><th>{summary.winCount}／{summary.lossCount}／{summary.flatCount}</th><th className="gain">{signedMoney(summary.totalProfit)}</th><th className="loss">{lossMoney(summary.totalLoss)}</th><th>{number(summary.totalCost)}元</th><th className={tone(summary.grossPnl)}>{signedMoney(summary.grossPnl)}</th><th className={tone(summary.netPnl)}>{signedMoney(summary.netPnl)}</th><th className="gain">{signedMoney(summary.averageWin)}</th><th className="loss">{signedMoney(summary.averageLoss)}</th><th>{summary.profitFactor ?? "—"}</th></tr></tfoot></table></div>
+      </tbody><tfoot><tr><th>五策略組合總計</th><th>{summary.tradeCount ? `${number(summary.winRate, 1)}%` : "—"}</th><th>{summary.winCount}／{summary.lossCount}／{summary.flatCount}</th><th className="gain">{signedMoney(summary.totalProfit)}</th><th className="loss">{lossMoney(summary.totalLoss)}</th><th>{number(summary.totalCost)}元</th><th>{transactionAmount(summary, "totalTurnover")}</th><th className="gain">{transactionAmount(summary, "commissionRebate")}<small>{summary.transactionMetricsAvailable ? summary.commissionDiscountLabel : "資料不足"}</small></th><th className={tone(summary.grossPnl)}>{signedMoney(summary.grossPnl)}</th><th className={tone(summary.netPnl)}>{signedMoney(summary.netPnl)}</th><th className="gain">{signedMoney(summary.averageWin)}</th><th className="loss">{signedMoney(summary.averageLoss)}</th><th>{summary.profitFactor ?? "—"}</th></tr></tfoot></table></div>
     </>}
     <h3 className={strategyResults.length ? "dt2-total-heading" : ""}>{strategyResults.length ? "五策略組合總計" : "回測績效統計"}</h3>
-    <PerfCards data={summary} />
+    <PerfCards data={summary} showTransactionStats />
   </div>;
 
   if (robotResults.length) return <div className="dt2-backtest-performance">
     <h3>五台機器人獨立績效</h3>
-    <p className="dt2-data-warning">每台機器人各自使用3,000,000元初始資金，績效不可直接加總。</p>
-    <div className="dt2-table backtest-performance"><table><thead><tr><th>機器人</th><th>勝率</th><th>勝／敗／平</th><th>獲利交易合計</th><th>虧損交易合計</th><th>總交易成本</th><th>淨損益</th><th>淨報酬率</th><th>期末資金</th></tr></thead><tbody>
+    <p className="dt2-data-warning">每台機器人各自使用3,000,000元初始資金，績效不可直接加總；退水已反映在實付手續費與淨損益。</p>
+    <div className="dt2-table backtest-performance"><table><thead><tr><th>機器人</th><th>勝率</th><th>勝／敗／平</th><th>獲利交易合計</th><th>虧損交易合計</th><th>總交易成本</th><th>總交易額度</th><th>手續費退水</th><th>淨損益</th><th>淨報酬率</th><th>期末資金</th></tr></thead><tbody>
       {robotResults.map(({ strategyId, performance }) => <tr key={strategyId}>
         <td><b>{robotById.get(strategyId) ?? strategyId}</b><small>{strategyId}</small></td>
         <td>{performance.tradeCount ? `${number(performance.winRate, 1)}%` : "—"}<small>{performance.tradeCount === 0 ? "無已完成交易" : performance.sampleSufficient ? "" : "樣本不足"}</small></td>
@@ -118,6 +126,8 @@ function BacktestPerformance({ job, robotById }: { job: Record<string, unknown>;
         <td className="gain">+{number(performance.totalProfit)}元</td>
         <td className="loss">{lossMoney(performance.totalLoss)}</td>
         <td>{number(performance.totalCost)}元</td>
+        <td>{transactionAmount(performance, "totalTurnover")}</td>
+        <td className="gain">{transactionAmount(performance, "commissionRebate")}<small>{performance.transactionMetricsAvailable ? performance.commissionDiscountLabel : "資料不足"}</small></td>
         <td className={tone(performance.netPnl)}>{signedMoney(performance.netPnl)}</td>
         <td className={tone(performance.netReturnPct)}>{Number(performance.netReturnPct) > 0 ? "+" : ""}{number(performance.netReturnPct, 2)}%</td>
         <td>{number(performance.endingCapital)}元</td>

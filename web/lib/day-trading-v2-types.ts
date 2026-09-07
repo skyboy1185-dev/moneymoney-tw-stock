@@ -5,6 +5,15 @@ export type Performance = {
   endingCapital: string;
   grossPnl: string;
   totalCost: string;
+  buyTurnover: string;
+  sellTurnover: string;
+  totalTurnover: string;
+  listedCommission: string;
+  paidCommission: string;
+  commissionRebate: string;
+  commissionDiscount: string;
+  commissionDiscountLabel: string;
+  transactionMetricsAvailable: boolean;
   totalProfit: string;
   totalLoss: string;
   netPnl: string;

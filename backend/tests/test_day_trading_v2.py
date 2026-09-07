@@ -44,6 +44,9 @@ def test_performance_without_trades_has_zero_totals_and_no_wins():
     assert result["totalProfit"] == "0.00"
     assert result["totalLoss"] == "0.00"
     assert result["totalCost"] == "0.00"
+    assert result["totalTurnover"] == "0.00"
+    assert result["commissionRebate"] == "0.00"
+    assert result["transactionMetricsAvailable"] is True
 
 
 def test_performance_can_be_split_by_strategy_and_reconciled_to_total():
@@ -74,6 +77,43 @@ def test_gross_and_net_pnl_include_all_costs():
     assert result["grossPnl"] == Decimal("2000.00")
     assert result["netPnl"] == result["grossPnl"] - result["total"]
     assert result["netPnl"] < result["grossPnl"]
+    assert result["buyTurnover"] == Decimal("100000.00")
+    assert result["sellTurnover"] == Decimal("102000.00")
+    assert result["totalTurnover"] == Decimal("202000.00")
+    assert result["listedCommission"] == Decimal("287.85")
+    assert result["paidCommission"] == Decimal("57.57")
+    assert result["commissionRebate"] == Decimal("230.28")
+
+
+def test_commission_rebate_respects_minimum_fee_and_does_not_change_net_pnl():
+    result = calculate_trade_result(
+        entry_price=10, exit_price=10, quantity=1,
+        commission_rate="0.001425", commission_discount="0.2",
+        minimum_commission=20, tax_rate=0, slippage_bps=0,
+    )
+    assert result["listedCommission"] == Decimal("40.00")
+    assert result["paidCommission"] == Decimal("40.00")
+    assert result["commissionRebate"] == Decimal("0.00")
+    assert result["netPnl"] == Decimal("-40.00")
+
+
+def test_performance_reconstructs_turnover_and_two_tenths_rebate_for_stored_backtest_trades():
+    result = performance([{
+        "entryPrice": "100", "exitPrice": "102", "quantity": 1000,
+        "grossPnl": "2000", "cost": "210.57", "netPnl": "1789.43",
+    }])
+    assert result["totalTurnover"] == "202000.00"
+    assert result["listedCommission"] == "287.85"
+    assert result["paidCommission"] == "57.57"
+    assert result["commissionRebate"] == "230.28"
+    assert result["commissionDiscountLabel"] == "2折"
+    assert result["transactionMetricsAvailable"] is True
+    assert result["netPnl"] == "1789.43"
+
+
+def test_performance_marks_transaction_metrics_unavailable_without_fill_details():
+    result = performance([{"grossPnl": "120", "cost": "20", "netPnl": "100"}])
+    assert result["transactionMetricsAvailable"] is False
 
 
 def test_commission_uses_two_tenths_discount_and_minimum():
@@ -193,6 +233,12 @@ def test_backtest_fills_on_next_bar_not_signal_price():
     assert trade["signalTime"] < trade["entryTime"]
     assert trade["marketRegime"] == "UNKNOWN"
     assert trade["marketRegimeVerified"] is False
+    assert Decimal(trade["totalTurnover"]) == (
+        Decimal(trade["entryPrice"]) + Decimal(trade["exitPrice"])
+    ) * trade["quantity"]
+    assert Decimal(trade["commissionRebate"]) >= 0
+    assert result["summary"]["totalTurnover"] == trade["totalTurnover"]
+    assert result["summary"]["commissionRebate"] == trade["commissionRebate"]
 
 
 def test_backtest_trade_keeps_verified_entry_market_regime():
@@ -213,6 +259,8 @@ def test_all_strategy_backtest_includes_five_strategy_summaries():
     )
     assert list(result["strategySummaries"]) == [item[0] for item in STRATEGIES]
     assert sum(item["tradeCount"] for item in result["strategySummaries"].values()) == result["summary"]["tradeCount"]
+    assert sum(Decimal(item["totalTurnover"]) for item in result["strategySummaries"].values()) == Decimal(result["summary"]["totalTurnover"])
+    assert sum(Decimal(item["commissionRebate"]) for item in result["strategySummaries"].values()) == Decimal(result["summary"]["commissionRebate"])
 
 
 def test_shared_portfolio_never_exceeds_three_million():
