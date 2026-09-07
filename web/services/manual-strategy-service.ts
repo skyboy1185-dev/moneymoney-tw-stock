@@ -23,6 +23,79 @@ type StrategySignalValues = {
   dailyVolumeShares: number;
 };
 
+export interface MultiMovingAverageUpSignal {
+  ma5: number;
+  ma10: number;
+  ma20: number;
+  ma5SlopePercent: number;
+  ma10SlopePercent: number;
+  ma20SlopePercent: number;
+  projectedMa5: number;
+  projectedMa10: number;
+  projectedMa20: number;
+  nextDayUpMinimumClose: number;
+  continuationBufferPercent: number;
+  matches: boolean;
+}
+
+const round = (value: number, digits = 4) => {
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
+};
+
+/**
+ * Confirm that MA5/10/20 are rising now and would still rise on the next
+ * session if the next close stayed at the latest known close. The projection
+ * is a transparent moving-average deduction calculation, not a price forecast.
+ */
+export function calculateMultiMovingAverageUpSignal(
+  candles: DailyPrice[],
+  asOfDate?: string | null,
+): MultiMovingAverageUpSignal | null {
+  const effective = asOfDate ? candles.filter((candle) => candle.date <= asOfDate) : candles;
+  if (effective.length < 21) return null;
+  if (effective.some((candle) => !Number.isFinite(candle.close) || candle.close <= 0)) return null;
+  const indicators = calculateIndicators(effective);
+  const current = indicators.at(-1);
+  const previous = indicators.at(-2);
+  const latestClose = effective.at(-1)?.close;
+  if (
+    latestClose == null || latestClose <= 0
+    || current?.ma5 == null || current.ma10 == null || current.ma20 == null
+    || previous?.ma5 == null || previous.ma10 == null || previous.ma20 == null
+  ) return null;
+
+  const periods = [5, 10, 20] as const;
+  const currentMas = [current.ma5, current.ma10, current.ma20] as const;
+  const previousMas = [previous.ma5, previous.ma10, previous.ma20] as const;
+  const outgoingCloses = periods.map((period) => effective[effective.length - period].close);
+  const slopes = currentMas.map((value, index) => round(((value - previousMas[index]) / previousMas[index]) * 100, 4));
+  const projected = currentMas.map((value, index) => round(
+    value + (latestClose - outgoingCloses[index]) / periods[index],
+    4,
+  ));
+  const nextDayUpMinimumClose = Math.max(...outgoingCloses);
+  const continuationBufferPercent = round(
+    ((latestClose - nextDayUpMinimumClose) / nextDayUpMinimumClose) * 100,
+    2,
+  );
+  return {
+    ma5: current.ma5,
+    ma10: current.ma10,
+    ma20: current.ma20,
+    ma5SlopePercent: slopes[0],
+    ma10SlopePercent: slopes[1],
+    ma20SlopePercent: slopes[2],
+    projectedMa5: projected[0],
+    projectedMa10: projected[1],
+    projectedMa20: projected[2],
+    nextDayUpMinimumClose: round(nextDayUpMinimumClose),
+    continuationBufferPercent,
+    matches: currentMas.every((value, index) => value > previousMas[index])
+      && outgoingCloses.every((outgoingClose) => latestClose > outgoingClose),
+  };
+}
+
 export interface KdBullishDivergenceResult {
   previousDate: string;
   currentDate: string;
@@ -161,6 +234,7 @@ export function estimateMacdBarsToPositive(values: Pick<StrategySignalValues,
 export function matchesManualStrategy(strategy: ManualStrategy, values: StrategySignalValues): boolean {
   if (strategy.deductionDirection) return false;
   if (strategy.signalMode === "kd-bullish-divergence" || strategy.signalMode === "kd-double-bullish-divergence") return false;
+  if (strategy.signalMode === "ma-multi-up") return false;
   if (strategy.signalMode === "kd-below") {
     const threshold = strategy.kdThreshold ?? 8;
     return values.currentK != null && values.currentD != null
@@ -186,9 +260,10 @@ export async function screenStocksByStrategy(strategyId: string): Promise<Manual
   const results = await Promise.all(stockCatalog.map(async (meta): Promise<ManualScreenRow | null> => {
     try {
       const stock = await buildOfficialStockPayload(meta, quotes.get(meta.symbol) ?? null);
-      const dailyLatest = stock.prices.at(-1);
-      const dailyPrevious = stock.prices.at(-2);
-      const candles = resampleCandles(stock.prices, strategy.timeframe);
+      const effectivePrices = stock.prices;
+      const dailyLatest = effectivePrices.at(-1);
+      const dailyPrevious = effectivePrices.at(-2);
+      const candles = resampleCandles(effectivePrices, strategy.timeframe);
       const indicators = calculateIndicators(candles);
       const kd = calculateKD(candles);
       const latest = candles.at(-1);
@@ -202,7 +277,11 @@ export async function screenStocksByStrategy(strategyId: string): Promise<Manual
         : strategy.signalMode === "kd-double-bullish-divergence"
           ? detectDoubleKdBullishDivergence(candles, kd, strategy.divergenceLookback ?? 45)
           : null;
+      const multiMaUp = strategy.signalMode === "ma-multi-up"
+        ? calculateMultiMovingAverageUpSignal(candles)
+        : null;
       if (!dailyLatest || !dailyPrevious || !latest) return null;
+      if (strategy.signalMode === "ma-multi-up" && !multiMaUp?.matches) return null;
       const deduction = strategy.deductionDirection
         ? calculateThreePeriodDeductionSignal(
           candles.map((candle) => candle.close),
@@ -221,6 +300,7 @@ export async function screenStocksByStrategy(strategyId: string): Promise<Manual
       if (kdThresholdStrategy && !kdPoint) return null;
       if (kdDivergenceStrategy && !divergence) return null;
       if (!strategy.deductionDirection && !kdThresholdStrategy && !kdDivergenceStrategy
+        && strategy.signalMode !== "ma-multi-up"
         && (!indicator || !previousIndicator || !kdPoint || !previousKdPoint)) return null;
       const signalValues = {
         twoPreviousHistogram: twoPreviousIndicator?.histogram ?? null,
@@ -233,6 +313,7 @@ export async function screenStocksByStrategy(strategyId: string): Promise<Manual
         dailyVolumeShares: dailyLatest.volume,
       };
       if (!strategy.deductionDirection && !kdDivergenceStrategy
+        && strategy.signalMode !== "ma-multi-up"
         && !matchesManualStrategy(strategy, signalValues)) return null;
       return {
         rank: 0, symbol: meta.symbol, name: meta.name, market: meta.market,
@@ -246,6 +327,18 @@ export async function screenStocksByStrategy(strategyId: string): Promise<Manual
         deductionAverage: deduction?.deductionAverage,
         deductionGapPercent: deduction?.deductionGapPercent,
         projectedMaValues: deduction?.projectedMaValues,
+        ma5: multiMaUp?.ma5,
+        ma10: multiMaUp?.ma10,
+        ma20: multiMaUp?.ma20,
+        ma5SlopePercent: multiMaUp?.ma5SlopePercent,
+        ma10SlopePercent: multiMaUp?.ma10SlopePercent,
+        ma20SlopePercent: multiMaUp?.ma20SlopePercent,
+        projectedMa5: multiMaUp?.projectedMa5,
+        projectedMa10: multiMaUp?.projectedMa10,
+        projectedMa20: multiMaUp?.projectedMa20,
+        nextDayUpMinimumClose: multiMaUp?.nextDayUpMinimumClose,
+        continuationBufferPercent: multiMaUp?.continuationBufferPercent,
+        signalStatus: stock.dataQuality?.status === "official_close" ? "confirmed" : "temporary",
         divergencePreviousDate: divergence?.previousDate,
         divergenceMiddleDate: divergence?.middleDate,
         divergencePreviousLow: divergence?.previousLow,
@@ -261,7 +354,11 @@ export async function screenStocksByStrategy(strategyId: string): Promise<Manual
     }
   }));
   return results.filter((row): row is ManualScreenRow => row !== null)
-    .sort((a, b) => strategy.deductionDirection
+    .sort((a, b) => strategy.signalMode === "ma-multi-up"
+      ? (b.continuationBufferPercent ?? -Infinity) - (a.continuationBufferPercent ?? -Infinity)
+        || Math.min(b.ma5SlopePercent ?? -Infinity, b.ma10SlopePercent ?? -Infinity, b.ma20SlopePercent ?? -Infinity)
+        - Math.min(a.ma5SlopePercent ?? -Infinity, a.ma10SlopePercent ?? -Infinity, a.ma20SlopePercent ?? -Infinity)
+      : strategy.deductionDirection
       ? Math.abs(b.deductionGapPercent ?? 0) - Math.abs(a.deductionGapPercent ?? 0)
       : strategy.signalMode === "kd-below"
         ? Math.max(a.k ?? Infinity, a.d ?? Infinity) - Math.max(b.k ?? Infinity, b.d ?? Infinity)

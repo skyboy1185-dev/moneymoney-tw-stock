@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   calculateThreePeriodDeductionSignal,
+  calculateMultiMovingAverageUpSignal,
   detectSingleKdBullishDivergence,
   detectDoubleKdBullishDivergence,
   estimateMacdBarsToPositive,
@@ -16,6 +17,19 @@ const dayMacdForecast = MANUAL_STRATEGIES.find((item) => item.id === "day-macd-f
 const dayMacdKdForecast = MANUAL_STRATEGIES.find((item) => item.id === "day-macd-kd-forecast")!;
 const dayKdBelow8 = MANUAL_STRATEGIES.find((item) => item.id === "day-kd-below-8")!;
 
+function candlesFromCloses(closes: number[]): DailyPrice[] {
+  return closes.map((close, index) => ({
+    symbol: "2330",
+    name: "台積電",
+    date: new Date(Date.UTC(2026, 0, index + 1)).toISOString().slice(0, 10),
+    open: close,
+    high: close,
+    low: close,
+    close,
+    volume: 1_000_000,
+  }));
+}
+
 describe("策略選股器嚴格訊號規則", () => {
   const matched = {
     twoPreviousHistogram: -0.03,
@@ -23,6 +37,68 @@ describe("策略選股器嚴格訊號規則", () => {
     previousK: 38, previousD: 40, currentK: 42, currentD: 41,
     dailyVolumeShares: 500_001,
   };
+
+  it("提供 5／10／20 日線同步上彎策略", () => {
+    expect(MANUAL_STRATEGIES.find((item) => item.id === "day-ma5-ma10-ma20-up")).toMatchObject({
+      timeframe: "day",
+      signalMode: "ma-multi-up",
+    });
+  });
+
+  it("三條均線今日向上且下一日扣抵推估仍向上時成立", () => {
+    const signal = calculateMultiMovingAverageUpSignal(candlesFromCloses(
+      Array.from({ length: 25 }, (_, index) => index + 1),
+    ));
+    expect(signal).not.toBeNull();
+    expect(signal?.matches).toBe(true);
+    expect(signal?.ma5SlopePercent).toBeGreaterThan(0);
+    expect(signal?.ma10SlopePercent).toBeGreaterThan(0);
+    expect(signal?.ma20SlopePercent).toBeGreaterThan(0);
+    expect(signal?.projectedMa5).toBeGreaterThan(signal?.ma5 ?? Infinity);
+    expect(signal?.projectedMa10).toBeGreaterThan(signal?.ma10 ?? Infinity);
+    expect(signal?.projectedMa20).toBeGreaterThan(signal?.ma20 ?? Infinity);
+    expect(signal?.nextDayUpMinimumClose).toBe(21);
+    expect(signal?.continuationBufferPercent).toBe(19.05);
+  });
+
+  it("任一均線今日未上彎時排除", () => {
+    const closes = Array.from({ length: 24 }, (_, index) => index + 1);
+    closes.push(20);
+    const signal = calculateMultiMovingAverageUpSignal(candlesFromCloses(closes));
+    expect(signal?.ma5SlopePercent).toBe(0);
+    expect(signal?.ma10SlopePercent).toBeGreaterThan(0);
+    expect(signal?.ma20SlopePercent).toBeGreaterThan(0);
+    expect(signal?.matches).toBe(false);
+  });
+
+  it("今日均線向上但下一日扣抵門檻不足時排除", () => {
+    const closes = Array.from({ length: 25 }, (_, index) => index + 1);
+    closes[19] = 10;
+    closes[20] = 30;
+    closes[24] = 30;
+    const signal = calculateMultiMovingAverageUpSignal(candlesFromCloses(closes));
+    expect(signal?.ma5SlopePercent).toBeGreaterThan(0);
+    expect(signal?.projectedMa5).toBe(signal?.ma5);
+    expect(signal?.nextDayUpMinimumClose).toBe(30);
+    expect(signal?.continuationBufferPercent).toBe(0);
+    expect(signal?.matches).toBe(false);
+  });
+
+  it("少於 21 根日 K 不計算，且 as-of 不使用未來資料", () => {
+    expect(calculateMultiMovingAverageUpSignal(candlesFromCloses(Array.from({ length: 20 }, (_, index) => index + 1))))
+      .toBeNull();
+    const invalid = candlesFromCloses(Array.from({ length: 25 }, (_, index) => index + 1));
+    invalid[10].close = Number.NaN;
+    expect(calculateMultiMovingAverageUpSignal(invalid)).toBeNull();
+    const base = candlesFromCloses(Array.from({ length: 25 }, (_, index) => index + 1));
+    const asOfDate = base.at(-1)!.date;
+    const future = candlesFromCloses([9_999, 1, 9_999]).map((candle, index) => ({
+      ...candle,
+      date: new Date(Date.UTC(2026, 1, index + 1)).toISOString().slice(0, 10),
+    }));
+    expect(calculateMultiMovingAverageUpSignal([...base, ...future], asOfDate))
+      .toEqual(calculateMultiMovingAverageUpSignal(base));
+  });
 
   it("OSC 必須嚴格由負轉正，零值不算翻紅", () => {
     expect(matchesManualStrategy(dayMacd, matched)).toBe(true);

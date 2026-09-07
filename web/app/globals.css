@@ -1193,6 +1193,8 @@ footer span { color: #566177; }
 .manual-signal-badge.kd-bullish-divergence { color: #ff9fb4; background: rgba(211,91,120,.13); }
 .manual-signal-badge.kd-double-bullish-divergence { color: #ffcf8d; background: rgba(218,142,54,.14); }
 .manual-signal-badge.deduction-low { color: #ff7c83; background: rgba(255,92,101,.11); }
+.manual-signal-badge.ma-multi-up { color: #ff8f98; background: rgba(255,92,101,.12); }
+.manual-signal-badge.ma-multi-up.temporary { color: #f2c96d; background: rgba(242,201,109,.12); }
 .manual-signal-badge.deduction-high { color: #60dda2; background: rgba(35,200,117,.1); }
 
 /* AI 決策中心 */

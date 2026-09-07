@@ -1,4 +1,4 @@
-import type { DailyPrice, Market, MacdSignalType, StockPayload, StockTheme } from "./types";
+import type { DailyPrice, Market, StockPayload, StockTheme } from "./types";
 
 export type Timeframe = "day" | "week" | "month";
 export type MarketDirection = "strong_bull" | "bull" | "sideways" | "bear" | "strong_bear" | "transition";
@@ -6,7 +6,7 @@ export type MarketRegime = "wave_up" | "range" | "wave_down" | "transition";
 export type SignalStatus = "temporary" | "confirmed" | "cancelled";
 export type ManualMacdSignalMode = "confirmed" | "forecast";
 export type ManualDeductionSignalMode = "deduction-low" | "deduction-high";
-export type ManualSignalMode = ManualMacdSignalMode | ManualDeductionSignalMode | "kd-below" | "kd-bullish-divergence" | "kd-double-bullish-divergence";
+export type ManualSignalMode = ManualMacdSignalMode | ManualDeductionSignalMode | "kd-below" | "kd-bullish-divergence" | "kd-double-bullish-divergence" | "ma-multi-up";
 
 export interface KDPoint {
   date: string;
@@ -47,6 +47,18 @@ export interface ManualScreenRow {
   deductionAverage?: number;
   deductionGapPercent?: number;
   projectedMaValues?: number[];
+  ma5?: number;
+  ma10?: number;
+  ma20?: number;
+  ma5SlopePercent?: number;
+  ma10SlopePercent?: number;
+  ma20SlopePercent?: number;
+  projectedMa5?: number;
+  projectedMa10?: number;
+  projectedMa20?: number;
+  nextDayUpMinimumClose?: number;
+  continuationBufferPercent?: number;
+  signalStatus?: "temporary" | "confirmed";
   divergencePreviousDate?: string;
   divergenceMiddleDate?: string;
   divergencePreviousLow?: number;

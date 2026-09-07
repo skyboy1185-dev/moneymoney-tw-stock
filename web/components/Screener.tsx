@@ -9,6 +9,7 @@ import {
   DIVERGENCE_MANUAL_STRATEGIES,
   FORECAST_MANUAL_STRATEGIES,
   KD_MANUAL_STRATEGIES,
+  MA_TREND_MANUAL_STRATEGIES,
   MANUAL_STRATEGIES,
 } from "@/lib/manual-strategies";
 import type { ManualScreenRow, ManualStrategy } from "@/lib/market-types";
@@ -29,6 +30,7 @@ export function Screener({ onSelectStock }: { onSelectStock: (symbol: string) =>
   const isDivergenceStrategy = selectedStrategy.signalMode === "kd-bullish-divergence"
     || selectedStrategy.signalMode === "kd-double-bullish-divergence";
   const isDoubleDivergenceStrategy = selectedStrategy.signalMode === "kd-double-bullish-divergence";
+  const isMultiMaUpStrategy = selectedStrategy.signalMode === "ma-multi-up";
 
   const run = useCallback(async (strategyId: string) => {
     setSelected(strategyId);
@@ -66,8 +68,16 @@ export function Screener({ onSelectStock }: { onSelectStock: (symbol: string) =>
     ["rank", "排名"], ["symbol", "股票代號"], ["name", "股票名稱"], ["market", "市場別"],
     ["price", "最新價格"], ["changePercent", "漲跌幅"], ["volume", "成交量"], ["timeframe", "K 線週期"],
   ];
-  const columns: [SortKey, string][] = isDeductionStrategy
+  const columns: [SortKey, string][] = isMultiMaUpStrategy
     ? [...commonColumns,
+      ["ma5", "MA5"], ["ma10", "MA10"], ["ma20", "MA20"],
+      ["ma5SlopePercent", "MA5 今日斜率"], ["ma10SlopePercent", "MA10 今日斜率"],
+      ["ma20SlopePercent", "MA20 今日斜率"], ["projectedMa5", "明日推估 MA5"],
+      ["projectedMa10", "明日推估 MA10"], ["projectedMa20", "明日推估 MA20"],
+      ["nextDayUpMinimumClose", "明日續彎最低價"], ["continuationBufferPercent", "安全距離"],
+      ["signalStatus", "訊號狀態"], ["signalDate", "訊號日期"]]
+    : isDeductionStrategy
+      ? [...commonColumns,
       ["signalMode", "扣抵型態"], ["maPeriod", "均線週期"], ["deductionValues", "未來 3 期扣抵值"],
       ["deductionAverage", "扣抵均值"], ["deductionGapPercent", "現價與均值差"],
       ["projectedMaValues", "推估 MA 走勢"], ["signalDate", "訊號日期"]]
@@ -99,6 +109,8 @@ export function Screener({ onSelectStock }: { onSelectStock: (symbol: string) =>
                   ? `股價創低、KD 未創低 · 回看 ${strategy.divergenceLookback ?? 30} 根`
                 : strategy.signalMode === "kd-double-bullish-divergence"
                   ? `三個價格低點下移、KD 三個低點墊高 · 回看 ${strategy.divergenceLookback ?? 45} 根`
+                : strategy.signalMode === "ma-multi-up"
+                  ? "MA5／MA10／MA20 今日與明日推估同步向上"
                 : `${strategy.signalMode === "forecast" ? "預測即將翻紅" : "MACD 已翻紅"}${strategy.requiresKD ? " · KD 低檔金叉" : ""}`}</small></div>
           </button>
         ))}
@@ -119,9 +131,12 @@ export function Screener({ onSelectStock }: { onSelectStock: (symbol: string) =>
         {renderStrategyGroup("預測即將翻紅", "新增 6 種提前觀察策略", FORECAST_MANUAL_STRATEGIES)}
         {renderStrategyGroup("KD 極低檔", "日／週／月 K、D 同時嚴格低於 8，共 3 種策略", KD_MANUAL_STRATEGIES)}
         {renderStrategyGroup("低檔背離", "日 KD 一次背離與二度背離，共 2 種策略", DIVERGENCE_MANUAL_STRATEGIES)}
+        {renderStrategyGroup("均線同步上彎", "MA5、MA10、MA20 今日向上，並推估下一交易日仍向上", MA_TREND_MANUAL_STRATEGIES)}
         {renderStrategyGroup("均線扣抵轉折", "日／週／月各有扣三低與扣三高，共 6 種模型", DEDUCTION_MANUAL_STRATEGIES)}
         <div className="strategy-definition">
-          <strong>目前策略判斷：</strong>{selectedStrategy.deductionDirection === "low"
+          <strong>目前策略判斷：</strong>{isMultiMaUpStrategy
+            ? "MA5、MA10、MA20 今日都必須嚴格高於昨日；再假設下一交易日收盤價維持目前價格，三條均線推估值也都必須繼續向上。"
+            : selectedStrategy.deductionDirection === "low"
             ? "未來三根將從 20 期均線扣除的收盤價，全都嚴格低於目前收盤價；若後續價格維持現價附近，均線具上彎條件。"
             : selectedStrategy.deductionDirection === "high"
               ? "未來三根將從 20 期均線扣除的收盤價，全都嚴格高於目前收盤價；若後續價格維持現價附近，均線具下彎條件。"
@@ -135,7 +150,9 @@ export function Screener({ onSelectStock }: { onSelectStock: (symbol: string) =>
                   ? "Histogram 仍在零軸下，但最近三根連續收斂，且依最近兩段改善速度推估 2 根 K 內翻紅。這是預測訊號，不代表已正式翻紅。"
                   : "MACD 前一根 Histogram < 0、當前 Histogram > 0，屬於已確認翻紅訊號。"}
           {selectedStrategy.requiresKD ? " 同時要求 KD 前 K < D、當前 K > D，且當前 K < 50。" : ""}
-          {isDeductionStrategy
+          {isMultiMaUpStrategy
+            ? " 這是均線扣抵條件推估，代表均線結構可能延續向上，不代表今天或明天股價一定上漲。"
+            : isDeductionStrategy
             ? " 結果會列出三個扣抵值與推估均線，這是均線結構篩選，不保證價格一定上漲或下跌。"
             : isKdThresholdStrategy
               ? " KD 極低檔代表動能超賣，不代表價格已止跌或一定反彈。"
@@ -152,9 +169,11 @@ export function Screener({ onSelectStock }: { onSelectStock: (symbol: string) =>
           <div><h2>選股結果</h2><span>{loading ? "策略計算中…" : `符合 ${rows.length} 檔股票`}</span></div>
           <button className="button primary" onClick={() => void run(selected)} disabled={loading}>{loading ? <span className="spinner small" /> : <Search size={15} />}開始篩選</button>
         </div>
-        {loading ? <div className="table-loading"><span className="spinner" /><span>{isDeductionStrategy ? "正在重採樣 K 線並計算未來三期扣抵值…" : isDivergenceStrategy ? "正在比對近期價格低點與日 KD 低點…" : isKdThresholdStrategy ? `正在計算${timeframeLabel[selectedStrategy.timeframe]} KD…` : "正在重採樣 K 線並計算 MACD、KD…"}</span></div>
+        {loading ? <div className="table-loading"><span className="spinner" /><span>{isMultiMaUpStrategy ? "正在計算 MA5、MA10、MA20 今日斜率與下一交易日扣抵條件…" : isDeductionStrategy ? "正在重採樣 K 線並計算未來三期扣抵值…" : isDivergenceStrategy ? "正在比對近期價格低點與日 KD 低點…" : isKdThresholdStrategy ? `正在計算${timeframeLabel[selectedStrategy.timeframe]} KD…` : "正在重採樣 K 線並計算 MACD、KD…"}</span></div>
           : error ? <div className="table-empty"><Search size={27} /><h3>策略執行失敗</h3><p>{error}</p></div>
-          : !rows.length ? <div className="table-empty"><Sparkles size={27} /><h3>目前沒有符合條件的股票</h3><p>{isDeductionStrategy
+          : !rows.length ? <div className="table-empty"><Sparkles size={27} /><h3>目前沒有符合條件的股票</h3><p>{isMultiMaUpStrategy
+            ? "目前沒有 MA5、MA10、MA20 今日同步向上，且下一交易日推估仍能續彎的標的。"
+            : isDeductionStrategy
             ? `目前沒有未來三期扣抵值全數${selectedStrategy.deductionDirection === "low" ? "低於" : "高於"}現價的標的。`
             : selectedStrategy.signalMode === "kd-below" ? `目前沒有${timeframeLabel[selectedStrategy.timeframe]} K、D 同時低於 ${selectedStrategy.kdThreshold ?? 8} 的標的。`
             : selectedStrategy.signalMode === "kd-bullish-divergence" ? "目前沒有最近 3 根出現一次日 KD 低檔背離的標的。"
@@ -170,7 +189,17 @@ export function Screener({ onSelectStock }: { onSelectStock: (symbol: string) =>
                   <td><strong>{row.name}</strong></td><td>{row.market}</td><td>{safeNumber(row.price)}</td>
                   <td className={valueClass(row.changePercent)}>{formatPercent(row.changePercent)}</td>
                   <td>{formatVolume(row.volume)}</td><td>{timeframeLabel[row.timeframe]}</td>
-                  {isDeductionStrategy ? <>
+                  {isMultiMaUpStrategy ? <>
+                    <td>{safeNumber(row.ma5, 2)}</td><td>{safeNumber(row.ma10, 2)}</td><td>{safeNumber(row.ma20, 2)}</td>
+                    <td className="text-up">{formatPercent(row.ma5SlopePercent)}</td>
+                    <td className="text-up">{formatPercent(row.ma10SlopePercent)}</td>
+                    <td className="text-up">{formatPercent(row.ma20SlopePercent)}</td>
+                    <td>{safeNumber(row.projectedMa5, 2)}</td><td>{safeNumber(row.projectedMa10, 2)}</td><td>{safeNumber(row.projectedMa20, 2)}</td>
+                    <td>{safeNumber(row.nextDayUpMinimumClose, 2)}</td>
+                    <td className={valueClass(row.continuationBufferPercent ?? 0)}>{formatPercent(row.continuationBufferPercent)}</td>
+                    <td><span className={`manual-signal-badge ma-multi-up ${row.signalStatus ?? "temporary"}`}>{row.signalStatus === "confirmed" ? "收盤確認" : "盤中暫定"}</span></td>
+                    <td>{row.signalDate}</td>
+                  </> : isDeductionStrategy ? <>
                     <td><span className={`manual-signal-badge ${row.signalMode}`}>{row.signalMode === "deduction-low" ? "扣三低" : "扣三高"}</span></td>
                     <td>MA {row.maPeriod ?? 20}</td>
                     <td>{row.deductionValues?.map((value) => safeNumber(value, 2)).join("／") ?? "—"}</td>

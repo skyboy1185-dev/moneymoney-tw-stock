@@ -12,6 +12,7 @@ export const MANUAL_STRATEGIES: ManualStrategy[] = [
   { id: "month-kd-below-8", name: "月 K、D 同時低於 8", timeframe: "month", volumeThreshold: 0, requiresKD: false, signalMode: "kd-below", kdThreshold: 8 },
   { id: "day-kd-single-bullish-divergence", name: "日 KD 一次低檔背離", timeframe: "day", volumeThreshold: 0, requiresKD: false, signalMode: "kd-bullish-divergence", divergenceLookback: 30 },
   { id: "day-kd-double-bullish-divergence", name: "日 KD 二度低檔背離", timeframe: "day", volumeThreshold: 0, requiresKD: false, signalMode: "kd-double-bullish-divergence", divergenceLookback: 45 },
+  { id: "day-ma5-ma10-ma20-up", name: "5／10／20 日線同步上彎", timeframe: "day", volumeThreshold: 0, requiresKD: false, signalMode: "ma-multi-up" },
   { id: "day-macd-forecast", name: "日 K MACD 預測即將翻紅，成交量大於 500 張", timeframe: "day", volumeThreshold: 500_000, requiresKD: false, signalMode: "forecast" },
   { id: "week-macd-forecast", name: "週 K MACD 預測即將翻紅，成交量大於 3,500 張", timeframe: "week", volumeThreshold: 3_500_000, requiresKD: false, signalMode: "forecast" },
   { id: "month-macd-forecast", name: "月 K MACD 預測即將翻紅，成交量大於 10,000 張", timeframe: "month", volumeThreshold: 10_000_000, requiresKD: false, signalMode: "forecast" },
@@ -31,3 +32,4 @@ export const FORECAST_MANUAL_STRATEGIES = MANUAL_STRATEGIES.filter((strategy) =>
 export const DEDUCTION_MANUAL_STRATEGIES = MANUAL_STRATEGIES.filter((strategy) => strategy.deductionDirection != null);
 export const KD_MANUAL_STRATEGIES = MANUAL_STRATEGIES.filter((strategy) => strategy.signalMode === "kd-below");
 export const DIVERGENCE_MANUAL_STRATEGIES = MANUAL_STRATEGIES.filter((strategy) => strategy.signalMode === "kd-bullish-divergence" || strategy.signalMode === "kd-double-bullish-divergence");
+export const MA_TREND_MANUAL_STRATEGIES = MANUAL_STRATEGIES.filter((strategy) => strategy.signalMode === "ma-multi-up");
