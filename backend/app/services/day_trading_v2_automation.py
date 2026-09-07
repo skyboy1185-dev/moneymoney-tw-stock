@@ -201,8 +201,10 @@ class DayTradingV2Coordinator:
                             scheduled_at=scheduled, status="SKIPPED_LATE" if late else "COMPLETED",
                             executed_at=current, payload_json="{}",
                         ))
-                        if not late:
-                            self._execute_event(db, user_id, runtime, definition.event_type, config, current)
+                        self._execute_event(
+                            db, user_id, runtime, definition.event_type, config, current,
+                            emit_notification=not late,
+                        )
                     future = next(((definition, scheduled) for definition, scheduled in event_schedule(local.date(), config) if scheduled > current), None)
                     runtime.next_event_type = future[0].event_type if future else ""
                     runtime.next_event_at = future[1] if future else None
@@ -234,7 +236,10 @@ class DayTradingV2Coordinator:
                         db.commit()
         return processed
 
-    def _execute_event(self, db, user_id: str, runtime: DayTradeV2RuntimeState, event_type: str, config: dict[str, object], now: datetime) -> None:
+    def _execute_event(
+        self, db, user_id: str, runtime: DayTradeV2RuntimeState, event_type: str,
+        config: dict[str, object], now: datetime, *, emit_notification: bool = True,
+    ) -> None:
         from ..routers.day_trading_v2 import _dashboard, _notification
 
         if event_type == "DAILY_RESET":
@@ -272,7 +277,7 @@ class DayTradingV2Coordinator:
         elif event_type == "DAILY_REPORT":
             runtime.status = "COMPLETED"
             runtime.closed_at = now
-        if event_type not in {"PREOPEN_READY", "OPENING_RANGE_READY", "HOURLY_1000", "HOURLY_1100", "HOURLY_1200", "DAILY_REPORT"}:
+        if not emit_notification or event_type not in {"PREOPEN_READY", "OPENING_RANGE_READY", "HOURLY_1000", "HOURLY_1100", "HOURLY_1200", "DAILY_REPORT"}:
             return
         dashboard = _dashboard(db, user_id)
         candidates = list(db.scalars(select(DayTradeV2CandidateState).where(

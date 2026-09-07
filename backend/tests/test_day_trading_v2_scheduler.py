@@ -161,3 +161,35 @@ def test_coordinator_persists_heartbeat_schedule_notifications_and_starts_scanne
         assert runtime.heartbeat_at is not None
         assert "PREOPEN_READY" in event_types
         assert scan_calls == [taipei_time("09:00:00")]
+
+
+def test_late_post_close_boot_completes_runtime_without_replaying_notifications(monkeypatch):
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    with sessions() as db:
+        db.add(DayTradeV2Setting(user_id="late-boot-user", trade_mode="PAPER", live_enabled=False, config_json="{}"))
+        db.commit()
+
+    class EmptyProvider:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def fetch(self):
+            return ()
+
+    monkeypatch.setattr(automation, "SessionLocal", sessions)
+    monkeypatch.setattr(automation, "OfficialPopularStockProvider", EmptyProvider)
+    coordinator = automation.DayTradingV2Coordinator()
+    coordinator.run_cycle(taipei_time("14:00:00"))
+
+    with sessions() as db:
+        runtime = db.scalar(select(DayTradeV2RuntimeState).where(DayTradeV2RuntimeState.user_id == "late-boot-user"))
+        event_types = set(db.scalars(select(DayTradeV2Notification.event_type)).all())
+        assert runtime is not None
+        assert runtime.status == "COMPLETED"
+        assert runtime.phase == "COMPLETED"
+        assert "PREOPEN_READY" not in event_types
+        assert "DAILY_REPORT" not in event_types
