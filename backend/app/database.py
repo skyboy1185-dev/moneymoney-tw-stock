@@ -301,8 +301,19 @@ def create_tables() -> None:
                 "ALTER TABLE day_trade_v2_signals ADD COLUMN IF NOT EXISTS controller_decision_id VARCHAR(80) NOT NULL DEFAULT ''",
                 "ALTER TABLE day_trade_v2_orders ADD COLUMN IF NOT EXISTS controller_decision_id VARCHAR(80) NOT NULL DEFAULT ''",
                 "ALTER TABLE day_trade_v2_challenger_runs ADD COLUMN IF NOT EXISTS last_counted_date DATE",
+                "ALTER TABLE day_trade_v2_backtest_jobs ADD COLUMN IF NOT EXISTS dataset_id VARCHAR(80) NOT NULL DEFAULT ''",
+                "ALTER TABLE day_trade_v2_backtest_jobs ADD COLUMN IF NOT EXISTS progress_pct NUMERIC(12,6) NOT NULL DEFAULT 0",
+                "ALTER TABLE day_trade_v2_backtest_jobs ADD COLUMN IF NOT EXISTS progress_json TEXT NOT NULL DEFAULT '{}'",
+                "ALTER TABLE day_trade_v2_backtest_jobs ADD COLUMN IF NOT EXISTS universe_json TEXT NOT NULL DEFAULT '[]'",
+                "ALTER TABLE day_trade_v2_backtest_jobs ADD COLUMN IF NOT EXISTS lease_owner VARCHAR(120) NOT NULL DEFAULT ''",
+                "ALTER TABLE day_trade_v2_backtest_jobs ADD COLUMN IF NOT EXISTS lease_until TIMESTAMPTZ",
+                "ALTER TABLE day_trade_v2_backtest_jobs ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0",
             ):
                 connection.execute(text(statement))
+            connection.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_dtv2_backtest_status "
+                "ON day_trade_v2_backtest_jobs(status, created_at)"
+            ))
     # Database synchronization can merge two independently created portfolio
     # batches. Quarantine overflow before enforcing one open row per symbol.
     from .services.long_term_selection import repair_long_term_position_overflow

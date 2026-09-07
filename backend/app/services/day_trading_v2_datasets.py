@@ -27,6 +27,9 @@ class DatasetValidationError(ValueError):
 
 def data_directory() -> Path | None:
     raw = os.getenv("DTV2_OPTIMIZATION_DATA_DIR", "").strip()
+    if not raw:
+        from ..config import get_settings
+        raw = get_settings().dtv2_optimization_data_dir.strip()
     return Path(raw).resolve() if raw else None
 
 

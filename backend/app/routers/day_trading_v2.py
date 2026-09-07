@@ -39,6 +39,7 @@ from ..services.day_trading_v2_controller import (
 from ..services.day_trading_v2_datasets import (
     MAX_UPLOAD_BYTES, DatasetValidationError, load_dataset, parse_dataset, persist_dataset, quality_json,
 )
+from ..services.day_trading_v2_backtests import MINUTE_DATA_START, execute_backtest
 from ..services.day_trading_v2_health import (
     active_version, handle_strategy_runtime_error, health_for_strategy, run_health_diagnosis,
 )
@@ -443,6 +444,23 @@ def _dashboard(db: Session, user_id: str) -> dict[str, object]:
     ).order_by(DayTradeV2SkipStat.occurrence_count.desc()).limit(30)).all())
     runtime_halted = runtime_data["status"] in {"ALERT", "STOPPED", "EMERGENCY_STOP", "RISK_HALTED"}
     system_status = "HALTED" if runtime_halted or any(robot.status == "EMERGENCY_STOP" for robot in robots) else risk_status(realized, config)
+    latest_dataset = db.scalar(select(DayTradeV2OptimizationDataset).where(
+        DayTradeV2OptimizationDataset.user_id == user_id,
+        DayTradeV2OptimizationDataset.quality_status.in_(("READY", "BACKTEST_READY")),
+    ).order_by(DayTradeV2OptimizationDataset.created_at.desc()))
+    from ..config import get_settings
+    application_settings = get_settings()
+    automatic_history_ready = bool(
+        application_settings.fugle_marketdata_api_key and application_settings.dtv2_optimization_data_dir.strip()
+    )
+    history_source = "Fugle歷史1分鐘行情" if automatic_history_ready else (
+        f"CSV／Parquet：{latest_dataset.name}" if latest_dataset else None
+    )
+    history_message = (
+        "回測中心可自動準備1分鐘行情，也可直接上傳CSV／Parquet。"
+        if automatic_history_ready else
+        "Fugle自動分鐘行情尚未設定；仍可在回測中心上傳CSV／Parquet。"
+    )
     robot_items = []
     for robot in sorted(robots, key=lambda item: item.id or 0):
         robot_trades = [row for row in all_trades if row.strategy_id == robot.strategy_id]
@@ -461,7 +479,10 @@ def _dashboard(db: Session, user_id: str) -> dict[str, object]:
     return {
         "systemName": "超強AI當沖系統", "mode": mode, "systemStatus": system_status,
         "liveTrading": {"available": False, "enabled": False, "broker": None, "reason": "尚未設定並驗證券商API"},
-        "marketData": {"realtime": "TWSE MIS", "historicalMinute": None, "backtestReady": False, "message": "尚未設定合格的歷史分鐘行情來源"},
+        "marketData": {
+            "realtime": "TWSE MIS", "historicalMinute": history_source,
+            "backtestReady": automatic_history_ready or latest_dataset is not None, "message": history_message,
+        },
         "config": config, "today": today_perf, "month": month_perf, "all": all_perf,
         "realizedPnl": str(money(realized)), "unrealizedPnl": str(money(unrealized)),
         "netPnl": str(money(realized + unrealized)), "usedCapital": str(money(used)),
@@ -1678,27 +1699,68 @@ def rollback_strategy_version(
 
 
 class BacktestBody(BaseModel):
-    backtest_mode: str = "PORTFOLIO"
+    backtest_mode: str = Field(default="PORTFOLIO", pattern="^(PORTFOLIO|INDIVIDUAL)$")
     strategy_id: str = "ALL"
     start_date: date
     end_date: date
     dataset_id: str | None = None
     datasets: dict[str, list[dict[str, object]]] | None = None
+    data_source: str = Field(default="AUTO_FUGLE", pattern="^(AUTO_FUGLE|UPLOADED_DATASET|REQUEST_DATASET)$")
+    universe_preset: str = Field(default="TOP_LIQUID_100", pattern="^(TOP_LIQUID_100|CUSTOM)$")
+    symbols: list[str] = Field(default_factory=list, max_length=200)
 
 
-@router.post("/backtests")
+def _backtest_job_dict(row: DayTradeV2BacktestJob) -> dict[str, object]:
+    return {
+        "id": row.id, "mode": row.backtest_mode, "strategyId": row.strategy_id,
+        "startDate": row.start_date, "endDate": row.end_date, "status": row.status,
+        "dataSource": row.data_source, "dataPrecision": row.data_precision,
+        "datasetId": row.dataset_id, "progressPct": str(row.progress_pct),
+        "progress": _json(row.progress_json, {}), "universe": _json(row.universe_json, []),
+        "result": _json(row.result_json, {}), "error": row.error_message,
+        "createdAt": row.created_at, "completedAt": row.completed_at,
+    }
+
+
+@router.post("/backtests", status_code=202)
 def create_backtest(body: BacktestBody, user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -> dict[str, object]:
     if body.end_date < body.start_date:
         raise HTTPException(422, "結束日期不可早於開始日期")
+    if body.end_date > datetime.now(TAIPEI).date():
+        raise HTTPException(422, "回測結束日期不可晚於今天")
+    if body.strategy_id != "ALL" and body.strategy_id not in {item[0] for item in STRATEGIES}:
+        raise HTTPException(422, "未知的回測策略")
     job_id = str(uuid4())
+    if not body.dataset_id and not body.datasets and body.data_source == "AUTO_FUGLE":
+        if body.start_date < MINUTE_DATA_START:
+            raise HTTPException(422, f"Fugle 1分鐘歷史行情從{MINUTE_DATA_START.isoformat()}開始提供，請調整開始日期。")
+        from ..config import get_settings
+        if len(body.symbols) > get_settings().dtv2_backtest_max_symbols:
+            raise HTTPException(422, f"自訂股票池最多{get_settings().dtv2_backtest_max_symbols}檔")
+        job = DayTradeV2BacktestJob(
+            id=job_id, user_id=user_id, backtest_mode=body.backtest_mode, strategy_id=body.strategy_id,
+            start_date=body.start_date, end_date=body.end_date, status="QUEUED", data_source="FUGLE_AUTO",
+            data_precision="1_MINUTE", dataset_id="", progress_pct=Decimal(0),
+            progress_json=json.dumps({"stage": "QUEUED", "message": "等待準備Fugle 1分鐘行情"}, ensure_ascii=False),
+            universe_json="[]", request_json=body.model_dump_json(exclude={"datasets"}), result_json="{}",
+        )
+        db.add(job)
+        _audit(db, user_id, "BACKTEST_QUEUED", "BACKTEST", {
+            "dataSource": "FUGLE_AUTO", "universePreset": body.universe_preset,
+            "symbolCount": len(body.symbols),
+        }, job_id)
+        db.commit()
+        db.refresh(job)
+        return _backtest_job_dict(job)
     request_datasets = body.datasets
     dataset_source = "REQUEST_DATASET"
+    loaded_regimes: dict[datetime, str] = {}
     if body.dataset_id:
         dataset_row = db.get(DayTradeV2OptimizationDataset, body.dataset_id)
         if dataset_row is None or dataset_row.user_id != user_id:
             raise HTTPException(404, "找不到指定的分鐘資料集")
         try:
-            loaded, _loaded_sectors, _regimes, _quality = load_dataset(
+            loaded, _loaded_sectors, loaded_regimes, _quality = load_dataset(
                 dataset_row.storage_path, dataset_row.checksum, dataset_row.data_format,
             )
         except DatasetValidationError as exc:
@@ -1732,33 +1794,40 @@ def create_backtest(body: BacktestBody, user_id: str = Depends(_user_id), db: Se
                 ) for row in rows]
         except (KeyError, TypeError, ValueError) as exc:
             raise HTTPException(422, f"分鐘行情格式錯誤：{exc}") from exc
-        if body.backtest_mode == "INDIVIDUAL" and body.strategy_id == "ALL":
-            individual = {
-                strategy: run_backtest(parsed, strategy_id=strategy, portfolio=False, sector_by_symbol=sectors)
-                for strategy, _, _ in STRATEGIES
-            }
-            result = {"individual": individual, "message": "各機器人分別使用獨立3,000,000元；結果不可直接加總。"}
-        else:
-            result = run_backtest(parsed, strategy_id=body.strategy_id, portfolio=body.backtest_mode == "PORTFOLIO", sector_by_symbol=sectors)
-            if body.backtest_mode == "PORTFOLIO":
-                result["marketRegimeNotice"] = "未提供指數分鐘序列時，總控回測明確採用溫和多頭盤基準；策略優化資料集需提供完整市場脈絡。"
+        result = execute_backtest(
+            parsed, sectors, loaded_regimes,
+            backtest_mode=body.backtest_mode, strategy_id=body.strategy_id,
+        )
+        if not loaded_regimes:
+            result["marketRegimeNotice"] = "此直接請求未提供大盤分鐘脈絡；正式CSV／Parquet資料集必須包含大盤欄位。"
         status, source, precision = "COMPLETED", dataset_source, "1_MINUTE"
     job = DayTradeV2BacktestJob(
         id=job_id, user_id=user_id, backtest_mode=body.backtest_mode, strategy_id=body.strategy_id,
         start_date=body.start_date, end_date=body.end_date, status=status, data_source=source,
         data_precision=precision, request_json=body.model_dump_json(exclude={"datasets"}),
         result_json=json.dumps(result, default=str, ensure_ascii=False), completed_at=_now(),
+        dataset_id=body.dataset_id or "", progress_pct=Decimal(100),
+        progress_json=json.dumps({"stage": status, "message": result.get("message", "回測完成")}, ensure_ascii=False),
+        universe_json="[]",
     )
     db.add(job)
     _audit(db, user_id, "BACKTEST_CREATED", "BACKTEST", {"status": status}, job_id)
     db.commit()
-    return {"id": job.id, "status": job.status, "dataSource": source, "dataPrecision": precision, **result}
+    return {**_backtest_job_dict(job), **result}
 
 
 @router.get("/backtests")
 def backtests(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -> dict[str, object]:
     rows = list(db.scalars(select(DayTradeV2BacktestJob).where(DayTradeV2BacktestJob.user_id == user_id).order_by(DayTradeV2BacktestJob.created_at.desc()).limit(50)).all())
-    return {"items": [{"id": row.id, "mode": row.backtest_mode, "strategyId": row.strategy_id, "startDate": row.start_date, "endDate": row.end_date, "status": row.status, "dataSource": row.data_source, "dataPrecision": row.data_precision, "result": _json(row.result_json, {}), "createdAt": row.created_at} for row in rows]}
+    return {"items": [_backtest_job_dict(row) for row in rows]}
+
+
+@router.get("/backtests/{job_id}")
+def backtest_job(job_id: str, user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -> dict[str, object]:
+    row = db.get(DayTradeV2BacktestJob, job_id)
+    if row is None or row.user_id != user_id:
+        raise HTTPException(404, "找不到回測任務")
+    return _backtest_job_dict(row)
 
 
 @router.get("/stream")

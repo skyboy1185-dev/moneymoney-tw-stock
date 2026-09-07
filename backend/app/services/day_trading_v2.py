@@ -474,16 +474,16 @@ def run_backtest(
     cash = initial
     trades: list[dict[str, object]] = []
     candidates: list[tuple[datetime, str, StrategySignal, MinuteBar, Sequence[MinuteBar]]] = []
-    enabled = {item[0] for item in STRATEGIES} if strategy_id == "ALL" else {strategy_id}
+    enabled_strategies = {item[0] for item in STRATEGIES} if strategy_id == "ALL" else {strategy_id}
     for symbol, bars in datasets.items():
         for index in range(15, len(bars) - 1):
             decision_bars = bars[: index + 1]
             next_bar = bars[index + 1]
-            enabled = None if strategy_id == "ALL" else {strategy_id}
+            evaluation_filter = None if strategy_id == "ALL" else {strategy_id}
             for signal in evaluate_strategies(
-                decision_bars, strategy_parameters=strategy_parameters, enabled_strategies=enabled,
+                decision_bars, strategy_parameters=strategy_parameters, enabled_strategies=evaluation_filter,
             ):
-                if signal.strategy_id in enabled:
+                if signal.strategy_id in enabled_strategies:
                     candidates.append((signal_time := decision_bars[-1].timestamp, symbol, signal, next_bar, bars[index + 1 :]))
     candidates.sort(key=lambda row: (row[0], -row[2].confidence, row[1]))
     if (portfolio if controller_filter is None else controller_filter) and candidates:

@@ -86,6 +86,12 @@ class Settings(BaseSettings):
     fugle_chip_flow_include_odd_lot: bool = False
     fugle_chip_flow_timeout_seconds: float = 15.0
     fugle_chip_flow_min_request_interval_seconds: float = 1.1
+    fugle_historical_timeout_seconds: float = 30.0
+    fugle_historical_min_request_interval_seconds: float = 1.05
+    fugle_market_index_symbol: str = "IX0001"
+    dtv2_backtest_universe_size: int = 100
+    dtv2_backtest_max_symbols: int = 200
+    dtv2_optimization_data_dir: str = ""
 
     @field_validator("database_url", mode="after")
     @classmethod

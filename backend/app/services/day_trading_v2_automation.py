@@ -76,6 +76,7 @@ class DayTradingV2Coordinator:
     def __init__(self) -> None:
         self._task: asyncio.Task | None = None
         self._optimization_task: asyncio.Task | None = None
+        self._backtest_task: asyncio.Task | None = None
         self._stop = asyncio.Event()
         self._worker_id = f"{os.getenv('RAILWAY_REPLICA_ID', 'local')}:{uuid4()}"
 
@@ -91,14 +92,20 @@ class DayTradingV2Coordinator:
             await self._task
         if self._optimization_task:
             await self._optimization_task
+        if self._backtest_task:
+            await self._backtest_task
         self._task = None
         self._optimization_task = None
+        self._backtest_task = None
 
     async def _run(self) -> None:
         while not self._stop.is_set():
             try:
                 await asyncio.to_thread(self.run_cycle)
                 await self.dispatch_pending()
+                if self._backtest_task is None or self._backtest_task.done():
+                    from .day_trading_v2_backtests import process_next_backtest_job
+                    self._backtest_task = asyncio.create_task(asyncio.to_thread(process_next_backtest_job))
                 local = datetime.now(UTC).astimezone(TAIPEI)
                 if local.time() >= time.fromisoformat("13:45:00") and (self._optimization_task is None or self._optimization_task.done()):
                     from .day_trading_v2_optimizer import process_next_optimization_job

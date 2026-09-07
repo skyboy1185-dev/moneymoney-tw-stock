@@ -60,9 +60,13 @@ export function DayTradingV2Page({ userId }: { userId: string }) {
   const [backtestResult, setBacktestResult] = useState<Record<string, unknown> | null>(null);
   const [backtestMode, setBacktestMode] = useState("PORTFOLIO");
   const [backtestStrategy, setBacktestStrategy] = useState("ALL");
+  const [backtestSource, setBacktestSource] = useState<"AUTO_FUGLE" | "UPLOADED_DATASET">("AUTO_FUGLE");
   const [backtestDatasetId, setBacktestDatasetId] = useState("");
+  const [backtestFile, setBacktestFile] = useState<File | null>(null);
+  const [backtestSymbols, setBacktestSymbols] = useState("");
+  const [backtestJobId, setBacktestJobId] = useState("");
   const [optimizationFile, setOptimizationFile] = useState<File | null>(null);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
   const monthStart = `${today.slice(0, 8)}01`;
   const [startDate, setStartDate] = useState(monthStart);
   const [endDate, setEndDate] = useState(today);
@@ -87,6 +91,29 @@ export function DayTradingV2Page({ userId }: { userId: string }) {
     return () => window.clearInterval(timer);
   }, [load, userId]);
 
+  useEffect(() => {
+    if (!backtestJobId) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const job = await dayTradingV2Client.backtestJob(userId, backtestJobId);
+        if (cancelled) return;
+        setBacktestResult(job);
+        const status = String(job.status ?? "");
+        if (["COMPLETED", "DATA_INSUFFICIENT", "FAILED", "CANCELLED"].includes(status)) {
+          setBacktestJobId("");
+          setNotice(status === "COMPLETED" ? "回測任務已完成" : "回測任務已停止，請查看原因");
+          void load(true);
+        }
+      } catch (caught) {
+        if (!cancelled) setError(caught instanceof Error ? caught.message : "讀取回測進度失敗");
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => { void poll(); }, 2_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [backtestJobId, load, userId]);
+
   const robotById = useMemo(() => new Map(data?.robots.map((robot) => [robot.strategyId, robot.name]) ?? []), [data]);
   const backtestDatasets = data?.optimization.datasets.filter((raw) => String((raw as Record<string, unknown>).qualityStatus ?? "") !== "FAILED") ?? [];
 
@@ -95,6 +122,40 @@ export function DayTradingV2Page({ userId }: { userId: string }) {
     try { await action(); setNotice(success); await load(true); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "操作失敗"); }
     finally { setBusy(false); }
+  }
+
+  async function startBacktest() {
+    setBusy(true); setError(""); setNotice(""); setBacktestResult(null);
+    try {
+      let datasetId = backtestDatasetId;
+      if (backtestSource === "UPLOADED_DATASET" && backtestFile) {
+        const uploaded = await dayTradingV2Client.uploadOptimizationDataset(userId, backtestFile);
+        datasetId = String(uploaded.id ?? "");
+        setBacktestDatasetId(datasetId);
+      }
+      if (backtestSource === "UPLOADED_DATASET" && !datasetId) throw new Error("請選擇既有資料集或上傳CSV／Parquet分鐘資料");
+      const symbols = backtestSymbols.split(/[\s,，]+/).map((value) => value.trim()).filter(Boolean);
+      const job = await dayTradingV2Client.backtest(userId, {
+        backtest_mode: backtestMode, strategy_id: backtestStrategy,
+        start_date: startDate, end_date: endDate,
+        data_source: backtestSource,
+        dataset_id: backtestSource === "UPLOADED_DATASET" ? datasetId : undefined,
+        universe_preset: symbols.length ? "CUSTOM" : "TOP_LIQUID_100", symbols,
+      });
+      setBacktestResult(job);
+      const status = String(job.status ?? "");
+      if (["QUEUED", "DOWNLOADING", "VALIDATING", "RUNNING"].includes(status)) {
+        setBacktestJobId(String(job.id));
+        setNotice("回測任務已建立，系統正在準備1分鐘行情");
+      } else {
+        setNotice(status === "COMPLETED" ? "回測任務已完成" : "回測未執行，請查看資料原因");
+      }
+      await load(true);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "回測啟動失敗");
+    } finally {
+      setBusy(false);
+    }
   }
 
   if (loading && !data) return <div className="dt2-loading"><span className="spinner" /><p>正在載入超強AI當沖系統…</p></div>;
@@ -222,7 +283,33 @@ export function DayTradingV2Page({ userId }: { userId: string }) {
 
     {section === "trades" && <article className="dt2-panel"><header><History size={17} /><strong>完成交易紀錄</strong></header><div className="dt2-table"><table><thead><tr><th>交易編號</th><th>模式</th><th>股票</th><th>機器人/版本</th><th>買進成交</th><th>買價/股數</th><th>賣出成交</th><th>賣價</th><th>毛損益</th><th>完整成本</th><th>淨損益</th><th>報酬率</th><th>進場原因</th><th>出場原因</th></tr></thead><tbody>{data.recentTrades.map((trade) => { const costs = Number(trade.buyFee) + Number(trade.sellFee) + Number(trade.transactionTax) + Number(trade.slippage) + Number(trade.otherCost); return <tr key={trade.id}><td><small>{trade.id.slice(0, 8)}</small></td><td><ModeBadge mode={trade.mode} /></td><td><b>{trade.symbol}</b><small>{trade.stockName}</small></td><td>{robotById.get(trade.strategyId) ?? trade.strategyId}<small>v{trade.strategyVersion}</small></td><td>{dateTime(trade.entryFillTime)}</td><td>{number(trade.entryPrice, 2)} / {number(trade.quantity)}股</td><td>{dateTime(trade.exitFillTime)}</td><td>{number(trade.exitPrice, 2)}</td><td className={tone(trade.grossPnl)}>{signedMoney(trade.grossPnl)}</td><td>{number(costs)}元</td><td className={tone(trade.netPnl)}>{signedMoney(trade.netPnl)}</td><td className={tone(trade.netReturnPct)}>{number(trade.netReturnPct, 2)}%</td><td>{trade.entryReason}</td><td>{trade.exitReason}</td></tr>; })}</tbody></table></div>{!data.recentTrades.length && <p className="dt2-empty">目前沒有已平倉交易</p>}</article>}
 
-    {section === "backtest" && <div className="dt2-grid two"><article className="dt2-panel"><header><SlidersHorizontal size={17} /><strong>策略回測中心</strong></header><div className="dt2-form"><label>分鐘資料集<select value={backtestDatasetId} onChange={(event) => setBacktestDatasetId(event.target.value)}><option value="">尚未選擇</option>{backtestDatasets.map((raw, index) => { const dataset = raw as Record<string, unknown>; return <option key={String(dataset.id ?? index)} value={String(dataset.id ?? "")}>{String(dataset.name ?? "分鐘資料")}｜{String(dataset.startDate ?? "—")}～{String(dataset.endDate ?? "—")}</option>; })}</select></label><label>回測模式<select value={backtestMode} onChange={(event) => setBacktestMode(event.target.value)}><option value="PORTFOLIO">模式B：五台共用300萬元</option><option value="INDIVIDUAL">模式A：個別機器人各300萬元</option></select></label><label>策略<select value={backtestStrategy} onChange={(event) => setBacktestStrategy(event.target.value)}><option value="ALL">五台全部</option>{data.robots.map((robot) => <option key={robot.strategyId} value={robot.strategyId}>{robot.name}</option>)}</select></label><label>開始日期<input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} /></label><label>結束日期<input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} /></label><button disabled={busy || !backtestDatasetId} onClick={() => void run(async () => { const result = await dayTradingV2Client.backtest(userId, { backtest_mode: backtestMode, strategy_id: backtestStrategy, start_date: startDate, end_date: endDate, dataset_id: backtestDatasetId }); setBacktestResult(result); }, "回測任務已完成")}>執行回測</button>{!backtestDatasets.length && <p className="dt2-data-warning">請先到「策略優化中心」匯入合格的CSV或Parquet分鐘資料。系統不會以日K偽造當沖結果。</p>}</div></article><article className="dt2-panel"><header><History size={17} /><strong>回測結果</strong></header>{backtestResult ? <pre className="dt2-result">{JSON.stringify(backtestResult, null, 2)}</pre> : <div className="dt2-data-warning"><ShieldAlert size={22} /><b>{backtestDatasets.length ? "請選擇資料集並執行回測" : "歷史分鐘行情尚未設定"}</b><p>完成後會顯示實際使用的資料來源、精度、交易明細與扣除成本後績效。</p></div>}</article></div>}
+    {section === "backtest" && <div className="dt2-grid two">
+      <article className="dt2-panel">
+        <header><SlidersHorizontal size={17} /><strong>策略回測中心</strong><small>所有選項與分鐘資料都在這裡完成。</small></header>
+        <div className="dt2-form">
+          <label>資料來源<select value={backtestSource} onChange={(event) => setBacktestSource(event.target.value as "AUTO_FUGLE" | "UPLOADED_DATASET")}><option value="AUTO_FUGLE">系統自動取得（Fugle 1分鐘）</option><option value="UPLOADED_DATASET">上傳或選擇CSV／Parquet</option></select></label>
+          {backtestSource === "UPLOADED_DATASET" && <>
+            <label>既有分鐘資料集<select value={backtestDatasetId} onChange={(event) => setBacktestDatasetId(event.target.value)}><option value="">改為上傳新檔案</option>{backtestDatasets.map((raw, index) => { const dataset = raw as Record<string, unknown>; return <option key={String(dataset.id ?? index)} value={String(dataset.id ?? "")}>{String(dataset.name ?? "分鐘資料")}｜{String(dataset.startDate ?? "—")}～{String(dataset.endDate ?? "—")}</option>; })}</select></label>
+            <label>上傳新資料<input type="file" accept=".csv,.parquet" onChange={(event) => setBacktestFile(event.target.files?.[0] ?? null)} /></label>
+          </>}
+          {backtestSource === "AUTO_FUGLE" && <label>股票池（選填）<textarea rows={3} value={backtestSymbols} onChange={(event) => setBacktestSymbols(event.target.value)} placeholder="留白使用目前高流動性100檔；或輸入代碼，例如 2330, 2317" /><small>建立任務時會凍結名單，最多200檔。</small></label>}
+          <label>回測模式<select value={backtestMode} onChange={(event) => setBacktestMode(event.target.value)}><option value="PORTFOLIO">模式B：五台共用300萬元</option><option value="INDIVIDUAL">模式A：個別機器人各300萬元</option></select></label>
+          <label>策略<select value={backtestStrategy} onChange={(event) => setBacktestStrategy(event.target.value)}><option value="ALL">五台全部</option>{data.robots.map((robot) => <option key={robot.strategyId} value={robot.strategyId}>{robot.name}</option>)}</select></label>
+          <label>開始日期<input type="date" min={backtestSource === "AUTO_FUGLE" ? "2023-05-23" : undefined} value={startDate} onChange={(event) => setStartDate(event.target.value)} /></label>
+          <label>結束日期<input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} /></label>
+          <button disabled={busy || Boolean(backtestJobId) || (backtestSource === "UPLOADED_DATASET" && !backtestDatasetId && !backtestFile)} onClick={() => void startBacktest()}>{backtestJobId ? "回測執行中…" : "執行回測"}</button>
+          <p className="dt2-data-warning">系統會自動準備1分鐘行情，也可在此上傳CSV／Parquet。日K不會用於當沖回測。自動模式為固定股票池研究回測，結果會標示名單快照與資料品質。</p>
+        </div>
+      </article>
+      <article className="dt2-panel">
+        <header><History size={17} /><strong>回測進度與結果</strong></header>
+        {backtestResult ? <>
+          <dl className="dt2-rules"><div><dt>狀態</dt><dd>{String(backtestResult.status ?? "—")}</dd></div><div><dt>進度</dt><dd>{number(String(backtestResult.progressPct ?? 0), 1)}%</dd></div><div><dt>資料來源</dt><dd>{String(backtestResult.dataSource ?? "—")}</dd></div><div><dt>資料精度</dt><dd>{String(backtestResult.dataPrecision ?? "—")}</dd></div></dl>
+          <p className="dt2-data-warning">{String(((backtestResult.progress ?? {}) as Record<string, unknown>).message ?? backtestResult.error ?? "任務資料已更新")}</p>
+          <pre className="dt2-result">{JSON.stringify(backtestResult.result ?? backtestResult, null, 2)}</pre>
+        </> : <div className="dt2-data-warning"><ShieldAlert size={22} /><b>請設定日期與模式後執行</b><p>完成後會顯示實際分鐘資料期間、股票池、品質、交易明細與扣除成本後績效。</p></div>}
+      </article>
+    </div>}
 
     {section === "performance" && <div className="dt2-stack"><article className="dt2-panel"><header><CircleDollarSign size={17} /><strong>今日績效</strong></header><PerfCards data={data.today} /></article><article className="dt2-panel"><header><ShieldAlert size={17} /><strong>今日未進場原因統計</strong></header><div className="dt2-skip-list">{data.skipReasons.map((item) => <div key={item.reason}><span>{item.reason}</span><b>{item.count}次</b></div>)}</div>{!data.skipReasons.length && <p className="dt2-empty">目前沒有跳過訊號</p>}</article><article className="dt2-panel"><header><CircleDollarSign size={17} /><strong>本月績效</strong></header><PerfCards data={data.month} /></article><article className="dt2-panel"><header><CircleDollarSign size={17} /><strong>全期間績效</strong></header><PerfCards data={data.all} /></article></div>}
 

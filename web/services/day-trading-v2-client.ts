@@ -28,6 +28,7 @@ export const dayTradingV2Client = {
   stop: (userId: string) => request("control/stop", userId, { method: "POST" }),
   closePosition: (userId: string, positionId: string, fillPrice: string, reason = "手動平倉") => request(`positions/${positionId}/close`, userId, { method: "POST", body: JSON.stringify({ fill_price: fillPrice, reason, percentage: 100 }) }),
   backtest: (userId: string, payload: Record<string, unknown>) => request<Record<string, unknown>>("backtests", userId, { method: "POST", body: JSON.stringify(payload) }),
+  backtestJob: (userId: string, jobId: string) => request<Record<string, unknown>>(`backtests/${jobId}`, userId),
   backtests: (userId: string) => request<{ items: Array<Record<string, unknown>> }>("backtests", userId),
   controller: (userId: string) => request<Dashboard["controller"]>("controller", userId),
   controllerDecisions: (userId: string, date?: string) => request<{ items: Array<Record<string, unknown>> }>(`controller/decisions${date ? `?trading_date=${date}` : ""}`, userId),

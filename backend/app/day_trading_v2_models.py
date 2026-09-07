@@ -249,6 +249,7 @@ class DayTradeV2AuditEvent(Base):
 
 class DayTradeV2BacktestJob(Base):
     __tablename__ = "day_trade_v2_backtest_jobs"
+    __table_args__ = (Index("ix_dtv2_backtest_status", "status", "created_at"),)
 
     id: Mapped[str] = mapped_column(String(80), primary_key=True)
     user_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
@@ -259,6 +260,13 @@ class DayTradeV2BacktestJob(Base):
     status: Mapped[str] = mapped_column(String(30), nullable=False)
     data_source: Mapped[str] = mapped_column(String(80), nullable=False)
     data_precision: Mapped[str] = mapped_column(String(30), nullable=False)
+    dataset_id: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    progress_pct: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False, default=Decimal("0"))
+    progress_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    universe_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    lease_owner: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     request_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     result_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     error_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
