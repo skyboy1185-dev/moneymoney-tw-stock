@@ -111,14 +111,17 @@ class LongTermSelectionAutomation:
                 try:
                     payload = await fetch_adaptive_scan_payload()
                     if payload.market.trade_date == local.date():
+                        execution_at = datetime.now(UTC)
                         with SessionLocal() as db:
-                            repaired = repair_long_term_unfilled_entries(db, payload, current)
+                            repaired = repair_long_term_unfilled_entries(db, payload, execution_at)
                             db.commit()
                         with SessionLocal() as db:
                             has_vacancies = long_term_portfolio_has_vacancies(db)
                         if has_vacancies:
                             with SessionLocal() as db:
-                                replenished = replenish_long_term_vacancies(db, payload, current)
+                                replenished = replenish_long_term_vacancies(
+                                    db, payload, datetime.now(UTC),
+                                )
                 except Exception as error:
                     logger.warning("Long-term already-ran maintenance unavailable", exc_info=True)
                     maintenance_error = str(error)
@@ -144,11 +147,12 @@ class LongTermSelectionAutomation:
                         "payloadTradeDate": payload.market.trade_date.isoformat(),
                     }
                 else:
+                    execution_at = datetime.now(UTC)
                     with SessionLocal() as db:
                         result = run_long_term_selection(
                             db,
                             payload,
-                            current,
+                            execution_at,
                             benchmark_prices=benchmark_prices,
                             active_benchmark_definitions=active_benchmarks,
                         )

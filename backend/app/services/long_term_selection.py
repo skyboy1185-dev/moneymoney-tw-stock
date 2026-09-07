@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 import json
 from typing import Literal
@@ -37,8 +37,7 @@ FOCUSED_PORTFOLIO_SIZE = 3
 MINIMUM_HOLDING_TRADING_DAYS = 5
 SIMULATION_CAPITAL = 1_000_000.0
 LONG_TERM_MAX_ENTRY_PREMIUM_PCT = 3.0
-LONG_TERM_SKIP_GAP_PCT = 7.0
-LONG_TERM_SKIP_RETURN_PCT = 9.0
+LONG_TERM_MAX_LIVE_QUOTE_AGE_SECONDS = 300
 PortfolioMode = Literal["long_only", "focused_long"]
 Direction = Literal["long", "short"]
 MODE_TARGET_COUNTS: dict[str, int] = {"long_only": PORTFOLIO_SIZE, "focused_long": FOCUSED_PORTFOLIO_SIZE}
@@ -80,6 +79,9 @@ class LongTermPick:
     low_price: float
     gap_percent: float
     return_1d: float
+    quote_timestamp: datetime | None
+    quote_source: str
+    quote_realtime: bool
     predicted_month_return_pct: float
     reasons: tuple[str, ...]
 
@@ -89,6 +91,8 @@ class LongTermEntryDecision:
     executable: bool
     entry_price: float
     max_entry_price: float
+    entry_time: datetime | None
+    record_skip: bool
     reason: str
 
 
@@ -264,6 +268,9 @@ def _pick(stock: AdaptiveStockInput, direction: Direction) -> LongTermPick:
         low_price=float(getattr(stock, "low", stock.price) or stock.price),
         gap_percent=float(getattr(stock, "gap_percent", 0) or 0),
         return_1d=float(getattr(stock, "return_1d", 0) or 0),
+        quote_timestamp=getattr(stock, "quote_timestamp", None),
+        quote_source=str(getattr(stock, "quote_source", "") or "行情來源未標示"),
+        quote_realtime=bool(getattr(stock, "quote_realtime", False)),
         predicted_month_return_pct=_expected_return(stock, direction),
         reasons=reasons,
     )
@@ -299,32 +306,77 @@ def _previous_close_for_pick(pick: LongTermPick) -> float:
     return pick.price
 
 
-def long_term_entry_decision(pick: LongTermPick) -> LongTermEntryDecision:
+def _normalized_quote_time(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=TAIPEI)
+
+
+def _quote_time_failure(
+    pick: LongTermPick,
+    trade_date: date | None,
+    at: datetime | None,
+) -> str | None:
+    quote_time = _normalized_quote_time(pick.quote_timestamp)
+    if quote_time is None:
+        return "行情缺少成交時間"
+    local_quote = quote_time.astimezone(TAIPEI)
+    if trade_date is not None and local_quote.date() != trade_date:
+        return f"行情日期 {local_quote.date().isoformat()} 與交易日 {trade_date.isoformat()} 不符"
+    if at is None:
+        return None
+    local_at = at.astimezone(TAIPEI) if at.tzinfo is not None else at.replace(tzinfo=TAIPEI)
+    if time(9, 0) <= local_at.time() <= time(13, 30):
+        if not pick.quote_realtime:
+            return "盤中行情並非即時報價"
+        age_seconds = (local_at - local_quote).total_seconds()
+        if age_seconds > LONG_TERM_MAX_LIVE_QUOTE_AGE_SECONDS:
+            return f"行情已逾時 {round(age_seconds)} 秒"
+        if age_seconds < -60:
+            return "行情時間晚於系統判定時間"
+    return None
+
+
+def long_term_entry_decision(
+    pick: LongTermPick,
+    trade_date: date | None = None,
+    at: datetime | None = None,
+) -> LongTermEntryDecision:
     previous_close = _previous_close_for_pick(pick)
     max_entry_price = round(previous_close * (1 + LONG_TERM_MAX_ENTRY_PREMIUM_PCT / 100), 4)
-    day_low = pick.low_price if pick.low_price > 0 else pick.price
-    overheated = (
-        pick.gap_percent >= LONG_TERM_SKIP_GAP_PCT
-        or pick.return_1d >= LONG_TERM_SKIP_RETURN_PCT
-    )
-    if pick.direction == "long" and day_low > max_entry_price and (overheated or pick.price > max_entry_price):
+    quote_time = _normalized_quote_time(pick.quote_timestamp)
+    if failure := _quote_time_failure(pick, trade_date, at):
         return LongTermEntryDecision(
             executable=False,
             entry_price=pick.price,
             max_entry_price=max_entry_price,
+            entry_time=None,
+            record_skip=False,
             reason=(
-                f"開高未成交：今日最低 {day_low:.2f} 高於長線買進上限 "
-                f"{max_entry_price:.2f}（昨收推算 +{LONG_TERM_MAX_ENTRY_PREMIUM_PCT:.0f}%），"
-                "不納入持倉績效。"
+                f"行情無法確認成交：{failure}；{pick.quote_source}，不納入持倉績效。"
             ),
         )
-    entry_price = min(pick.price, max_entry_price) if pick.direction == "long" else pick.price
+    if pick.direction == "long" and pick.price > max_entry_price:
+        return LongTermEntryDecision(
+            executable=False,
+            entry_price=pick.price,
+            max_entry_price=max_entry_price,
+            entry_time=None,
+            record_skip=True,
+            reason=(
+                f"當刻行情 {pick.price:.2f} 高於長線買進上限 {max_entry_price:.2f}"
+                f"（昨收推算 +{LONG_TERM_MAX_ENTRY_PREMIUM_PCT:.0f}%）；未成交且不列績效。"
+            ),
+        )
     return LongTermEntryDecision(
         executable=True,
-        entry_price=round(entry_price, 4),
+        entry_price=round(pick.price, 4),
         max_entry_price=max_entry_price,
+        entry_time=quote_time,
+        record_skip=False,
         reason=(
-            f"保守成交價 {entry_price:.2f}；長線買進上限 {max_entry_price:.2f}。"
+            f"依 {pick.quote_source} 同筆行情模擬成交：{pick.price:.2f}；"
+            f"長線買進上限 {max_entry_price:.2f}。"
         ),
     )
 
@@ -434,10 +486,15 @@ def _new_position(
     allocation_weight_pct: float,
     allocated_capital: float | None = None,
     entry_price: float | None = None,
+    entry_time: datetime | None = None,
+    entry_reason: str | None = None,
 ) -> LongTermPosition:
     capital = allocated_capital if allocated_capital is not None else SIMULATION_CAPITAL * allocation_weight_pct / 100
     executed_price = entry_price if entry_price is not None and entry_price > 0 else pick.price
     quantity = int(capital / executed_price) if executed_price > 0 else 0
+    reasons = [*pick.reasons]
+    if entry_reason:
+        reasons.append(entry_reason)
     return LongTermPosition(
         entry_key=f"{mode}:{trade_date.isoformat()}:{pick.stock_code}:{pick.direction}:{at.strftime('%H%M%S%f')}",
         portfolio_mode=mode,
@@ -449,7 +506,7 @@ def _new_position(
         model_key=pick.model_key,
         model_name=pick.model_name,
         entry_date=trade_date,
-        entry_time=at,
+        entry_time=entry_time or at,
         minimum_exit_date=minimum_exit_date(trade_date),
         entry_price=_decimal(executed_price),
         last_price=_decimal(pick.price),
@@ -459,7 +516,7 @@ def _new_position(
         allocation_weight_pct=_decimal(allocation_weight_pct),
         allocated_capital=Decimal(str(round(capital, 2))),
         quantity=quantity,
-        reasons_json=json.dumps(pick.reasons, ensure_ascii=False),
+        reasons_json=json.dumps(reasons, ensure_ascii=False),
         status="open",
         actual_return_pct=Decimal("0"),
         created_at=at,
@@ -612,31 +669,42 @@ def repair_long_term_unfilled_entries(
     payload: AdaptiveScanPayload,
     at: datetime,
 ) -> dict[str, int]:
+    """Quarantine same-day legacy fills whose saved price never matched their creation quote."""
     trade_date = payload.market.trade_date
-    stocks_by_code = {stock.stock_code: stock for stock in payload.stocks}
     repaired: dict[str, int] = {"long_only": 0, "focused_long": 0}
     positions = list(db.scalars(select(LongTermPosition).where(
         LongTermPosition.status == "open",
         LongTermPosition.entry_date == trade_date,
     )).all())
+    snapshots = {
+        snapshot.position_id: snapshot
+        for snapshot in db.scalars(select(LongTermPositionSnapshot).where(
+            LongTermPositionSnapshot.trade_date == trade_date,
+            LongTermPositionSnapshot.position_id.in_([item.id for item in positions]),
+        )).all()
+    } if positions else {}
     for position in positions:
-        source = stocks_by_code.get(position.stock_code)
-        if source is None:
+        snapshot = snapshots.get(position.id)
+        if snapshot is None:
             continue
-        pick = _pick(source, position.direction)  # type: ignore[arg-type]
-        decision = long_term_entry_decision(pick)
-        if decision.executable:
+        recorded_entry = float(position.entry_price)
+        creation_quote = float(snapshot.price)
+        if abs(recorded_entry - creation_quote) <= 0.0001:
             continue
+        reason = (
+            f"撤銷舊制推定成交：建立時行情 {creation_quote:.2f} 與記錄買價 "
+            f"{recorded_entry:.2f} 不一致，且沒有對應分鐘成交時間；未成交且不列績效。"
+        )
         position.status = SKIPPED_UNFILLED_STATUS
         position.quantity = 0
-        position.last_price = _decimal(pick.price)
+        position.last_price = _decimal(creation_quote)
         position.actual_return_pct = Decimal("0")
         position.exit_date = None
         position.exit_time = None
         position.exit_price = None
-        position.exit_reason = decision.reason
+        position.exit_reason = reason
         position.updated_at = at
-        _record_skip_event(db, position, trade_date, at, decision.reason)
+        _record_skip_event(db, position, trade_date, at, reason)
         repaired[position.portfolio_mode] = repaired.get(position.portfolio_mode, 0) + 1
     return repaired
 
@@ -733,6 +801,7 @@ def run_long_term_selection(
             if latest is not None:
                 position.last_price = _decimal(latest)
             latest_stock = stocks_by_code.get(position.stock_code)
+            latest_pick: LongTermPick | None = None
             if latest_stock is not None:
                 latest_pick = _pick(latest_stock, position.direction)  # type: ignore[arg-type]
                 position.current_score = _decimal(latest_pick.score)
@@ -751,15 +820,22 @@ def run_long_term_selection(
             )
             if not replacement_available:
                 continue
+            if latest_pick is None or _quote_time_failure(latest_pick, trade_date, at):
+                position.updated_at = at
+                continue
+            exit_time = _normalized_quote_time(latest_pick.quote_timestamp)
+            if exit_time is None:
+                position.updated_at = at
+                continue
             actual = actual_return_percent(float(position.entry_price), float(position.last_price), position.direction)
             position.status = "closed"
             position.exit_date = trade_date
-            position.exit_time = at
+            position.exit_time = exit_time
             position.exit_price = position.last_price
             position.exit_reason = "持有滿 5 個交易日後跌出模型前段班，執行汰換"
             position.actual_return_pct = _decimal(actual)
             position.updated_at = at
-            _record_trade_event(db, position, "SELL", trade_date, at, position.exit_reason)
+            _record_trade_event(db, position, "SELL", trade_date, exit_time, position.exit_reason)
             released_allocations[position.direction].append((
                 float(position.allocation_weight_pct), float(position.allocated_capital),
             ))
@@ -784,12 +860,13 @@ def run_long_term_selection(
                     break
                 if pick.stock_code in blocked_symbols:
                     continue
-                decision = long_term_entry_decision(pick)
+                decision = long_term_entry_decision(pick, trade_date, at)
                 if not decision.executable:
-                    _add_skipped_unfilled_position(db, mode, pick, trade_date, at, decision)
-                    blocked_symbols.add(pick.stock_code)
-                    skipped += 1
-                    total_skipped += 1
+                    if decision.record_skip:
+                        _add_skipped_unfilled_position(db, mode, pick, trade_date, at, decision)
+                        blocked_symbols.add(pick.stock_code)
+                        skipped += 1
+                        total_skipped += 1
                     continue
                 selected.append((pick, decision))
                 blocked_symbols.add(pick.stock_code)
@@ -811,10 +888,27 @@ def run_long_term_selection(
                     else:
                         weight = round(available_weight * raw_weight / 100, 4)
                         capital = round(available_capital * raw_weight / 100, 2)
-                position = _new_position(mode, pick, trade_date, at, weight, capital, decision.entry_price)
+                position = _new_position(
+                    mode,
+                    pick,
+                    trade_date,
+                    at,
+                    weight,
+                    capital,
+                    decision.entry_price,
+                    decision.entry_time,
+                    decision.reason,
+                )
                 db.add(position)
                 db.flush()
-                _record_trade_event(db, position, "BUY", trade_date, at, "模型建立模擬買進部位")
+                _record_trade_event(
+                    db,
+                    position,
+                    "BUY",
+                    trade_date,
+                    position.entry_time,
+                    f"模型建立模擬買進部位；{decision.reason}",
+                )
                 open_positions.append(position)
                 direction_open.append(position)
                 assigned_weight += weight
@@ -942,10 +1036,11 @@ def replenish_long_term_vacancies(
                 break
             if item.stock_code in blocked_symbols:
                 continue
-            decision = long_term_entry_decision(item)
+            decision = long_term_entry_decision(item, trade_date, at)
             if not decision.executable:
-                _add_skipped_unfilled_position(db, mode, item, trade_date, at, decision)
-                blocked_symbols.add(item.stock_code)
+                if decision.record_skip:
+                    _add_skipped_unfilled_position(db, mode, item, trade_date, at, decision)
+                    blocked_symbols.add(item.stock_code)
                 continue
             replacements.append((item, decision))
             blocked_symbols.add(item.stock_code)
@@ -974,7 +1069,17 @@ def replenish_long_term_vacancies(
                 round(available_capital - assigned_capital, 4)
                 if is_last else round(available_capital * score_share, 4)
             )
-            position = _new_position(mode, replacement, trade_date, at, weight, capital, decision.entry_price)
+            position = _new_position(
+                mode,
+                replacement,
+                trade_date,
+                at,
+                weight,
+                capital,
+                decision.entry_price,
+                decision.entry_time,
+                decision.reason,
+            )
             db.add(position)
             db.flush()
             _record_trade_event(
@@ -982,8 +1087,8 @@ def replenish_long_term_vacancies(
                 position,
                 "BUY",
                 trade_date,
-                at,
-                "原持股汰汰後立即補入新的高分候選股",
+                position.entry_time,
+                f"原持股汰換後立即補入新的高分候選股；{decision.reason}",
             )
             _snapshot(db, position, trade_date, at)
             blocked_symbols.add(replacement.stock_code)
@@ -1027,46 +1132,63 @@ def replace_long_term_position(
     for pick in replacement_candidates:
         if pick.stock_code in open_symbols:
             continue
-        decision = long_term_entry_decision(pick)
+        decision = long_term_entry_decision(pick, trade_date, at)
         if not decision.executable:
-            _add_skipped_unfilled_position(
-                db,
-                mode,
-                pick,
-                trade_date,
-                at,
-                decision,
-                float(position.allocation_weight_pct),
-                float(position.allocated_capital),
-            )
-            open_symbols.add(pick.stock_code)
+            if decision.record_skip:
+                _add_skipped_unfilled_position(
+                    db,
+                    mode,
+                    pick,
+                    trade_date,
+                    at,
+                    decision,
+                    float(position.allocation_weight_pct),
+                    float(position.allocated_capital),
+                )
+                open_symbols.add(pick.stock_code)
             continue
         replacement = pick
         replacement_decision = decision
         break
-    if replacement is None:
+    if replacement is None or replacement_decision is None:
         raise ValueError("目前沒有同方向且分數合格的補位標的")
-    latest = next((stock.price for stock in payload.stocks if stock.stock_code == position.stock_code), None)
-    if latest is not None:
-        position.last_price = _decimal(latest)
+    exit_stock = next((stock for stock in payload.stocks if stock.stock_code == position.stock_code), None)
+    if exit_stock is None:
+        raise ValueError("目前沒有原持股的有效行情，無法確認賣出價與時間")
+    exit_pick = _pick(exit_stock, position.direction)  # type: ignore[arg-type]
+    if failure := _quote_time_failure(exit_pick, trade_date, at):
+        raise ValueError(f"原持股行情無法確認：{failure}")
+    exit_time = _normalized_quote_time(exit_pick.quote_timestamp)
+    if exit_time is None:
+        raise ValueError("目前沒有原持股的行情時間，無法執行汰換")
+    position.last_price = _decimal(exit_pick.price)
     actual = actual_return_percent(float(position.entry_price), float(position.last_price), position.direction)
     position.status = "closed"
     position.exit_date = trade_date
-    position.exit_time = at
+    position.exit_time = exit_time
     position.exit_price = position.last_price
     position.exit_reason = "持有滿 5 個交易日後手動賣出汰換"
     position.actual_return_pct = _decimal(actual)
     position.updated_at = at
-    _record_trade_event(db, position, "SELL", trade_date, at, position.exit_reason)
+    _record_trade_event(db, position, "SELL", trade_date, exit_time, position.exit_reason)
 
     new_position = _new_position(
         mode, replacement, trade_date, at,
         float(position.allocation_weight_pct), float(position.allocated_capital),
-        replacement_decision.entry_price if replacement_decision is not None else replacement.price,
+        replacement_decision.entry_price,
+        replacement_decision.entry_time,
+        replacement_decision.reason,
     )
     db.add(new_position)
     db.flush()
-    _record_trade_event(db, new_position, "BUY", trade_date, at, "賣出汰換後由模型補入新部位")
+    _record_trade_event(
+        db,
+        new_position,
+        "BUY",
+        trade_date,
+        new_position.entry_time,
+        f"賣出汰換後由模型補入新部位；{replacement_decision.reason}",
+    )
     _snapshot(db, new_position, trade_date, at)
     db.commit()
     return {

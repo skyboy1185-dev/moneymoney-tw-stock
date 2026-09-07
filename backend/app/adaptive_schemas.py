@@ -100,6 +100,7 @@ class AdaptiveStockInput(BaseModel):
     data_completeness: float = Field(default=1, ge=0, le=1)
     quote_source: str
     quote_timestamp: datetime
+    quote_realtime: bool = False
     price: float = Field(gt=0)
     open: float = Field(gt=0)
     high: float = Field(gt=0)

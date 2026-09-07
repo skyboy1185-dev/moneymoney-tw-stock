@@ -325,7 +325,7 @@ export function DayTradingRobotNotifier({ onOpen }: { onOpen?: (target: RobotTar
             const replacement = signal.reason.includes("汰換") || signal.reason.includes("換股");
             const isSkip = signal.eventType === "SKIP";
             const action = signal.eventType === "BUY" ? "買進" : isSkip ? "未成交" : "賣出";
-            const actionTimeLabel = signal.eventType === "BUY" ? "買入時間" : isSkip ? "判定時間" : "賣出時間";
+            const actionTimeLabel = signal.eventType === "BUY" ? "買入行情時間" : isSkip ? "判定時間" : "賣出行情時間";
             items.push({
               id: `long-term-signal:${signal.id}`,
               kind: signal.eventType === "BUY" ? "buy" : isSkip ? "skip" : "sell",
@@ -334,7 +334,7 @@ export function DayTradingRobotNotifier({ onOpen }: { onOpen?: (target: RobotTar
               stock: `${signal.stockCode} ${signal.stockName}`,
               message: isSkip
                 ? `不列績效・參考價 ${fixed(signal.price)}・${actionTimeLabel} ${dateTime(signal.timestamp)}`
-                : `價格 ${fixed(signal.price)}・${integer(signal.quantity)} 股・${actionTimeLabel} ${dateTime(signal.timestamp)}`,
+                : `行情模擬成交價 ${fixed(signal.price)}・${integer(signal.quantity)} 股・${actionTimeLabel} ${dateTime(signal.timestamp)}`,
               reason: signal.reason,
               timestamp: signal.timestamp,
             });

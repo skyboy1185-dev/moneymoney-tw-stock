@@ -52,8 +52,8 @@ function dateTime(value?: string | null): string {
 }
 
 function eventTimeLabel(item: LongTermTradeMessage): string {
-  if (item.eventType === "BUY") return "買入時間";
-  if (item.eventType === "SELL") return "賣出時間";
+  if (item.eventType === "BUY") return "買入行情時間";
+  if (item.eventType === "SELL") return "賣出行情時間";
   return "判定時間";
 }
 
@@ -310,7 +310,7 @@ export function LongTermSelectionPage({ onSelectStock }: { onSelectStock: (symbo
             <td><span className="long-term-direction long"><ArrowUpRight size={12} />做多</span><small>{item.modelName}</small></td>
             <td><strong className="allocation-weight">{item.allocationWeightPercent.toFixed(2)}%</strong></td>
             <td><strong>{money(item.allocatedCapital)}</strong><small>{item.quantity.toLocaleString("zh-TW")} 股・成交 {money(item.investedCapital)}</small></td>
-            <td><strong>買入價 {price(item.entryPrice)}</strong><small>買入時間 {dateTime(item.entryTime)}</small></td>
+            <td><strong>行情模擬成交價 {price(item.entryPrice)}</strong><small>同筆行情時間 {dateTime(item.entryTime)}</small></td>
             <td><strong>{price(item.currentPrice)}</strong></td>
             <td><strong className={returnClass(item.actualReturnPercent)}>{percent(item.actualReturnPercent)}</strong><small className={returnClass(item.unrealizedProfit)}>{money(item.unrealizedProfit)}</small><small>價差 {percent(item.priceReturnPercent)}・股息 {item.dividendDataAvailable ? `${percent(item.dividendReturnPercent)}／${money(item.dividendIncome)}` : "資料待補"}</small></td>
             <td><strong className="forecast">{percent(item.predictedMonthReturnPercent)}</strong></td>
@@ -326,7 +326,7 @@ export function LongTermSelectionPage({ onSelectStock }: { onSelectStock: (symbo
 
       {data.closedItems.length > 0 && <section className="long-term-history">
         <div className="long-term-section-title"><CalendarClock size={16} /><div><h2>歷史汰換紀錄</h2><p>保留進出價格、配息與含息總報酬</p></div></div>
-        <div className="long-term-table-wrap"><table><thead><tr><th>股票</th><th>方向</th><th>模型</th><th>買入時間</th><th>賣出時間</th><th>進／出價格</th><th>含息總損益</th><th>原因</th></tr></thead><tbody>
+        <div className="long-term-table-wrap"><table><thead><tr><th>股票</th><th>方向</th><th>模型</th><th>買入行情時間</th><th>賣出行情時間</th><th>進／出價格</th><th>含息總損益</th><th>原因</th></tr></thead><tbody>
           {data.closedItems.map((item) => <tr key={item.id}><td>{item.name}<small>{item.symbol}</small></td><td>多</td><td>{item.modelName}</td><td>{dateTime(item.entryTime)}</td><td>{dateTime(item.exitTime)}</td><td>{price(item.entryPrice)} → {price(item.exitPrice)}</td><td className={returnClass(item.actualReturnPercent)}><strong>{percent(item.actualReturnPercent)}</strong><small>價差 {percent(item.priceReturnPercent)}・股息 {item.dividendDataAvailable ? `${percent(item.dividendReturnPercent)}／${money(item.dividendIncome)}` : "資料待補"}</small></td><td>{item.exitReason}</td></tr>)}
         </tbody></table></div>
       </section>}

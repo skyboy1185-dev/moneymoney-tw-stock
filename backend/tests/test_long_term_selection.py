@@ -76,9 +76,15 @@ def stock(index: int) -> SimpleNamespace:
 
 
 def payload(day: date = LONG_TERM_START_DATE) -> SimpleNamespace:
+    quote_time = datetime(day.year, day.month, day.day, 1, 15, tzinfo=UTC)
+    stocks = [stock(index) for index in range(15)]
+    for item in stocks:
+        item.quote_timestamp = quote_time
+        item.quote_source = "測試即時行情"
+        item.quote_realtime = True
     return SimpleNamespace(
         market=SimpleNamespace(trade_date=day),
-        stocks=[stock(index) for index in range(15)],
+        stocks=stocks,
     )
 
 
@@ -232,11 +238,67 @@ def test_focused_long_ranking_keeps_three_long_positions() -> None:
 
 def test_open_high_candidate_is_skipped_when_intraday_low_never_reaches_entry_limit() -> None:
     picks = rank_long_term_candidates(unfilled_gap_payload(), "focused_long")
-    decision = long_term_entry_decision(picks[0])
+    decision = long_term_entry_decision(
+        picks[0],
+        LONG_TERM_START_DATE,
+        datetime(2026, 8, 10, 1, 15, tzinfo=UTC),
+    )
 
     assert picks[0].stock_code == "1815"
     assert decision.executable is False
     assert decision.max_entry_price < 118
+
+
+def test_current_quote_above_entry_limit_is_not_backfilled_from_intraday_low() -> None:
+    data = payload()
+    candidate = data.stocks[0]
+    candidate.open = 110
+    candidate.low = 105
+    candidate.price = 118
+    candidate.gap_percent = 0
+    candidate.return_1d = 7.27
+    pick = rank_long_term_candidates(data, "focused_long")[0]
+
+    decision = long_term_entry_decision(
+        pick,
+        LONG_TERM_START_DATE,
+        datetime(2026, 8, 10, 1, 15, tzinfo=UTC),
+    )
+
+    assert decision.executable is False
+    assert decision.entry_price == 118
+    assert "當刻行情" in decision.reason
+
+
+def test_entry_uses_the_same_quote_price_and_timestamp() -> None:
+    data = payload()
+    pick = rank_long_term_candidates(data, "focused_long")[0]
+
+    decision = long_term_entry_decision(
+        pick,
+        LONG_TERM_START_DATE,
+        datetime(2026, 8, 10, 1, 16, tzinfo=UTC),
+    )
+
+    assert decision.executable is True
+    assert decision.entry_price == pick.price
+    assert decision.entry_time == pick.quote_timestamp
+    assert "測試即時行情" in decision.reason
+
+
+def test_stale_intraday_quote_is_not_executable() -> None:
+    data = payload()
+    pick = rank_long_term_candidates(data, "focused_long")[0]
+
+    decision = long_term_entry_decision(
+        pick,
+        LONG_TERM_START_DATE,
+        datetime(2026, 8, 10, 1, 25, tzinfo=UTC),
+    )
+
+    assert decision.executable is False
+    assert decision.record_skip is False
+    assert "逾時" in decision.reason
 
 
 def test_first_run_skips_unfilled_open_high_candidate_and_backfills_portfolios() -> None:
@@ -278,7 +340,22 @@ def test_same_day_unfilled_open_entry_is_repaired_and_vacancy_is_refilled() -> N
     repair_at = datetime(2026, 8, 10, 2, 0, tzinfo=UTC)
     with Session(engine) as db:
         run_long_term_selection(db, payload(), at)
-        repaired = repair_long_term_unfilled_entries(db, unfilled_gap_payload(stock_code="2000"), repair_at)
+        old_positions = list(db.scalars(select(LongTermPosition).where(
+            LongTermPosition.stock_code == "2000",
+            LongTermPosition.status == "open",
+        )).all())
+        for position in old_positions:
+            position.entry_price = position.entry_price - 1
+        old_events = list(db.scalars(select(LongTermTradeEvent).where(
+            LongTermTradeEvent.position_id.in_([item.id for item in old_positions]),
+            LongTermTradeEvent.event_type == "BUY",
+        )).all())
+        for event in old_events:
+            event.price = event.price - 1
+        repair_payload = payload()
+        for item in repair_payload.stocks:
+            item.quote_timestamp = repair_at
+        repaired = repair_long_term_unfilled_entries(db, repair_payload, repair_at)
         db.commit()
         repaired_positions = list(db.scalars(select(LongTermPosition).where(
             LongTermPosition.stock_code == "2000",
@@ -289,7 +366,7 @@ def test_same_day_unfilled_open_entry_is_repaired_and_vacancy_is_refilled() -> N
             LongTermTradeEvent.event_type == "SKIP",
         )).all())
 
-        replenished = replenish_long_term_vacancies(db, unfilled_gap_payload(stock_code="2000"), repair_at)
+        replenished = replenish_long_term_vacancies(db, repair_payload, repair_at)
         open_positions = list(db.scalars(select(LongTermPosition).where(
             LongTermPosition.status == "open",
         )).all())
@@ -302,6 +379,30 @@ def test_same_day_unfilled_open_entry_is_repaired_and_vacancy_is_refilled() -> N
     assert sum(item.portfolio_mode == "long_only" for item in open_positions) == 10
     assert sum(item.portfolio_mode == "focused_long" for item in open_positions) == 3
     assert "2000" not in {item.stock_code for item in open_positions}
+
+
+def test_valid_same_quote_entry_is_not_repaired_after_market_price_moves() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    at = datetime(2026, 8, 10, 1, 15, tzinfo=UTC)
+    later = datetime(2026, 8, 10, 1, 20, tzinfo=UTC)
+    with Session(engine) as db:
+        run_long_term_selection(db, payload(), at)
+        moved_payload = payload()
+        for item in moved_payload.stocks:
+            item.price += 10
+            item.quote_timestamp = later
+        repaired = repair_long_term_unfilled_entries(db, moved_payload, later)
+        open_positions = list(db.scalars(select(LongTermPosition).where(
+            LongTermPosition.status == "open",
+        )).all())
+
+    assert repaired == {"long_only": 0, "focused_long": 0}
+    assert len(open_positions) == 13
 
 
 def test_first_run_creates_ten_and_three_stock_portfolios_with_buy_events() -> None:
@@ -329,6 +430,8 @@ def test_first_run_creates_ten_and_three_stock_portfolios_with_buy_events() -> N
     assert len(benchmarks) == 3
     assert len(events) == 13
     assert all(item.event_type == "BUY" for item in events)
+    assert all(float(item.entry_price) == float(item.last_price) for item in positions)
+    assert all(item.entry_time.replace(tzinfo=UTC) == at for item in positions)
     assert all(float(item.portfolio_nav) == 100 for item in runs)
     assert sum(item.portfolio_mode == "long_only" for item in positions) == 10
     assert sum(item.portfolio_mode == "focused_long" for item in positions) == 3
@@ -373,7 +476,10 @@ def test_portfolio_performance_includes_cash_dividend_income(monkeypatch) -> Non
         response = asyncio.run(portfolio_payload(db, "long_only"))
 
     expected_income = sum(item["quantity"] for item in response["items"])
-    assert all(item["entryTime"] == at.isoformat() for item in response["items"])
+    assert all(
+        datetime.fromisoformat(item["entryTime"]).replace(tzinfo=UTC) == at
+        for item in response["items"]
+    )
     assert all(item["dividendPerShare"] == 1 for item in response["items"])
     assert all(item["totalReturnPercent"] == item["dividendReturnPercent"] for item in response["items"])
     assert response["capitalAllocation"]["dividendIncome"] == expected_income
