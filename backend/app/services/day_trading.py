@@ -1641,6 +1641,49 @@ class MockDayTradingEngine:
             quote = self._official_quotes.get(symbol)
         return None if quote is None else float(quote.price)
 
+    def minute_bars_for(self, symbol: str, limit: int = 300) -> list[dict[str, object]]:
+        """Aggregate verified intraday quote samples into completed one-minute bars."""
+        bounded_limit = max(1, min(limit, 300))
+        today = self._now().astimezone(TAIPEI).date()
+        with self._lock:
+            history = list(self._quote_history.get(symbol, []))
+        grouped: dict[datetime, list[OfficialStockQuote]] = {}
+        for quote in history:
+            if quote.source != "TWSE MIS" or not quote.is_realtime:
+                continue
+            try:
+                timestamp = datetime.fromisoformat(quote.quote_timestamp).astimezone(TAIPEI)
+            except (TypeError, ValueError):
+                continue
+            if timestamp.date() != today:
+                continue
+            minute = timestamp.replace(second=0, microsecond=0)
+            grouped.setdefault(minute, []).append(quote)
+        bars: list[dict[str, object]] = []
+        previous_cumulative_volume = 0
+        for minute, samples in sorted(grouped.items()):
+            samples.sort(key=lambda quote: quote.quote_timestamp)
+            prices = [float(quote.price) for quote in samples if quote.price > 0]
+            if not prices:
+                continue
+            cumulative_volume = max(int(quote.volume) for quote in samples)
+            bars.append({
+                "timestamp": minute.isoformat(),
+                "open": prices[0],
+                "high": max(prices),
+                "low": min(prices),
+                "close": prices[-1],
+                "volume": max(cumulative_volume - previous_cumulative_volume, 0),
+                "source": "TWSE MIS",
+                "isRealtime": True,
+            })
+            previous_cumulative_volume = max(previous_cumulative_volume, cumulative_volume)
+        # The current minute is still forming and must never be treated as a
+        # completed decision bar.
+        now_minute = self._now().astimezone(TAIPEI).replace(second=0, microsecond=0)
+        completed = [bar for bar in bars if datetime.fromisoformat(str(bar["timestamp"])) < now_minute]
+        return completed[-bounded_limit:]
+
     def quote_history_for(self, symbol: str, limit: int = 240) -> list[dict[str, object]]:
         """Return today's compact intraday price series for lightweight charts."""
         bounded_limit = max(1, min(limit, self._LIVE_HISTORY_LIMIT))

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Activity, BarChart3, Bot, Fish, Flame, Landmark, Newspaper, Rocket, ScanSearch, Search, SlidersHorizontal, Telescope, TrendingUp, Waves, Wifi, WifiOff, Zap } from "lucide-react";
+import { Activity, BarChart3, Bot, Fish, Flame, Landmark, Newspaper, Rocket, ScanSearch, Search, SlidersHorizontal, Telescope, Waves, Wifi, WifiOff, Zap } from "lucide-react";
 import { StockAnalysis } from "@/components/StockAnalysis";
 import { Screener } from "@/components/Screener";
 import { PortfolioPage } from "@/components/PortfolioPage";
@@ -10,6 +10,7 @@ import { NewsPage } from "@/components/NewsPage";
 import { InstitutionalInvestorsPage } from "@/components/InstitutionalInvestorsPage";
 import { ChipFlowPage } from "@/components/ChipFlowPage";
 import { DayTradingDashboard } from "@/components/day-trading/DayTradingDashboard";
+import { DayTradingV2Page } from "@/components/day-trading-v2/DayTradingV2Page";
 import { ElectronicChipFlowTicker } from "@/components/ElectronicChipFlowTicker";
 import { RobotHealthPanel } from "@/components/RobotHealthPanel";
 import { TodayRobotNotificationsPanel } from "@/components/TodayRobotNotificationsPanel";
@@ -31,9 +32,9 @@ import {
 } from "@/lib/market-snapshot-refresh";
 import type { StockPayload } from "@/lib/types";
 
-type Tab = "analysis" | "screener" | "day-trading" | "limit-up-ai" | "pattern-robot" | "adaptive-electronic" | "rocket-radar" | "long-term" | "whale-accumulation" | "institutional-investors" | "chip-flow" | "portfolio" | "industries" | "news";
+type Tab = "analysis" | "screener" | "day-trading-v2" | "day-trading" | "limit-up-ai" | "pattern-robot" | "adaptive-electronic" | "rocket-radar" | "long-term" | "whale-accumulation" | "institutional-investors" | "chip-flow" | "portfolio" | "industries" | "news";
 type Connection = "connecting" | "connected" | "disconnected";
-const VIEW_TABS: Tab[] = ["analysis", "screener", "day-trading", "limit-up-ai", "pattern-robot", "adaptive-electronic", "rocket-radar", "long-term", "whale-accumulation", "institutional-investors", "chip-flow", "portfolio", "industries", "news"];
+const VIEW_TABS: Tab[] = ["analysis", "screener", "day-trading-v2", "day-trading", "limit-up-ai", "pattern-robot", "adaptive-electronic", "rocket-radar", "long-term", "whale-accumulation", "institutional-investors", "chip-flow", "portfolio", "industries", "news"];
 
 function viewUrl(symbol: string, view: Tab): string {
   const params = new URLSearchParams({ symbol });
@@ -334,10 +335,9 @@ export default function Home() {
       <nav className="main-nav" aria-label="主要功能">
         <button className={tab === "analysis" ? "active" : ""} onClick={() => switchTab("analysis")}><Activity size={17} />個股分析</button>
         <button className={tab === "screener" ? "active" : ""} onClick={() => switchTab("screener")}><SlidersHorizontal size={17} />AI 選股</button>
-        <button className={tab === "day-trading" ? "active ai-nav" : "ai-nav"} onClick={() => switchTab("day-trading")}><Bot size={17} />當沖機器人<span>LIVE</span></button>
+        <button className={tab === "day-trading-v2" ? "active ai-nav" : "ai-nav"} onClick={() => switchTab("day-trading-v2")}><Bot size={17} />當沖機器人2<span>AI</span></button>
         <button className={tab === "limit-up-ai" ? "active rocket-nav limit-up-nav" : "rocket-nav limit-up-nav"} onClick={() => switchTab("limit-up-ai")} aria-label="開啟專抓漲停飆股AI"><Zap size={17} />漲停機器人{limitUpUnread > 0 && <span className="rocket-unread-badge">{limitUpUnread > 99 ? "99+" : limitUpUnread}</span>}</button>
         <button className={tab === "pattern-robot" ? "active pattern-nav" : "pattern-nav"} onClick={() => switchTab("pattern-robot")}><ScanSearch size={17} />型態選股機器人</button>
-        <button className={tab === "adaptive-electronic" ? "active" : ""} onClick={() => switchTab("adaptive-electronic")}><TrendingUp size={17} />超強AI當沖系統</button>
         <button className={tab === "rocket-radar" ? "active rocket-nav" : "rocket-nav"} onClick={() => switchTab("rocket-radar")}><Rocket size={17} />飆股雷達{rocketUnread > 0 && <span className="rocket-unread-badge">{rocketUnread > 99 ? "99+" : rocketUnread}</span>}</button>
         <button className={tab === "long-term" ? "active" : ""} onClick={() => switchTab("long-term")}><Telescope size={17} />長線選股</button>
         <button className={tab === "whale-accumulation" ? "active whale-nav" : "whale-nav"} onClick={() => switchTab("whale-accumulation")}><Fish size={17} />大戶偷掃貨</button>
@@ -365,6 +365,8 @@ export default function Home() {
           : <div className="empty-state"><Search size={30} /><h2>找不到股票資料</h2><p>請嘗試輸入其他股票代號或名稱。</p></div>
         ) : tab === "screener" ? (
           <Screener onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }} />
+        ) : tab === "day-trading-v2" ? (
+          <DayTradingV2Page userId={userId} />
         ) : tab === "day-trading" ? (
           <DayTradingDashboard />
         ) : tab === "limit-up-ai" ? (
