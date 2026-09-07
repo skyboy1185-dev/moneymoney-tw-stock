@@ -13,8 +13,9 @@ async function proxy(request:NextRequest,context:{params:Promise<{path:string[]}
   const contentType=request.headers.get("content-type");if(contentType)headers["content-type"]=contentType;
   try{
     const body=["GET","HEAD"].includes(request.method)?undefined:await request.text();
-    const payload=await backendJson<unknown>(target,{method:request.method,headers,body});
+    const timeoutMs=["GET","HEAD"].includes(request.method)?12_000:30_000;
+    const payload=await backendJson<unknown>(target,{method:request.method,headers,body},timeoutMs);
     return NextResponse.json(payload);
-  }catch(error){const message=error instanceof BackendUnavailableError?"??AI????????????":error instanceof Error?error.message:"????";return NextResponse.json({error:message},{status:503});}
+  }catch(error){const message=error instanceof BackendUnavailableError?"超強 AI 後端暫時無法連線":error instanceof Error?error.message:"請稍後再試";return NextResponse.json({error:message},{status:503});}
 }
 export const GET=proxy;export const POST=proxy;export const PUT=proxy;export const DELETE=proxy;
