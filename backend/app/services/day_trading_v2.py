@@ -79,6 +79,69 @@ DEFAULT_CONFIG: dict[str, object] = {
     "emailOpeningRange": True,
     "emailHourlySummary": False,
     "emailCloseReport": True,
+    "controllerMinimumScore": "80",
+    "controllerMinimumRiskReward": "2",
+    "controllerMinLiquidityScore": "70",
+    "regimeUpdateMinutes": 5,
+    "regimeSwitchCycles": 2,
+    "regimeRecoveryCycles": 3,
+    "regimeMinCoveragePct": "80",
+    "regimeCrash1mPct": "-0.5",
+    "regimeCrash5mPct": "-1.0",
+    "regimeCrashBreadthPct": "20",
+    "regimeCrashSpreadRatio": "2",
+    "regimeStrongVwapDeviationPct": "0.15",
+    "regimeStrongTrend5mPct": "0.30",
+    "regimeStrongBreadthPct": "60",
+    "regimeStrongRelativeVolume": "1.05",
+    "regimeStrongSectorCount": 3,
+    "regimeWeakVwapDeviationPct": "-0.15",
+    "regimeWeakTrend5mPct": "-0.25",
+    "regimeWeakBreadthPct": "40",
+    "regimeMildVwapDeviationPct": "-0.05",
+    "regimeMildTrend5mPct": "0",
+    "regimeMildBreadthPct": "52",
+    "regimeMildRelativeVolume": "0.9",
+    "openingStrategyStart": "09:15:00",
+    "openingStrategyEnd": "11:00:00",
+    "vwapStrategyStart": "09:05:00",
+    "vwapStrategyEnd": "13:20:00",
+    "volumeStrategyStart": "09:05:00",
+    "volumeStrategyEnd": "13:20:00",
+    "reversalStrategyStart": "09:15:00",
+    "reversalStrategyEnd": "12:30:00",
+    "afternoonStrategyStart": "12:30:00",
+    "afternoonStrategyEnd": "13:20:00",
+    "healthDiagnosisTime": "13:45:00",
+    "weeklyHealthCheckTime": "14:00:00",
+    "healthMinTrades": 20,
+    "healthMinRegimeTrades": 10,
+    "healthMinProfitFactor": "1",
+    "healthConsecutiveLossLimit": 5,
+    "health20DayDrawdownLimit": "60000",
+    "healthSlippageMultiple": "2",
+    "healthPauseAfterAlertDays": 2,
+    "healthAlertRiskMultiplier": "0.5",
+    "optimizationMinOosTrades": 100,
+    "optimizationMinProfitFactor": "1.2",
+    "optimizationMaxTopTwoProfitSharePct": "35",
+    "optimizationMaxSymbolProfitSharePct": "25",
+    "optimizationMaxSectorProfitSharePct": "40",
+    "optimizationMinNonNegativeMonthPct": "60",
+    "optimizationMaxParticipationPct": "5",
+    "versionRollbackConsecutiveLosses": 3,
+    "versionRollbackDrawdown": "24000",
+    "versionRollbackSignalLowPct": "50",
+    "versionRollbackSignalHighPct": "200",
+}
+
+
+DEFAULT_STRATEGY_PARAMETERS: dict[str, dict[str, object]] = {
+    "OPENING_RANGE_BREAKOUT": {"volumeMultiplier": "1.2", "baseScore": 68, "targetRiskReward": "2"},
+    "VWAP_TREND_PULLBACK": {"pullbackRangePct": "0.3", "volumeMultiplier": "0.9", "baseScore": 70, "targetRiskReward": "2"},
+    "VOLUME_HIGH_BREAKOUT": {"lookbackBars": 30, "volumeMultiplier": "1.8", "baseScore": 72, "targetRiskReward": "2"},
+    "FALSE_BREAKDOWN_REVERSAL": {"lookbackBars": 20, "confirmationBars": 4, "volumeMultiplier": "1.0", "baseScore": 67, "targetRiskReward": "2"},
+    "AFTERNOON_STRENGTH_BREAKOUT": {"lookbackBars": 30, "volumeMultiplier": "1.1", "baseScore": 69, "targetRiskReward": "2"},
 }
 
 
@@ -291,7 +354,12 @@ def _vwap(bars: Sequence[MinuteBar]) -> Decimal:
     return sum((((bar.high + bar.low + bar.close) / 3) * bar.volume for bar in bars), ZERO) / volume
 
 
-def evaluate_strategies(bars: Sequence[MinuteBar], *, previous_high: object | None = None, previous_low: object | None = None) -> list[StrategySignal]:
+def evaluate_strategies(
+    bars: Sequence[MinuteBar], *, previous_high: object | None = None,
+    previous_low: object | None = None,
+    strategy_parameters: Mapping[str, Mapping[str, object]] | None = None,
+    enabled_strategies: set[str] | None = None,
+) -> list[StrategySignal]:
     """Evaluate completed bars only. The last bar is the decision bar."""
     if len(bars) < 16:
         return []
@@ -304,36 +372,51 @@ def evaluate_strategies(bars: Sequence[MinuteBar], *, previous_high: object | No
     volume_ratio = Decimal(current.volume) / avg_volume if avg_volume else ZERO
     signals: list[StrategySignal] = []
 
-    def add(strategy_id: str, base: int, stop: Decimal, reasons: tuple[str, ...]) -> None:
+    parameters = {key: dict(value) for key, value in DEFAULT_STRATEGY_PARAMETERS.items()}
+    for key, values in (strategy_parameters or {}).items():
+        if key in parameters:
+            parameters[key].update(values)
+
+    def param(strategy_id: str, key: str) -> object:
+        return parameters[strategy_id][key]
+
+    def add(strategy_id: str, stop: Decimal, reasons: tuple[str, ...]) -> None:
         entry = current.close
         if stop >= entry:
             return
-        confidence = min(Decimal("100"), Decimal(base) + min(volume_ratio * 5, Decimal("15")))
-        target = entry + (entry - stop) * Decimal("2")
+        confidence = min(Decimal("100"), dec(param(strategy_id, "baseScore")) + min(volume_ratio * 5, Decimal("15")))
+        target = entry + (entry - stop) * dec(param(strategy_id, "targetRiskReward"))
         signals.append(StrategySignal(strategy_id, confidence.quantize(Decimal("0.1")), entry, stop, target, reasons))
 
+    enabled = enabled_strategies or set(parameters)
     opening = [bar for bar in bars if time(9, 0) <= (bar.timestamp.astimezone(TAIPEI).time() if bar.timestamp.tzinfo else bar.timestamp.time()) < time(9, 15)]
-    if opening and time(9, 15) <= local_time <= time(11, 0):
+    if "OPENING_RANGE_BREAKOUT" in enabled and opening and time(9, 15) <= local_time <= time(11, 0):
         opening_high = max(bar.high for bar in opening)
-        if current.close > opening_high and current.close > current_vwap and volume_ratio >= Decimal("1.2"):
-            add("OPENING_RANGE_BREAKOUT", 68, opening_high, ("突破開盤15分鐘區間", "站在VWAP之上", "突破量能放大"))
+        if current.close > opening_high and current.close > current_vwap and volume_ratio >= dec(param("OPENING_RANGE_BREAKOUT", "volumeMultiplier")):
+            add("OPENING_RANGE_BREAKOUT", opening_high, ("突破開盤15分鐘區間", "站在VWAP之上", "突破量能放大"))
 
-    if current.close >= current_vwap and current_vwap > previous_vwap and current.low <= current_vwap * Decimal("1.003") and current.close > current.open and volume_ratio >= Decimal("0.9"):
-        add("VWAP_TREND_PULLBACK", 70, min(current.low, current_vwap * Decimal("0.997")), ("VWAP斜率向上", "回踩VWAP未破", "買盤重新出現"))
+    if "VWAP_TREND_PULLBACK" in enabled:
+        pullback = dec(param("VWAP_TREND_PULLBACK", "pullbackRangePct")) / 100
+        if current.close >= current_vwap and current_vwap > previous_vwap and current.low <= current_vwap * (Decimal("1") + pullback) and current.close > current.open and volume_ratio >= dec(param("VWAP_TREND_PULLBACK", "volumeMultiplier")):
+            add("VWAP_TREND_PULLBACK", min(current.low, current_vwap * (Decimal("1") - pullback)), ("VWAP斜率向上", "回踩VWAP未破", "買盤重新出現"))
 
-    resistance = max([bar.high for bar in history[-30:]] + ([dec(previous_high)] if previous_high else []))
-    if current.close > resistance and volume_ratio >= Decimal("1.8"):
-        add("VOLUME_HIGH_BREAKOUT", 72, resistance, ("爆量突破前高", "相對成交量明顯放大", "價格守住突破平台"))
+    if "VOLUME_HIGH_BREAKOUT" in enabled:
+        volume_lookback = int(param("VOLUME_HIGH_BREAKOUT", "lookbackBars"))
+        resistance = max([bar.high for bar in history[-volume_lookback:]] + ([dec(previous_high)] if previous_high else []))
+        if current.close > resistance and volume_ratio >= dec(param("VOLUME_HIGH_BREAKOUT", "volumeMultiplier")):
+            add("VOLUME_HIGH_BREAKOUT", resistance, ("爆量突破前高", "相對成交量明顯放大", "價格守住突破平台"))
 
-    support = min([bar.low for bar in history[-20:]] + ([dec(previous_low)] if previous_low else []))
-    recent = bars[-4:]
-    if min(bar.low for bar in recent) < support and current.close > support and current.close > current.open and volume_ratio >= Decimal("1.0"):
-        add("FALSE_BREAKDOWN_REVERSAL", 67, min(bar.low for bar in recent), ("短暫跌破支撐", "限定時間內站回", "反轉K棒確認"))
+    if "FALSE_BREAKDOWN_REVERSAL" in enabled:
+        false_lookback = int(param("FALSE_BREAKDOWN_REVERSAL", "lookbackBars"))
+        support = min([bar.low for bar in history[-false_lookback:]] + ([dec(previous_low)] if previous_low else []))
+        recent = bars[-int(param("FALSE_BREAKDOWN_REVERSAL", "confirmationBars")):]
+        if min(bar.low for bar in recent) < support and current.close > support and current.close > current.open and volume_ratio >= dec(param("FALSE_BREAKDOWN_REVERSAL", "volumeMultiplier")):
+            add("FALSE_BREAKDOWN_REVERSAL", min(bar.low for bar in recent), ("短暫跌破支撐", "限定時間內站回", "反轉K棒確認"))
 
-    if time(12, 0) <= local_time < time(13, 20) and current.close > current_vwap:
-        afternoon = [bar for bar in history[-30:] if (bar.timestamp.astimezone(TAIPEI).time() if bar.timestamp.tzinfo else bar.timestamp.time()) >= time(12, 0)]
-        if afternoon and current.close > max(bar.high for bar in afternoon) and volume_ratio >= Decimal("1.1"):
-            add("AFTERNOON_STRENGTH_BREAKOUT", 69, max(current_vwap, min(bar.low for bar in afternoon[-10:])), ("午後維持VWAP之上", "突破午後整理區間", "量價結構偏多"))
+    if "AFTERNOON_STRENGTH_BREAKOUT" in enabled and time(12, 30) <= local_time < time(13, 20) and current.close > current_vwap:
+        afternoon = [bar for bar in history[-int(param("AFTERNOON_STRENGTH_BREAKOUT", "lookbackBars")):] if (bar.timestamp.astimezone(TAIPEI).time() if bar.timestamp.tzinfo else bar.timestamp.time()) >= time(12, 0)]
+        if afternoon and current.close > max(bar.high for bar in afternoon) and volume_ratio >= dec(param("AFTERNOON_STRENGTH_BREAKOUT", "volumeMultiplier")):
+            add("AFTERNOON_STRENGTH_BREAKOUT", max(current_vwap, min(bar.low for bar in afternoon[-10:])), ("午後維持VWAP之上", "突破午後整理區間", "量價結構偏多"))
     return signals
 
 
@@ -376,6 +459,10 @@ class DisabledLiveBrokerAdapter:
 def run_backtest(
     datasets: Mapping[str, Sequence[MinuteBar]], *, strategy_id: str = "ALL",
     config: Mapping[str, object] | None = None, portfolio: bool = True,
+    strategy_parameters: Mapping[str, Mapping[str, object]] | None = None,
+    market_regime_by_time: Mapping[datetime, str] | None = None,
+    sector_by_symbol: Mapping[str, str] | None = None,
+    controller_filter: bool | None = None,
 ) -> dict[str, object]:
     """Minute backtest with next-bar fills and shared capital.
 
@@ -392,10 +479,45 @@ def run_backtest(
         for index in range(15, len(bars) - 1):
             decision_bars = bars[: index + 1]
             next_bar = bars[index + 1]
-            for signal in evaluate_strategies(decision_bars):
+            enabled = None if strategy_id == "ALL" else {strategy_id}
+            for signal in evaluate_strategies(
+                decision_bars, strategy_parameters=strategy_parameters, enabled_strategies=enabled,
+            ):
                 if signal.strategy_id in enabled:
                     candidates.append((signal_time := decision_bars[-1].timestamp, symbol, signal, next_bar, bars[index + 1 :]))
     candidates.sort(key=lambda row: (row[0], -row[2].confidence, row[1]))
+    if (portfolio if controller_filter is None else controller_filter) and candidates:
+        # Portfolio backtests use the same unified ranking rule as the live
+        # controller. When no index series is supplied, the disclosed fallback
+        # is a mild-bull regime; qualified optimization datasets should provide it.
+        from .day_trading_v2_controller import ControllerCandidateInput, REGIME_MILD, rank_candidates, score_candidate
+        selected_keys: set[tuple[datetime, str, str]] = set()
+        grouped: dict[datetime, list[tuple[tuple[datetime, str, StrategySignal, MinuteBar, Sequence[MinuteBar]], object]]] = {}
+        for row in candidates:
+            signal_time, symbol, signal, _fill, _future = row
+            controller_input = ControllerCandidateInput(
+                key=f"backtest:{signal_time.isoformat()}:{symbol}:{signal.strategy_id}",
+                symbol=symbol, stock_name=symbol,
+                sector=(sector_by_symbol or {}).get(symbol, "回測未分類"),
+                strategy_id=signal.strategy_id, strategy_version="BACKTEST",
+                signal_time=signal_time, raw_score=signal.confidence,
+                entry_price=signal.entry_price, stop_price=signal.stop_price,
+                target_price=signal.target_price,
+                risk_reward=(signal.target_price - signal.entry_price) / (signal.entry_price - signal.stop_price),
+                sector_strength=Decimal("50"), liquidity_score=Decimal("100"),
+            )
+            local_time = signal_time.astimezone(TAIPEI).time() if signal_time.tzinfo else signal_time.time()
+            scored = score_candidate(
+                controller_input, regime=(market_regime_by_time or {}).get(signal_time, REGIME_MILD),
+                local_time=local_time, config=cfg,
+            )
+            grouped.setdefault(signal_time, []).append((row, scored))
+        for signal_time, rows in grouped.items():
+            ranked = rank_candidates(item[1] for item in rows)
+            winner = next((item for item in ranked if item.allowed), None)
+            if winner:
+                selected_keys.add((signal_time, winner.candidate.symbol, winner.candidate.strategy_id))
+        candidates = [row for row in candidates if (row[0], row[1], row[2].strategy_id) in selected_keys]
     occupied: list[tuple[datetime, str]] = []
     traded_keys: set[tuple[str, datetime.date]] = set()
     for signal_time, symbol, signal, fill_bar, future in candidates:

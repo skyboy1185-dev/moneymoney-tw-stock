@@ -34,6 +34,8 @@ SCHEDULED_EVENTS = (
     ScheduledEvent("MARKET_SCAN_STOPPED", "marketCloseTime", "13:30:00"),
     ScheduledEvent("BROKER_SYNCED", "brokerSyncTime", "13:35:00"),
     ScheduledEvent("DAILY_REPORT", "closeReportTime", "13:40:00", True),
+    ScheduledEvent("STRATEGY_HEALTH_DIAGNOSIS", "healthDiagnosisTime", "13:45:00"),
+    ScheduledEvent("WEEKLY_STRATEGY_HEALTH", "weeklyHealthCheckTime", "14:00:00"),
 )
 
 

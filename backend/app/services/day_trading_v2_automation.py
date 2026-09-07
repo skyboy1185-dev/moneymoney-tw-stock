@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 import json
 import logging
 import os
@@ -75,6 +75,7 @@ def _twse_holiday_date(raw: object, year: int) -> date | None:
 class DayTradingV2Coordinator:
     def __init__(self) -> None:
         self._task: asyncio.Task | None = None
+        self._optimization_task: asyncio.Task | None = None
         self._stop = asyncio.Event()
         self._worker_id = f"{os.getenv('RAILWAY_REPLICA_ID', 'local')}:{uuid4()}"
 
@@ -88,13 +89,20 @@ class DayTradingV2Coordinator:
         self._stop.set()
         if self._task:
             await self._task
+        if self._optimization_task:
+            await self._optimization_task
         self._task = None
+        self._optimization_task = None
 
     async def _run(self) -> None:
         while not self._stop.is_set():
             try:
                 await asyncio.to_thread(self.run_cycle)
                 await self.dispatch_pending()
+                local = datetime.now(UTC).astimezone(TAIPEI)
+                if local.time() >= time.fromisoformat("13:45:00") and (self._optimization_task is None or self._optimization_task.done()):
+                    from .day_trading_v2_optimizer import process_next_optimization_job
+                    self._optimization_task = asyncio.create_task(asyncio.to_thread(process_next_optimization_job))
             except Exception:
                 logger.exception("day-trading-v2 coordinator cycle failed")
             try:
@@ -243,6 +251,8 @@ class DayTradingV2Coordinator:
         from ..routers.day_trading_v2 import _dashboard, _notification
 
         if event_type == "DAILY_RESET":
+            from .day_trading_v2_health import apply_pending_deployments
+            apply_pending_deployments(db, user_id, runtime.trading_date, now)
             runtime.initialized = True
             runtime.initialized_at = now
             runtime.scanned_stock_count = runtime.candidate_count = 0
@@ -275,8 +285,16 @@ class DayTradingV2Coordinator:
         elif event_type == "MARKET_SCAN_STOPPED":
             runtime.scanning = runtime.order_allowed = False
         elif event_type == "DAILY_REPORT":
+            from .day_trading_v2_challenger import count_completed_challenger_day
+            count_completed_challenger_day(db, user_id, runtime.trading_date)
             runtime.status = "COMPLETED"
             runtime.closed_at = now
+        elif event_type == "STRATEGY_HEALTH_DIAGNOSIS":
+            from .day_trading_v2_health import run_health_diagnosis
+            run_health_diagnosis(db, user_id, "PAPER", config, now)
+        elif event_type == "WEEKLY_STRATEGY_HEALTH" and now.astimezone(TAIPEI).weekday() == 4:
+            from .day_trading_v2_health import run_health_diagnosis
+            run_health_diagnosis(db, user_id, "PAPER", config, now)
         if not emit_notification or event_type not in {"PREOPEN_READY", "OPENING_RANGE_READY", "HOURLY_1000", "HOURLY_1100", "HOURLY_1200", "DAILY_REPORT"}:
             return
         dashboard = _dashboard(db, user_id)

@@ -7,7 +7,8 @@ export const dynamic = "force-dynamic";
 async function proxy(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
   const { path } = await context.params;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20_000);
+  const isDatasetUpload = path.join("/") === "optimization/datasets";
+  const timeout = setTimeout(() => controller.abort(), isDatasetUpload ? 300_000 : 20_000);
   try {
     const headers = new Headers({ "content-type": request.headers.get("content-type") ?? "application/json" });
     const userId = request.headers.get("x-user-id");
@@ -15,7 +16,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
     const response = await fetch(`${getBackendBaseUrl()}/api/v1/day-trading-v2/${path.join("/")}${request.nextUrl.search}`, {
       method: request.method,
       headers,
-      body: ["GET", "HEAD"].includes(request.method) ? undefined : await request.text(),
+      body: ["GET", "HEAD"].includes(request.method) ? undefined : await request.arrayBuffer(),
       cache: "no-store",
       signal: controller.signal,
     });

@@ -3067,6 +3067,19 @@ footer span { color: #566177; }
 
 /* Unified intraday trading system */
 .dt2-page { display: grid; gap: 16px; color: #dbe7f2; }
+.dt2-regime { min-height: 150px; display: grid; align-content: center; gap: 10px; padding: 18px; border-radius: 12px; background: linear-gradient(135deg,rgba(34,197,94,.08),rgba(56,189,248,.08)); border: 1px solid rgba(125,211,252,.2); }
+.dt2-regime > strong { font-size: 26px; color: #f8fafc; }
+.dt2-regime > span { color: #7dd3fc; font-weight: 700; }
+.dt2-regime > small { color: #9fb3c8; line-height: 1.6; }
+.dt2-inline-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.dt2-inline-actions button, .dt2-panel header > button { min-height: 30px; padding: 0 10px; color: #dcecf9; background: #16314a; border: 1px solid #315b78; border-radius: 7px; cursor: pointer; }
+.dt2-strategy-state-grid { display: grid; grid-template-columns: repeat(5,minmax(150px,1fr)); gap: 9px; }
+.dt2-strategy-state { display: grid; gap: 6px; padding: 12px; border-radius: 10px; background: rgba(30,52,71,.55); border: 1px solid #28475d; }
+.dt2-strategy-state span { color: #6ee7b7; font-size: 11px; font-weight: 800; }
+.dt2-strategy-state small { color: #91a8ba; }
+.dt2-strategy-state.deweighted span { color: #facc15; }
+.dt2-strategy-state.paused span { color: #fb7185; }
+@media (max-width: 1000px) { .dt2-strategy-state-grid { grid-template-columns: repeat(2,minmax(150px,1fr)); } }
 .dt2-hero { padding: 24px; display: flex; align-items: center; justify-content: space-between; gap: 20px; background: radial-gradient(circle at 85% 10%, rgba(239,68,68,.14), transparent 35%), linear-gradient(135deg,#0c1b29,#101a2c); border: 1px solid #29445c; border-radius: 16px; box-shadow: 0 14px 40px rgba(0,0,0,.2); }
 .dt2-hero h1 { margin: 5px 0 8px; font-size: 27px; letter-spacing: .02em; }
 .dt2-hero p { margin: 0; color: #93a8ba; font-size: 13px; line-height: 1.6; }
@@ -3096,6 +3109,7 @@ footer span { color: #566177; }
 .dt2-page button:disabled { opacity: .45; cursor: not-allowed; }.dt2-page button.danger-soft,.dt2-page button.primary-soft { padding: 5px 9px; color: #ff8992; background: rgba(160,37,50,.12); border: 1px solid rgba(207,69,82,.35); border-radius: 6px; cursor: pointer; }.dt2-page button.primary-soft { color: #69dba5; border-color: rgba(62,187,132,.35); background: rgba(32,128,86,.12); }
 .dt2-form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }.dt2-form label,.dt2-settings-grid label { display: grid; gap: 5px; color: #7f95a8; font-size: 10px; }.dt2-form input,.dt2-form select,.dt2-settings-grid input { min-height: 37px; padding: 0 9px; color: #dce8f2; background: #08141f; border: 1px solid #294359; border-radius: 7px; }.dt2-form button { grid-column: 1/-1; justify-content: center; }
 .dt2-result { max-height: 270px; overflow: auto; padding: 14px; color: #c8d7e3; background: #07121b; border-radius: 8px; white-space: pre-wrap; font-family: inherit; font-size: 11px; line-height: 1.6; }.dt2-data-warning { padding: 14px; color: #d6ac5f; background: rgba(133,91,20,.12); border: 1px solid rgba(190,135,41,.3); border-radius: 8px; font-size: 11px; line-height: 1.6; }.dt2-data-warning p { margin: 6px 0 0; color: #9c8b6d; }
+.dt2-table details { min-width: 220px; }.dt2-table summary { color: #70c8ef; cursor: pointer; }.dt2-table details .dt2-result { width: 520px; margin-top: 8px; }
 .dt2-rules { display: grid; gap: 0; }.dt2-rules div { padding: 10px 0; display: flex; justify-content: space-between; border-top: 1px solid #1e3446; }.dt2-rules div:first-child { border-top: 0; }.dt2-rules dt { color: #788fa2; font-size: 11px; }.dt2-rules dd { margin: 0; font-size: 12px; font-weight: 700; }
 .dt2-danger-actions { display: grid; gap: 9px; }.dt2-danger-actions button { min-height: 38px; color: #ff9098; background: rgba(148,33,45,.15); border: 1px solid rgba(203,62,76,.42); border-radius: 7px; cursor: pointer; }.dt2-panel.danger > p { color: #8f7b80; font-size: 11px; line-height: 1.55; }
 .dt2-mode-select { display: flex; gap: 8px; }.dt2-mode-select button { min-height: 38px; padding: 0 12px; color: #8197aa; background: #091722; border: 1px solid #294157; border-radius: 7px; cursor: pointer; }.dt2-mode-select button.active { color: #dff3ff; border-color: #3b7196; background: #17334a; }.dt2-panel > .dt2-data-warning { margin-top: 12px; }

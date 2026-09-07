@@ -286,6 +286,22 @@ def create_tables() -> None:
                 "ALTER TABLE day_trade_v2_notifications "
                 "ADD COLUMN IF NOT EXISTS email_attempted_at TIMESTAMPTZ"
             ))
+            # Strategy controller and optimization version metadata (migration 029).
+            for statement in (
+                "ALTER TABLE day_trade_v2_strategy_versions ADD COLUMN IF NOT EXISTS parent_version VARCHAR(30) NOT NULL DEFAULT ''",
+                "ALTER TABLE day_trade_v2_strategy_versions ADD COLUMN IF NOT EXISTS parameters_json TEXT NOT NULL DEFAULT '{}'",
+                "ALTER TABLE day_trade_v2_strategy_versions ADD COLUMN IF NOT EXISTS change_reason TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE day_trade_v2_strategy_versions ADD COLUMN IF NOT EXISTS data_period_json TEXT NOT NULL DEFAULT '{}'",
+                "ALTER TABLE day_trade_v2_strategy_versions ADD COLUMN IF NOT EXISTS backtest_result_json TEXT NOT NULL DEFAULT '{}'",
+                "ALTER TABLE day_trade_v2_strategy_versions ADD COLUMN IF NOT EXISTS oos_result_json TEXT NOT NULL DEFAULT '{}'",
+                "ALTER TABLE day_trade_v2_strategy_versions ADD COLUMN IF NOT EXISTS simulation_result_json TEXT NOT NULL DEFAULT '{}'",
+                "ALTER TABLE day_trade_v2_strategy_versions ADD COLUMN IF NOT EXISTS checksum VARCHAR(64) NOT NULL DEFAULT ''",
+                "ALTER TABLE day_trade_v2_strategy_versions ADD COLUMN IF NOT EXISTS validation_status VARCHAR(30) NOT NULL DEFAULT 'UNVERIFIED'",
+                "ALTER TABLE day_trade_v2_signals ADD COLUMN IF NOT EXISTS controller_decision_id VARCHAR(80) NOT NULL DEFAULT ''",
+                "ALTER TABLE day_trade_v2_orders ADD COLUMN IF NOT EXISTS controller_decision_id VARCHAR(80) NOT NULL DEFAULT ''",
+                "ALTER TABLE day_trade_v2_challenger_runs ADD COLUMN IF NOT EXISTS last_counted_date DATE",
+            ):
+                connection.execute(text(statement))
     # Database synchronization can merge two independently created portfolio
     # batches. Quarantine overflow before enforcing one open row per symbol.
     from .services.long_term_selection import repair_long_term_position_overflow

@@ -29,4 +29,13 @@ export const dayTradingV2Client = {
   closePosition: (userId: string, positionId: string, fillPrice: string, reason = "手動平倉") => request(`positions/${positionId}/close`, userId, { method: "POST", body: JSON.stringify({ fill_price: fillPrice, reason, percentage: 100 }) }),
   backtest: (userId: string, payload: Record<string, unknown>) => request<Record<string, unknown>>("backtests", userId, { method: "POST", body: JSON.stringify(payload) }),
   backtests: (userId: string) => request<{ items: Array<Record<string, unknown>> }>("backtests", userId),
+  controller: (userId: string) => request<Dashboard["controller"]>("controller", userId),
+  controllerDecisions: (userId: string, date?: string) => request<{ items: Array<Record<string, unknown>> }>(`controller/decisions${date ? `?trading_date=${date}` : ""}`, userId),
+  optimization: (userId: string) => request<Dashboard["optimization"]>("optimization", userId),
+  diagnoseStrategies: (userId: string) => request<Dashboard["optimization"]>("optimization/diagnose", userId, { method: "POST" }),
+  createOptimizationJob: (userId: string, strategyId: string, datasetId?: string) => request<Record<string, unknown>>("optimization/jobs", userId, { method: "POST", body: JSON.stringify({ strategy_id: strategyId, dataset_id: datasetId }) }),
+  uploadOptimizationDataset: (userId: string, file: File) => request<Record<string, unknown>>(`optimization/datasets?name=${encodeURIComponent(file.name)}&data_format=${file.name.toLowerCase().endsWith(".parquet") ? "PARQUET" : "CSV"}`, userId, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file, signal: AbortSignal.timeout(300_000) }),
+  approveVersion: (userId: string, strategyId: string, version: string, approvalCode: string) => request<Record<string, unknown>>(`strategy-versions/${strategyId}/${version}/approve`, userId, { method: "POST", body: JSON.stringify({ confirmation_version: version, approval_code: approvalCode }) }),
+  rejectVersion: (userId: string, strategyId: string, version: string, reason: string) => request<Record<string, unknown>>(`strategy-versions/${strategyId}/${version}/reject`, userId, { method: "POST", body: JSON.stringify({ confirmation_version: version, reason }) }),
+  rollbackVersion: (userId: string, strategyId: string, version: string, reason: string) => request<Record<string, unknown>>(`strategy-versions/${strategyId}/${version}/rollback`, userId, { method: "POST", body: JSON.stringify({ confirmation_version: version, reason }) }),
 };

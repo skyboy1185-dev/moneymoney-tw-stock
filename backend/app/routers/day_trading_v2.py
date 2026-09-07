@@ -1,11 +1,14 @@
 import asyncio
+from dataclasses import replace
+import hmac
 import json
+import os
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -18,14 +21,28 @@ from ..day_trading_v2_models import (
     DayTradeV2RiskDaily, DayTradeV2Robot, DayTradeV2Setting,
     DayTradeV2RuntimeState, DayTradeV2ScheduleEvent, DayTradeV2Signal,
     DayTradeV2SkipStat, DayTradeV2StrategyVersion, DayTradeV2Trade,
+    DayTradeV2ChallengerRun, DayTradeV2ControllerCandidate, DayTradeV2ControllerCycle,
+    DayTradeV2MarketRegimeSnapshot, DayTradeV2OptimizationDataset, DayTradeV2OptimizationJob,
+    DayTradeV2StrategyDeployment, DayTradeV2StrategyHealthSnapshot, DayTradeV2StrategyRiskOverride,
 )
 from ..services.day_trading_v2 import (
-    DEFAULT_CONFIG, STRATEGIES, MinuteBar, calculate_position_size,
+    DEFAULT_CONFIG, DEFAULT_STRATEGY_PARAMETERS, STRATEGIES, MinuteBar, calculate_position_size,
     calculate_trade_result, dec, evaluate_strategies, exit_action, market_gate_reasons,
     merged_config, money, performance, resolve_duplicate_signals, risk_status, signal_level,
     run_backtest,
 )
 from ..services.day_trading import day_trading_engine
+from ..services.day_trading_v2_controller import (
+    ControllerCandidateInput, MarketInputs, REGIME_LABELS, REGIME_UNKNOWN,
+    apply_regime_hysteresis, classify_market, rank_candidates, risk_multiplier_for_regime, score_candidate,
+)
+from ..services.day_trading_v2_datasets import (
+    MAX_UPLOAD_BYTES, DatasetValidationError, parse_dataset, persist_dataset, quality_json,
+)
+from ..services.day_trading_v2_health import (
+    active_version, handle_strategy_runtime_error, health_for_strategy, run_health_diagnosis,
+)
+from ..services.day_trading_v2_optimization import challenger_ready, next_version, parameter_checksum
 
 
 router = APIRouter(prefix="/day-trading-v2", tags=["day-trading-v2"])
@@ -87,9 +104,28 @@ def _ensure_defaults(db: Session, user_id: str) -> tuple[DayTradeV2Setting, list
             DayTradeV2StrategyVersion.version == "2.0.0",
         ))
         if version is None:
-            db.add(DayTradeV2StrategyVersion(
+            version = DayTradeV2StrategyVersion(
                 strategy_id=strategy_id, version="2.0.0",
                 definition_json=json.dumps({"side": "LONG", "name": name, "lookahead": False}),
+                parameters_json=json.dumps(DEFAULT_STRATEGY_PARAMETERS[strategy_id]),
+                checksum=parameter_checksum(DEFAULT_STRATEGY_PARAMETERS[strategy_id]),
+                validation_status="UNVERIFIED",
+            )
+            db.add(version)
+        elif not _json(version.parameters_json, {}):
+            # One-time additive migration for initial versions created before parameter snapshots existed.
+            version.parameters_json = json.dumps(DEFAULT_STRATEGY_PARAMETERS[strategy_id])
+            version.checksum = parameter_checksum(DEFAULT_STRATEGY_PARAMETERS[strategy_id])
+        deployment = db.scalar(select(DayTradeV2StrategyDeployment).where(
+            DayTradeV2StrategyDeployment.user_id == user_id,
+            DayTradeV2StrategyDeployment.strategy_id == strategy_id,
+            DayTradeV2StrategyDeployment.role == "CHAMPION",
+            DayTradeV2StrategyDeployment.status.in_(("ACTIVE", "PENDING_ACTIVATION")),
+        ))
+        if deployment is None:
+            db.add(DayTradeV2StrategyDeployment(
+                id=str(uuid4()), user_id=user_id, strategy_id=strategy_id, version="2.0.0",
+                role="CHAMPION", status="ACTIVE", activated_at=_now(),
             ))
     db.commit()
     return setting, robots
@@ -185,6 +221,192 @@ def _record_skip(db: Session, user_id: str, mode: str, trading_date: date, reaso
         row.occurrence_count += 1
 
 
+def _percent(value: object) -> Decimal:
+    raw = str(value or "0").replace("%", "").replace("+", "")
+    try:
+        return dec(raw)
+    except Exception:
+        return Decimal("0")
+
+
+def _market_inputs(regime: dict[str, object], live_candidates: list[dict[str, object]]) -> MarketInputs:
+    metrics = regime.get("metrics") if isinstance(regime.get("metrics"), dict) else {}
+    sectors: dict[str, list[Decimal]] = {}
+    for item in live_candidates:
+        sector = str((item.get("themes") or [""])[0])
+        if sector:
+            sectors.setdefault(sector, []).append(dec(item.get("industryScore") or 50))
+    sector_scores = [sum(values, Decimal("0")) / len(values) for values in sectors.values()]
+    return MarketInputs(
+        index_price=dec(metrics.get("weightedIndex") or 0),
+        index_vwap=dec(metrics.get("vwap") or metrics.get("weightedIndex") or 0),
+        trend_1m_pct=_percent(metrics.get("oneMinuteTrend")),
+        trend_5m_pct=_percent(metrics.get("fiveMinuteTrend")),
+        breadth_pct=dec(metrics.get("breadth") or 0),
+        relative_volume=dec(metrics.get("relativeVolume") or 0),
+        strong_sector_count=sum(value >= 70 for value in sector_scores),
+        weak_sector_count=sum(value < 40 for value in sector_scores),
+        quote_coverage_pct=dec(regime.get("quoteCoverageRatio") or 0) * 100,
+        data_normal=regime.get("dataStatus") == "normal",
+    )
+
+
+def _regime_snapshot(
+    db: Session, user_id: str, mode: str, current: datetime,
+    legacy_regime: dict[str, object], live_candidates: list[dict[str, object]], config: dict[str, object],
+) -> DayTradeV2MarketRegimeSnapshot:
+    minutes = max(1, int(config.get("regimeUpdateMinutes", 5)))
+    bucket_minute = current.minute - current.minute % minutes
+    bucket = current.replace(minute=bucket_minute, second=0, microsecond=0)
+    existing = db.scalar(select(DayTradeV2MarketRegimeSnapshot).where(
+        DayTradeV2MarketRegimeSnapshot.user_id == user_id,
+        DayTradeV2MarketRegimeSnapshot.mode == mode,
+        DayTradeV2MarketRegimeSnapshot.bucket_at == bucket,
+    ))
+    if existing:
+        return existing
+    inputs = _market_inputs(legacy_regime, live_candidates)
+    proposed = classify_market(inputs, config)
+    previous_rows = list(db.scalars(select(DayTradeV2MarketRegimeSnapshot).where(
+        DayTradeV2MarketRegimeSnapshot.user_id == user_id,
+        DayTradeV2MarketRegimeSnapshot.mode == mode,
+    ).order_by(DayTradeV2MarketRegimeSnapshot.bucket_at.desc()).limit(max(3, int(config.get("regimeRecoveryCycles", 3))))).all())
+    effective = apply_regime_hysteresis(
+        proposed, current=previous_rows[0].effective_regime if previous_rows else None,
+        recent_proposals=[row.proposed_regime for row in reversed(previous_rows)],
+        recovery_cycles=int(config.get("regimeRecoveryCycles", 3)),
+        switch_cycles=int(config.get("regimeSwitchCycles", 2)),
+    )
+    snapshot = DayTradeV2MarketRegimeSnapshot(
+        id=str(uuid4()), user_id=user_id, mode=mode, bucket_at=bucket,
+        proposed_regime=effective.proposed, effective_regime=effective.effective,
+        confidence=effective.confidence, data_blocked=effective.data_blocked,
+        reasons_json=json.dumps(effective.reasons, ensure_ascii=False),
+        inputs_json=json.dumps({
+            "indexPrice": str(inputs.index_price), "indexVwap": str(inputs.index_vwap),
+            "trend1mPct": str(inputs.trend_1m_pct), "trend5mPct": str(inputs.trend_5m_pct),
+            "breadthPct": str(inputs.breadth_pct), "relativeVolume": str(inputs.relative_volume),
+            "strongSectorCount": inputs.strong_sector_count, "weakSectorCount": inputs.weak_sector_count,
+            "quoteCoveragePct": str(inputs.quote_coverage_pct), "dataNormal": inputs.data_normal,
+        }, ensure_ascii=False),
+    )
+    db.add(snapshot)
+    db.flush()
+    return snapshot
+
+
+def _controller_candidate_dict(row: DayTradeV2ControllerCandidate) -> dict[str, object]:
+    return {
+        "id": row.id, "cycleId": row.cycle_id, "symbol": row.symbol, "stockName": row.stock_name,
+        "sector": row.sector, "strategyId": row.strategy_id, "strategyVersion": row.strategy_version,
+        "signalTime": row.signal_time, "rawScore": str(row.raw_score), "finalScore": str(row.final_score),
+        "rank": row.rank, "entryPrice": str(row.entry_price), "stopPrice": str(row.stop_price),
+        "targetPrice": str(row.target_price), "riskReward": str(row.risk_reward),
+        "plannedCapital": str(row.planned_capital), "allowed": row.allowed, "status": row.status,
+        "scoreDetails": _json(row.score_details_json, {}), "reasons": _json(row.reasons_json, []),
+        "blockedReasons": _json(row.blocked_reasons_json, []),
+    }
+
+
+def _controller_dashboard(db: Session, user_id: str, mode: str) -> dict[str, object]:
+    regime = db.scalar(select(DayTradeV2MarketRegimeSnapshot).where(
+        DayTradeV2MarketRegimeSnapshot.user_id == user_id,
+        DayTradeV2MarketRegimeSnapshot.mode == mode,
+    ).order_by(DayTradeV2MarketRegimeSnapshot.bucket_at.desc()))
+    cycle = db.scalar(select(DayTradeV2ControllerCycle).where(
+        DayTradeV2ControllerCycle.user_id == user_id,
+        DayTradeV2ControllerCycle.mode == mode,
+    ).order_by(DayTradeV2ControllerCycle.evaluated_at.desc()))
+    candidates = list(db.scalars(select(DayTradeV2ControllerCandidate).where(
+        DayTradeV2ControllerCandidate.cycle_id == cycle.id,
+    ).order_by(DayTradeV2ControllerCandidate.allowed.desc(), DayTradeV2ControllerCandidate.final_score.desc())).all()) if cycle else []
+    state = regime.effective_regime if regime else REGIME_UNKNOWN
+    robots = list(db.scalars(select(DayTradeV2Robot).where(DayTradeV2Robot.user_id == user_id)).all())
+    overrides = {row.strategy_id: row for row in db.scalars(select(DayTradeV2StrategyRiskOverride).where(
+        DayTradeV2StrategyRiskOverride.user_id == user_id,
+        DayTradeV2StrategyRiskOverride.mode == mode,
+    )).all()}
+    counts: dict[str, int] = {}
+    for row in candidates:
+        counts[row.strategy_id] = counts.get(row.strategy_id, 0) + 1
+    strategy_states = []
+    for robot in robots:
+        override = overrides.get(robot.strategy_id)
+        multiplier = min(risk_multiplier_for_regime(state), override.risk_multiplier if override else Decimal("1"))
+        status = "PAUSED" if not robot.enabled or robot.status != "READY" or (override and override.paused) or multiplier == 0 else "DEWEIGHTED" if multiplier < 1 else "ENABLED"
+        strategy_states.append({
+            "strategyId": robot.strategy_id, "name": robot.name, "status": status,
+            "riskMultiplier": str(multiplier), "candidateCount": counts.get(robot.strategy_id, 0),
+        })
+    return {
+        "marketRegime": state, "marketRegimeLabel": REGIME_LABELS.get(state, state),
+        "confidence": str(regime.confidence) if regime else "0",
+        "reasons": _json(regime.reasons_json, []) if regime else ["等待第一筆完整市場資料"],
+        "dataBlocked": regime.data_blocked if regime else True,
+        "updatedAt": regime.bucket_at if regime else None,
+        "nextUpdateAt": regime.bucket_at + timedelta(minutes=5) if regime else None,
+        "cycleId": cycle.id if cycle else None, "cycleStatus": cycle.status if cycle else "WAITING",
+        "selectedCandidateId": cycle.selected_candidate_id if cycle else "",
+        "candidates": [_controller_candidate_dict(row) for row in candidates[:100]],
+        "strategyStates": strategy_states,
+    }
+
+
+def _optimization_dashboard(db: Session, user_id: str, mode: str) -> dict[str, object]:
+    health: list[dict[str, object]] = []
+    for strategy_id, name, _ in STRATEGIES:
+        row = health_for_strategy(db, user_id, mode, strategy_id)
+        health.append({
+            "strategyId": strategy_id, "name": name, "version": row.strategy_version if row else active_version(db, user_id, strategy_id),
+            "status": row.status if row else "INSUFFICIENT", "reasons": _json(row.reasons_json, []) if row else ["尚未執行收盤後診斷"],
+            "metrics": _json(row.metrics_json, {}) if row else {}, "baseline": _json(row.baseline_json, {}) if row else {},
+            "recommendedAction": row.recommended_action if row else "NONE",
+            "capitalMultiplier": str(row.capital_multiplier) if row else "1",
+            "riskMultiplier": str(row.risk_multiplier) if row else "1",
+        })
+    jobs = list(db.scalars(select(DayTradeV2OptimizationJob).where(
+        DayTradeV2OptimizationJob.user_id == user_id,
+    ).order_by(DayTradeV2OptimizationJob.created_at.desc()).limit(30)).all())
+    challengers = list(db.scalars(select(DayTradeV2ChallengerRun).where(
+        DayTradeV2ChallengerRun.user_id == user_id,
+    ).order_by(DayTradeV2ChallengerRun.started_at.desc()).limit(20)).all())
+    deployments = list(db.scalars(select(DayTradeV2StrategyDeployment).where(
+        DayTradeV2StrategyDeployment.user_id == user_id,
+    ).order_by(DayTradeV2StrategyDeployment.created_at.desc()).limit(50)).all())
+    datasets = list(db.scalars(select(DayTradeV2OptimizationDataset).where(
+        DayTradeV2OptimizationDataset.user_id == user_id,
+    ).order_by(DayTradeV2OptimizationDataset.created_at.desc()).limit(20)).all())
+    return {
+        "health": health,
+        "jobs": [{
+            "id": row.id, "strategyId": row.strategy_id, "championVersion": row.champion_version,
+            "candidateVersion": row.candidate_version, "status": row.status, "progressPct": str(row.progress_pct),
+            "result": _json(row.result_json, {}), "error": row.error_message, "createdAt": row.created_at,
+        } for row in jobs],
+        "challengers": [{
+            "id": row.id, "strategyId": row.strategy_id, "championVersion": row.champion_version,
+            "challengerVersion": row.challenger_version, "status": row.status,
+            "fullTradingDays": row.full_trading_days, "tradeCount": row.trade_count,
+            "errorCount": row.error_count, "championMetrics": _json(row.champion_metrics_json, {}),
+            "challengerMetrics": _json(row.challenger_metrics_json, {}),
+        } for row in challengers],
+        "deployments": [{
+            "id": row.id, "strategyId": row.strategy_id, "version": row.version, "role": row.role,
+            "status": row.status, "approvedBy": row.approved_by, "approvedAt": row.approved_at,
+            "effectiveDate": row.effective_date, "activatedAt": row.activated_at,
+            "disabledReason": row.disabled_reason, "rollbackToVersion": row.rollback_to_version,
+        } for row in deployments],
+        "datasets": [{
+            "id": row.id, "name": row.name, "format": row.data_format,
+            "startDate": row.start_date, "endDate": row.end_date,
+            "tradingDayCount": row.trading_day_count, "symbolCount": row.symbol_count,
+            "rowCount": row.row_count, "qualityStatus": row.quality_status,
+            "quality": _json(row.quality_json, {}), "checksum": row.checksum,
+            "createdAt": row.created_at,
+        } for row in datasets],
+    }
+
+
 def _dashboard(db: Session, user_id: str) -> dict[str, object]:
     setting, robots = _ensure_defaults(db, user_id)
     mode = setting.trade_mode if setting.trade_mode in MODE_VALUES else "PAPER"
@@ -249,6 +471,8 @@ def _dashboard(db: Session, user_id: str) -> dict[str, object]:
         "robots": robot_items, "runtime": runtime_data,
         "topCandidates": [_candidate_dict(row) for row in candidates],
         "skipReasons": [{"reason": row.reason, "count": row.occurrence_count} for row in skip_stats],
+        "controller": _controller_dashboard(db, user_id, mode),
+        "optimization": _optimization_dashboard(db, user_id, mode),
     }
 
 
@@ -348,11 +572,21 @@ def save_settings(body: SettingsBody, user_id: str = Depends(_user_id), db: Sess
         raise HTTPException(422, "進場策略掃描頻率必須介於1至5秒")
     if not 1 <= int(config["heartbeatSeconds"]) <= 30 or int(config["heartbeatTimeoutSeconds"]) <= int(config["heartbeatSeconds"]):
         raise HTTPException(422, "心跳更新必須介於1至30秒，逾時門檻必須大於更新間隔")
+    if not 80 <= dec(config["controllerMinimumScore"]) <= 100:
+        raise HTTPException(422, "策略總控最低分數不可低於80或高於100")
+    if dec(config["controllerMinimumRiskReward"]) < 2:
+        raise HTTPException(422, "策略總控風險報酬比不可低於1比2")
+    if int(config["regimeUpdateMinutes"]) != 5:
+        raise HTTPException(422, "市場狀態必須每5分鐘重新判斷")
+    if int(config["regimeSwitchCycles"]) < 2 or int(config["regimeRecoveryCycles"]) < 2:
+        raise HTTPException(422, "盤勢切換與急跌恢復至少需要連續兩次確認")
+    if not Decimal("0") <= dec(config["healthAlertRiskMultiplier"]) <= Decimal("1"):
+        raise HTTPException(422, "健康警戒風險乘數必須介於0至1，不可自動提高風險")
     time_keys = (
         "resetTime", "universeLoadTime", "historyLoadTime", "healthCheckTime", "candidatePoolTime",
         "readyNotificationTime", "marketOpenTime", "openingRangeReadyTime", "summary1000Time",
         "summary1100Time", "summary1200Time", "latestEntryTime", "forcedCloseTime", "marketCloseTime",
-        "brokerSyncTime", "closeReportTime",
+        "brokerSyncTime", "closeReportTime", "healthDiagnosisTime", "weeklyHealthCheckTime",
     )
     try:
         schedule = [datetime.strptime(str(config[key]), "%H:%M:%S").time() for key in time_keys]
@@ -360,6 +594,21 @@ def save_settings(body: SettingsBody, user_id: str = Depends(_user_id), db: Sess
         raise HTTPException(422, "排程時間格式必須為HH:MM:SS") from exc
     if schedule != sorted(schedule):
         raise HTTPException(422, "每日排程時間必須依執行順序遞增")
+    strategy_windows = (
+        ("openingStrategyStart", "openingStrategyEnd"), ("vwapStrategyStart", "vwapStrategyEnd"),
+        ("volumeStrategyStart", "volumeStrategyEnd"), ("reversalStrategyStart", "reversalStrategyEnd"),
+        ("afternoonStrategyStart", "afternoonStrategyEnd"),
+    )
+    try:
+        windows = [
+            (datetime.strptime(str(config[start]), "%H:%M:%S").time(), datetime.strptime(str(config[end]), "%H:%M:%S").time())
+            for start, end in strategy_windows
+        ]
+    except ValueError as exc:
+        raise HTTPException(422, "策略有效時段格式必須為HH:MM:SS") from exc
+    latest_entry = datetime.strptime(str(config["latestEntryTime"]), "%H:%M:%S").time()
+    if any(start >= end or end > latest_entry for start, end in windows):
+        raise HTTPException(422, "策略開始時間必須早於結束時間，且不得晚於全系統新倉截止時間")
     setting.trade_mode = body.mode
     setting.live_enabled = False
     setting.config_json = json.dumps(config)
@@ -409,6 +658,10 @@ class PaperEntryBody(BaseModel):
     signal_time: datetime
     reasons: list[str] = Field(default_factory=list)
     sector: str = ""
+    controller_decision_id: str = ""
+    controller_candidate_id: str = ""
+    risk_multiplier: Decimal = Field(default=Decimal("1"), ge=0, le=1)
+    capital_multiplier: Decimal = Field(default=Decimal("1"), ge=0, le=1)
 
 
 @router.post("/paper/entries")
@@ -419,6 +672,13 @@ def paper_entry(body: PaperEntryBody, user_id: str = Depends(_user_id), db: Sess
     robot = next((item for item in robots if item.strategy_id == body.strategy_id and item.enabled and item.status == "READY"), None)
     if robot is None:
         raise HTTPException(409, "機器人未啟用或不存在")
+    if body.controller_decision_id:
+        cycle = db.get(DayTradeV2ControllerCycle, body.controller_decision_id)
+        controller_candidate = db.get(DayTradeV2ControllerCandidate, body.controller_candidate_id)
+        if not cycle or not controller_candidate or controller_candidate.cycle_id != cycle.id or cycle.selected_candidate_id != controller_candidate.id:
+            raise HTTPException(409, "自動策略委託缺少有效的總控決策")
+        if controller_candidate.status not in {"SELECTED", "ORDER_FAILED"} or controller_candidate.strategy_id != body.strategy_id or controller_candidate.symbol != body.symbol:
+            raise HTTPException(409, "總控候選狀態或內容不符")
     config = merged_config(_json(setting.config_json, {}))
     open_positions = list(db.scalars(select(DayTradeV2Position).where(
         DayTradeV2Position.user_id == user_id, DayTradeV2Position.mode == "PAPER", DayTradeV2Position.status == "OPEN",
@@ -436,7 +696,7 @@ def paper_entry(body: PaperEntryBody, user_id: str = Depends(_user_id), db: Sess
         raise HTTPException(409, "13:20後禁止建立新部位")
     used = sum((row.used_capital for row in open_positions), Decimal("0"))
     available = dec(config["initialCapital"]) - used
-    risk_budget = dec(config["maxRiskPerTrade"])
+    risk_budget = dec(config["maxRiskPerTrade"]) * body.risk_multiplier
     day_start, day_end = _today_bounds()
     daily_trades = list(db.scalars(select(DayTradeV2Trade).where(
         DayTradeV2Trade.user_id == user_id, DayTradeV2Trade.mode == "PAPER",
@@ -451,7 +711,7 @@ def paper_entry(body: PaperEntryBody, user_id: str = Depends(_user_id), db: Sess
     robot_used = sum((row.used_capital for row in open_positions if row.strategy_id == body.strategy_id), Decimal("0"))
     quantity = calculate_position_size(
         price=body.fill_price, stop_price=body.stop_price, risk_budget=risk_budget,
-        capital_limit=min(available, max(robot.allocation - robot_used, Decimal("0"))), lot_size=int(config["boardLotSize"]),
+        capital_limit=min(available, max(robot.allocation * body.capital_multiplier - robot_used, Decimal("0"))), lot_size=int(config["boardLotSize"]),
         allow_odd_lots=bool(config["allowOddLots"]),
     )
     if quantity <= 0:
@@ -459,22 +719,24 @@ def paper_entry(body: PaperEntryBody, user_id: str = Depends(_user_id), db: Sess
     now = _now()
     signal_id, order_id, position_id = body.signal_id or str(uuid4()), str(uuid4()), str(uuid4())
     risk_reward = (body.target_price - body.fill_price) / (body.fill_price - body.stop_price)
+    version = active_version(db, user_id, body.strategy_id)
     db.add(DayTradeV2Signal(
-        id=signal_id, user_id=user_id, mode="PAPER", strategy_id=body.strategy_id, strategy_version="2.0.0",
-        symbol=body.symbol, stock_name=body.stock_name, side="LONG", signal_time=body.signal_time,
+        id=signal_id, user_id=user_id, mode="PAPER", strategy_id=body.strategy_id, strategy_version=version,
+        symbol=body.symbol, stock_name=body.stock_name, sector=body.sector, side="LONG", signal_time=body.signal_time,
         signal_price=body.signal_price, confidence=body.confidence, risk_reward=risk_reward,
         stop_price=body.stop_price, target_price=body.target_price, status="EXECUTED",
         reasons_json=json.dumps(body.reasons, ensure_ascii=False), market_context_json=json.dumps({"sector": body.sector}, ensure_ascii=False),
+        controller_decision_id=body.controller_decision_id,
     ))
     db.add(DayTradeV2Order(
         id=order_id, user_id=user_id, mode="PAPER", signal_id=signal_id, client_order_id=f"paper-{order_id}",
         broker_order_id=f"paper-{order_id}", symbol=body.symbol, side="BUY", order_price=body.fill_price,
         order_quantity=quantity, filled_quantity=quantity, status="FILLED", signal_at=body.signal_time,
-        sent_at=now, broker_accepted_at=now,
+        sent_at=now, broker_accepted_at=now, controller_decision_id=body.controller_decision_id,
     ))
     db.add(DayTradeV2Fill(order_id=order_id, mode="PAPER", broker_execution_id=f"paper-fill-{order_id}", price=body.fill_price, quantity=quantity, exchange_time=now, received_at=now))
     position = DayTradeV2Position(
-        id=position_id, user_id=user_id, mode="PAPER", strategy_id=body.strategy_id, strategy_version="2.0.0",
+        id=position_id, user_id=user_id, mode="PAPER", strategy_id=body.strategy_id, strategy_version=version,
         signal_id=signal_id, symbol=body.symbol, stock_name=body.stock_name, sector=body.sector, quantity=quantity,
         entry_price=body.fill_price, current_price=body.fill_price, stop_price=body.stop_price,
         first_target_price=body.target_price, trailing_stop_price=body.stop_price,
@@ -488,7 +750,7 @@ def paper_entry(body: PaperEntryBody, user_id: str = Depends(_user_id), db: Sess
     return _position_dict(position)
 
 
-def _scan_now(user_id: str, db: Session, coordinator_now: datetime | None = None) -> dict[str, object]:
+def _legacy_scan_now(user_id: str, db: Session, coordinator_now: datetime | None = None, *, entries_enabled: bool = True) -> dict[str, object]:
     """Evaluate verified MIS bars. The coordinator calls this every five seconds."""
     setting, _ = _ensure_defaults(db, user_id)
     config = merged_config(_json(setting.config_json, {}))
@@ -586,6 +848,15 @@ def _scan_now(user_id: str, db: Session, coordinator_now: datetime | None = None
             event_type="RISK_REDUCED", title="系統進入減半模式",
             message=f"今日已實現損益{money(daily_pnl)}元，後續新部位風險額度減半。",
         )
+    if not entries_enabled:
+        runtime.last_scan_at = current
+        runtime.next_scan_at = current + timedelta(seconds=int(config["scanIntervalSeconds"]))
+        runtime.completed_trade_count = int(db.scalar(select(func.count()).select_from(DayTradeV2Trade).where(
+            DayTradeV2Trade.user_id == user_id, DayTradeV2Trade.mode == "PAPER",
+            DayTradeV2Trade.exit_fill_time >= start, DayTradeV2Trade.exit_fill_time < end,
+        )) or 0)
+        db.commit()
+        return {"evaluated": 0, "executed": 0, "skipped": 0, "exits": exits, "items": []}
     evaluated = executed = skipped = generated = 0
     latest_bar_at: datetime | None = None
     items: list[dict[str, object]] = []
@@ -746,6 +1017,310 @@ def _scan_now(user_id: str, db: Session, coordinator_now: datetime | None = None
     return {"evaluated": evaluated, "executed": executed, "skipped": skipped, "exits": exits, "items": items}
 
 
+def _scan_now(user_id: str, db: Session, coordinator_now: datetime | None = None) -> dict[str, object]:
+    """Run exits first, then send every strategy candidate through the sole controller gateway."""
+    setting, robots = _ensure_defaults(db, user_id)
+    config = merged_config(_json(setting.config_json, {}))
+    if setting.trade_mode != "PAPER":
+        return {"evaluated": 0, "executed": 0, "skipped": 0, "message": "目前模式不執行即時模擬訊號"}
+    current = coordinator_now or _now()
+    local_now = current.astimezone(TAIPEI)
+    trading_date = local_now.date()
+    monitor = _legacy_scan_now(user_id, db, current, entries_enabled=False)
+    runtime = _today_runtime(db, user_id, "PAPER", config)
+    legacy_regime = day_trading_engine.market_regime()
+    live_candidates = [item for item in day_trading_engine.signals() if item.get("direction") == "long"]
+    snapshot = _regime_snapshot(db, user_id, "PAPER", current, legacy_regime, live_candidates, config)
+    interval = max(1, int(config["scanIntervalSeconds"]))
+    cycle_epoch = int(current.timestamp()) // interval * interval
+    cycle_key = f"{trading_date}:{cycle_epoch}"
+    existing_cycle = db.scalar(select(DayTradeV2ControllerCycle).where(
+        DayTradeV2ControllerCycle.user_id == user_id,
+        DayTradeV2ControllerCycle.mode == "PAPER",
+        DayTradeV2ControllerCycle.cycle_key == cycle_key,
+    ))
+    if existing_cycle:
+        return {
+            "evaluated": existing_cycle.candidate_count, "executed": int(bool(existing_cycle.selected_candidate_id)),
+            "skipped": max(0, existing_cycle.candidate_count - int(bool(existing_cycle.selected_candidate_id))),
+            "exits": monitor.get("exits", []), "cycleId": existing_cycle.id, "idempotent": True,
+        }
+    cycle = DayTradeV2ControllerCycle(
+        id=str(uuid4()), user_id=user_id, mode="PAPER", cycle_key=cycle_key,
+        trading_date=trading_date, evaluated_at=current, regime_snapshot_id=snapshot.id,
+    )
+    db.add(cycle)
+    db.flush()
+
+    open_positions = list(db.scalars(select(DayTradeV2Position).where(
+        DayTradeV2Position.user_id == user_id, DayTradeV2Position.mode == "PAPER",
+        DayTradeV2Position.status == "OPEN",
+    )).all())
+    used_capital = sum((row.used_capital for row in open_positions), Decimal("0"))
+    existing_symbols = {row.symbol for row in open_positions}
+    robot_map = {row.strategy_id: row for row in robots}
+    overrides = {row.strategy_id: row for row in db.scalars(select(DayTradeV2StrategyRiskOverride).where(
+        DayTradeV2StrategyRiskOverride.user_id == user_id,
+        DayTradeV2StrategyRiskOverride.mode == "PAPER",
+    )).all()}
+    health_status = {}
+    for strategy_id, _, _ in STRATEGIES:
+        snapshot_row = health_for_strategy(db, user_id, "PAPER", strategy_id)
+        health_status[strategy_id] = snapshot_row.status if snapshot_row else "INSUFFICIENT"
+    version_map = {strategy_id: active_version(db, user_id, strategy_id) for strategy_id, _, _ in STRATEGIES}
+    parameters: dict[str, dict[str, object]] = {}
+    oos_profit_factors: dict[str, Decimal] = {}
+    for strategy_id, _, _ in STRATEGIES:
+        version_row = db.scalar(select(DayTradeV2StrategyVersion).where(
+            DayTradeV2StrategyVersion.strategy_id == strategy_id,
+            DayTradeV2StrategyVersion.version == version_map[strategy_id],
+        ))
+        parameters[strategy_id] = _json(version_row.parameters_json, DEFAULT_STRATEGY_PARAMETERS[strategy_id]) if version_row else DEFAULT_STRATEGY_PARAMETERS[strategy_id]
+        oos_result = _json(version_row.oos_result_json, {}) if version_row else {}
+        oos_profit_factors[strategy_id] = dec(oos_result.get("profitFactor") or 0)
+
+    quote_times: list[datetime] = []
+    for item in live_candidates:
+        if item.get("dataSource") == "TWSE MIS" and item.get("quoteIsRealtime"):
+            try:
+                parsed = datetime.fromisoformat(str(item.get("quoteTimestamp")))
+                quote_times.append(parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC))
+            except ValueError:
+                pass
+    latest_quote = max(quote_times, default=None)
+    quote_fresh = bool(latest_quote and abs((current - latest_quote).total_seconds()) <= int(config["quoteTimeoutSeconds"]))
+    runtime.last_quote_at = latest_quote or runtime.last_quote_at
+    runtime.receiving_quotes = quote_fresh
+    runtime.order_allowed = bool(
+        runtime.status == "RUNNING" and quote_fresh and not snapshot.data_blocked
+        and local_now.time() < datetime.strptime(str(config["latestEntryTime"]), "%H:%M:%S").time()
+    )
+    day_start, day_end = _today_bounds()
+    daily_pnl = sum(db.scalars(select(DayTradeV2Trade.net_pnl).where(
+        DayTradeV2Trade.user_id == user_id, DayTradeV2Trade.mode == "PAPER",
+        DayTradeV2Trade.exit_fill_time >= day_start, DayTradeV2Trade.exit_fill_time < day_end,
+    )).all(), Decimal("0"))
+    scored = []
+    latest_bar_at: datetime | None = None
+    for source in live_candidates:
+        symbol = str(source.get("symbol") or "")
+        raw_bars = day_trading_engine.minute_bars_for(symbol)
+        if len(raw_bars) < 16:
+            continue
+        bars = [MinuteBar(
+            timestamp=datetime.fromisoformat(str(row["timestamp"])), open=dec(row["open"]), high=dec(row["high"]),
+            low=dec(row["low"]), close=dec(row["close"]), volume=int(row["volume"]),
+        ) for row in raw_bars]
+        latest_bar_at = max(latest_bar_at, bars[-1].timestamp) if latest_bar_at else bars[-1].timestamp
+        sector = str((source.get("themes") or [""])[0])
+        strategy_signals = []
+        for strategy_id, _, _ in STRATEGIES:
+            try:
+                strategy_signals.extend(evaluate_strategies(
+                    bars, strategy_parameters=parameters, enabled_strategies={strategy_id},
+                ))
+            except Exception as exc:
+                handle_strategy_runtime_error(
+                    db, user_id, "PAPER", strategy_id, version_map[strategy_id], exc, current,
+                )
+                runtime.latest_error = f"{strategy_id}策略錯誤，已停止該策略：{type(exc).__name__}"
+        for signal in strategy_signals:
+            robot = robot_map.get(signal.strategy_id)
+            override = overrides.get(signal.strategy_id)
+            rr = (signal.target_price - signal.entry_price) / (signal.entry_price - signal.stop_price)
+            item = ControllerCandidateInput(
+                key=f"v2:{symbol}:{bars[-1].timestamp.isoformat()}:{signal.strategy_id}",
+                symbol=symbol, stock_name=str(source.get("stockName") or ""), sector=sector,
+                strategy_id=signal.strategy_id, strategy_version=version_map[signal.strategy_id],
+                signal_time=bars[-1].timestamp, raw_score=signal.confidence,
+                entry_price=signal.entry_price, stop_price=signal.stop_price, target_price=signal.target_price,
+                risk_reward=rr, sector_strength=dec(source.get("industryScore") or 50),
+                health_status="PAUSED" if override and override.paused else health_status[signal.strategy_id],
+                liquidity_score=dec(source.get("liquidityScore") or 0),
+                vwap_deviation_pct=dec(source.get("vwapDeviationPercent") or 0), reasons=signal.reasons,
+                oos_profit_factor=oos_profit_factors[signal.strategy_id],
+                health_score=Decimal("100") if health_status[signal.strategy_id] == "NORMAL" else Decimal("25") if health_status[signal.strategy_id] == "ALERT" else Decimal("50"),
+                market_stabilized=_percent((legacy_regime.get("metrics") or {}).get("oneMinuteTrend")) >= 0,
+            )
+            sector_positions = sum(row.sector == sector for row in open_positions)
+            row = score_candidate(
+                item, regime=snapshot.effective_regime, local_time=local_now.time(),
+                existing_symbols=existing_symbols, sector_positions=sector_positions, config=config,
+            )
+            common = market_gate_reasons(
+                now=current, market_crashing=snapshot.effective_regime == "E_CRASH",
+                quote_reliable=quote_fresh and source.get("dataSource") == "TWSE MIS" and bool(source.get("quoteIsRealtime")),
+                volume=int(source.get("volume") or 0), turnover=source.get("turnover") or 0,
+                spread_pct=source.get("spreadPercentage") or 999,
+                vwap_deviation_pct=source.get("vwapDeviationPercent") or 0,
+                blocked=bool(source.get("tradeRestricted")), connection_ok=legacy_regime.get("dataStatus") == "normal",
+                available_capital=dec(config["initialCapital"]) - used_capital,
+                open_positions=len(open_positions), sector_positions=sector_positions,
+                realized_pnl=daily_pnl, config=config,
+            )
+            if not robot or not robot.enabled or robot.status != "READY":
+                common.append("機器人未啟用或已停機")
+            if not runtime.order_allowed:
+                common.append("系統目前禁止新委託")
+            if db.get(DayTradeV2Signal, item.key):
+                common.append("同一根K棒訊號已處理")
+            if common:
+                row = replace(row, allowed=False, blocked_reasons=tuple(dict.fromkeys((*row.blocked_reasons, *common))))
+            scored.append(row)
+    ranked = rank_candidates(scored)
+    stored: list[tuple[object, DayTradeV2ControllerCandidate]] = []
+    selected_pair = None
+    regime_multiplier = risk_multiplier_for_regime(snapshot.effective_regime)
+    for row in ranked:
+        override = overrides.get(row.candidate.strategy_id)
+        capital_multiplier = min(regime_multiplier, override.capital_multiplier if override else Decimal("1"))
+        risk_multiplier = min(regime_multiplier, override.risk_multiplier if override else Decimal("1"))
+        robot = robot_map[row.candidate.strategy_id]
+        planned_limit = min(
+            max(Decimal("0"), dec(config["initialCapital"]) - used_capital),
+            robot.allocation * capital_multiplier,
+        )
+        quantity = calculate_position_size(
+            price=row.candidate.entry_price, stop_price=row.candidate.stop_price,
+            risk_budget=dec(config["maxRiskPerTrade"]) * risk_multiplier,
+            capital_limit=planned_limit, lot_size=int(config["boardLotSize"]),
+            allow_odd_lots=bool(config["allowOddLots"]),
+        )
+        allowed = row.allowed and quantity > 0 and selected_pair is None
+        blocked = list(row.blocked_reasons)
+        if row.allowed and quantity <= 0:
+            blocked.append("資金不足或停損距離無效")
+        if row.allowed and selected_pair is not None:
+            blocked.append("本輪已選出較高排名訊號")
+        candidate_row = DayTradeV2ControllerCandidate(
+            id=str(uuid4()), cycle_id=cycle.id, user_id=user_id, mode="PAPER",
+            candidate_key=f"{cycle_key}:{row.candidate.key}", symbol=row.candidate.symbol,
+            stock_name=row.candidate.stock_name, sector=row.candidate.sector,
+            strategy_id=row.candidate.strategy_id, strategy_version=row.candidate.strategy_version,
+            signal_time=row.candidate.signal_time, raw_score=row.candidate.raw_score,
+            final_score=row.final_score, rank=row.rank, entry_price=row.candidate.entry_price,
+            stop_price=row.candidate.stop_price, target_price=row.candidate.target_price,
+            risk_reward=row.candidate.risk_reward, planned_capital=money(row.candidate.entry_price * quantity),
+            allowed=allowed, status="SELECTED" if allowed else "REJECTED",
+            score_details_json=json.dumps(row.score_details, ensure_ascii=False),
+            reasons_json=json.dumps(row.candidate.reasons, ensure_ascii=False),
+            blocked_reasons_json=json.dumps(blocked, ensure_ascii=False),
+        )
+        db.add(candidate_row)
+        stored.append((row, candidate_row))
+        if allowed:
+            selected_pair = (row, candidate_row, risk_multiplier, capital_multiplier)
+        for reason in blocked:
+            _record_skip(db, user_id, "PAPER", trading_date, reason)
+        if not allowed and db.get(DayTradeV2Signal, row.candidate.key) is None:
+            db.add(DayTradeV2Signal(
+                id=row.candidate.key, user_id=user_id, mode="PAPER",
+                strategy_id=row.candidate.strategy_id, strategy_version=row.candidate.strategy_version,
+                symbol=row.candidate.symbol, stock_name=row.candidate.stock_name,
+                sector=row.candidate.sector, side="LONG", signal_time=row.candidate.signal_time,
+                signal_price=row.candidate.entry_price, confidence=row.final_score,
+                risk_reward=row.candidate.risk_reward, stop_price=row.candidate.stop_price,
+                target_price=row.candidate.target_price, status="SKIPPED",
+                reasons_json=json.dumps(row.candidate.reasons, ensure_ascii=False),
+                skip_reason="、".join(blocked) or "未取得本輪交易權",
+                market_context_json=json.dumps({
+                    "marketRegime": snapshot.effective_regime,
+                    "rawScore": str(row.candidate.raw_score),
+                    "scoreDetails": row.score_details,
+                }, ensure_ascii=False),
+                controller_decision_id=cycle.id,
+            ))
+    cycle.candidate_count = len(stored)
+    cycle.status = "SELECTED" if selected_pair else "NO_TRADE"
+    if not selected_pair:
+        cycle.block_reason = "沒有通過總控與風控的候選訊號"
+    db.flush()
+    executed = 0
+    if selected_pair:
+        ranked_row, candidate_row, risk_multiplier, capital_multiplier = selected_pair
+        cycle.selected_candidate_id = candidate_row.id
+        db.flush()
+        try:
+            position = paper_entry(PaperEntryBody(
+                signal_id=ranked_row.candidate.key, strategy_id=ranked_row.candidate.strategy_id,
+                symbol=ranked_row.candidate.symbol, stock_name=ranked_row.candidate.stock_name,
+                signal_price=ranked_row.candidate.entry_price, fill_price=ranked_row.candidate.entry_price,
+                stop_price=ranked_row.candidate.stop_price, target_price=ranked_row.candidate.target_price,
+                confidence=ranked_row.final_score, signal_time=ranked_row.candidate.signal_time,
+                reasons=list(ranked_row.candidate.reasons), sector=ranked_row.candidate.sector,
+                controller_decision_id=cycle.id, controller_candidate_id=candidate_row.id,
+                risk_multiplier=risk_multiplier, capital_multiplier=capital_multiplier,
+            ), user_id, db)
+            candidate_row.status = "EXECUTED"
+            executed = 1
+            _notification(
+                db, user_id=user_id, mode="PAPER", event_id=f"controller-selected:{cycle.id}",
+                event_type="CONTROLLER_SIGNAL_SELECTED", title="【策略總控｜正式選中訊號】",
+                message=(f"{ranked_row.candidate.symbol} {ranked_row.candidate.stock_name}｜{ranked_row.candidate.strategy_id}｜"
+                         f"{REGIME_LABELS.get(snapshot.effective_regime)}，策略符合目前盤勢｜"
+                         f"原始{ranked_row.candidate.raw_score}分，盤勢調整{ranked_row.score_details.get('regime', 0)}分，"
+                         f"最終{ranked_row.final_score}分，排名第{ranked_row.rank}｜"
+                         f"進場{ranked_row.candidate.entry_price}／停損{ranked_row.candidate.stop_price}／停利{ranked_row.candidate.target_price}｜"
+                         f"預計資金{candidate_row.planned_capital}元｜模擬成交成功，部位{position['id']}"),
+                payload={
+                    "cycleId": cycle.id, "candidateId": candidate_row.id,
+                    "marketRegime": snapshot.effective_regime, "rawScore": str(ranked_row.candidate.raw_score),
+                    "scoreDetails": ranked_row.score_details, "finalScore": str(ranked_row.final_score),
+                    "rank": ranked_row.rank, "entryPrice": str(ranked_row.candidate.entry_price),
+                    "stopPrice": str(ranked_row.candidate.stop_price), "targetPrice": str(ranked_row.candidate.target_price),
+                    "plannedCapital": str(candidate_row.planned_capital), "filled": True,
+                },
+            )
+        except HTTPException as exc:
+            candidate_row.status = "ORDER_FAILED"
+            candidate_row.allowed = False
+            candidate_row.blocked_reasons_json = json.dumps([str(exc.detail)], ensure_ascii=False)
+            cycle.status = "ORDER_FAILED"
+            cycle.block_reason = str(exc.detail)
+            _record_skip(db, user_id, "PAPER", trading_date, str(exc.detail))
+    runtime.last_scan_at = current
+    runtime.last_bar_at = latest_bar_at or runtime.last_bar_at
+    runtime.next_scan_at = current + timedelta(seconds=interval)
+    runtime.scanned_stock_count = len(live_candidates)
+    runtime.candidate_count = sum(row.final_score >= dec(config["watchThreshold"]) for row in ranked)
+    runtime.signal_count += len(stored)
+    runtime.order_count += executed
+    runtime.skipped_count += len(stored) - executed
+    from ..services.day_trading_v2_challenger import run_challenger_cycle
+    run_challenger_cycle(
+        db, user_id, current, live_candidates, snapshot.effective_regime, config, day_trading_engine,
+    )
+    for ranked_row, _candidate_row in stored:
+        existing_state = db.scalar(select(DayTradeV2CandidateState).where(
+            DayTradeV2CandidateState.user_id == user_id, DayTradeV2CandidateState.mode == "PAPER",
+            DayTradeV2CandidateState.trading_date == trading_date,
+            DayTradeV2CandidateState.symbol == ranked_row.candidate.symbol,
+        ))
+        if existing_state is None:
+            existing_state = DayTradeV2CandidateState(
+                user_id=user_id, mode="PAPER", trading_date=trading_date,
+                symbol=ranked_row.candidate.symbol, scanned_at=current,
+            )
+            db.add(existing_state)
+        existing_state.stock_name = ranked_row.candidate.stock_name
+        existing_state.sector = ranked_row.candidate.sector
+        existing_state.strategy_id = ranked_row.candidate.strategy_id
+        existing_state.confidence = ranked_row.final_score
+        existing_state.signal_level = signal_level(ranked_row.final_score, config)
+        existing_state.primary_reason = ranked_row.blocked_reasons[0] if ranked_row.blocked_reasons else "通過總控候選評分"
+        existing_state.reasons_json = json.dumps(ranked_row.candidate.reasons, ensure_ascii=False)
+        existing_state.quote_at = latest_quote
+        existing_state.bar_at = ranked_row.candidate.signal_time
+        existing_state.scanned_at = current
+    db.commit()
+    return {
+        "evaluated": len(stored), "executed": executed, "skipped": len(stored) - executed,
+        "exits": monitor.get("exits", []), "cycleId": cycle.id,
+        "marketRegime": snapshot.effective_regime,
+        "items": [_controller_candidate_dict(row) for _, row in stored],
+    }
+
+
 @router.post("/scan-now")
 def scan_now(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -> dict[str, object]:
     return _scan_now(user_id, db)
@@ -772,6 +1347,15 @@ def close_position(position_id: str, body: CloseBody, user_id: str = Depends(_us
         minimum_commission=config["minimumCommission"], tax_rate=config["dayTradeTaxRate"],
         slippage_bps=config["slippageBps"], other_cost=config["otherCost"],
     )
+    strategy_version_row = db.scalar(select(DayTradeV2StrategyVersion).where(
+        DayTradeV2StrategyVersion.strategy_id == position.strategy_id,
+        DayTradeV2StrategyVersion.version == position.strategy_version,
+    ))
+    frozen_parameters = {
+        "system": config,
+        "strategy": _json(strategy_version_row.parameters_json, {}) if strategy_version_row else {},
+        "versionChecksum": strategy_version_row.checksum if strategy_version_row else "",
+    }
     trade_id = str(uuid4())
     trade = DayTradeV2Trade(
         id=trade_id, user_id=user_id, mode=position.mode, symbol=position.symbol, stock_name=position.stock_name,
@@ -781,7 +1365,7 @@ def close_position(position_id: str, body: CloseBody, user_id: str = Depends(_us
         exit_price=body.fill_price, gross_pnl=result["grossPnl"], buy_fee=result["buy_fee"], sell_fee=result["sell_fee"],
         transaction_tax=result["transaction_tax"], slippage=result["slippage"], other_cost=result["other_cost"],
         net_pnl=result["netPnl"], net_return_pct=result["netReturnPct"], entry_reason="、".join(_json(position.entry_reasons_json, [])),
-        exit_reason=body.reason, strategy_parameters_json=setting.config_json,
+        exit_reason=body.reason, strategy_parameters_json=json.dumps(frozen_parameters, ensure_ascii=False, default=str),
     )
     db.add(trade)
     position.quantity -= quantity
@@ -838,6 +1422,261 @@ def notifications(user_id: str = Depends(_user_id), db: Session = Depends(get_db
     return {"unread": sum(not row.read for row in rows), "items": [{"id": row.id, "eventId": row.event_id, "mode": row.mode, "eventType": row.event_type, "title": row.title, "message": row.message, "read": row.read, "createdAt": row.created_at} for row in rows]}
 
 
+@router.get("/controller")
+def controller_status(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -> dict[str, object]:
+    setting, _ = _ensure_defaults(db, user_id)
+    return _controller_dashboard(db, user_id, setting.trade_mode)
+
+
+@router.get("/controller/decisions")
+def controller_decisions(
+    trading_date: date | None = None, user_id: str = Depends(_user_id), db: Session = Depends(get_db),
+) -> dict[str, object]:
+    setting, _ = _ensure_defaults(db, user_id)
+    target = trading_date or datetime.now(TAIPEI).date()
+    cycles = list(db.scalars(select(DayTradeV2ControllerCycle).where(
+        DayTradeV2ControllerCycle.user_id == user_id,
+        DayTradeV2ControllerCycle.mode == setting.trade_mode,
+        DayTradeV2ControllerCycle.trading_date == target,
+    ).order_by(DayTradeV2ControllerCycle.evaluated_at.desc()).limit(300)).all())
+    return {"items": [{
+        "id": cycle.id, "evaluatedAt": cycle.evaluated_at, "status": cycle.status,
+        "candidateCount": cycle.candidate_count, "selectedCandidateId": cycle.selected_candidate_id,
+        "blockReason": cycle.block_reason,
+        "candidates": [_controller_candidate_dict(row) for row in db.scalars(select(DayTradeV2ControllerCandidate).where(
+            DayTradeV2ControllerCandidate.cycle_id == cycle.id,
+        ).order_by(DayTradeV2ControllerCandidate.final_score.desc())).all()],
+    } for cycle in cycles]}
+
+
+@router.get("/optimization")
+def optimization_status(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -> dict[str, object]:
+    setting, _ = _ensure_defaults(db, user_id)
+    return _optimization_dashboard(db, user_id, setting.trade_mode)
+
+
+@router.post("/optimization/diagnose")
+def diagnose_now(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -> dict[str, object]:
+    setting, _ = _ensure_defaults(db, user_id)
+    config = merged_config(_json(setting.config_json, {}))
+    rows = run_health_diagnosis(db, user_id, setting.trade_mode, config)
+    _audit(db, user_id, "STRATEGY_HEALTH_DIAGNOSED", setting.trade_mode, {"count": len(rows)})
+    db.commit()
+    return _optimization_dashboard(db, user_id, setting.trade_mode)
+
+
+@router.post("/optimization/datasets")
+async def upload_optimization_dataset(
+    request: Request, name: str = Query(min_length=1, max_length=160),
+    data_format: str = Query(pattern="^(?i:CSV|PARQUET)$"),
+    user_id: str = Depends(_user_id), db: Session = Depends(get_db),
+) -> dict[str, object]:
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "資料檔超過512MB限制")
+    content = await request.body()
+    dataset_id = str(uuid4())
+    try:
+        _datasets, _sectors, _regimes, quality = parse_dataset(content, data_format)
+        path, checksum = persist_dataset(content, dataset_id=dataset_id, data_format=data_format)
+    except DatasetValidationError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    row = DayTradeV2OptimizationDataset(
+        id=dataset_id, user_id=user_id, name=name, storage_path=str(path), checksum=checksum,
+        data_format=data_format.upper(), start_date=date.fromisoformat(str(quality["startDate"])),
+        end_date=date.fromisoformat(str(quality["endDate"])), trading_day_count=int(quality["tradingDayCount"]),
+        symbol_count=int(quality["symbolCount"]), row_count=int(quality["rowCount"]),
+        quality_status="READY" if int(quality["tradingDayCount"]) >= 160 else "INSUFFICIENT",
+        quality_json=quality_json(quality),
+    )
+    db.add(row)
+    _audit(db, user_id, "OPTIMIZATION_DATASET_IMPORTED", "BACKTEST", quality, row.id)
+    db.commit()
+    return {"id": row.id, "qualityStatus": row.quality_status, "quality": quality, "checksum": checksum}
+
+
+class OptimizationJobBody(BaseModel):
+    strategy_id: str
+    dataset_id: str | None = None
+
+
+@router.post("/optimization/jobs")
+def create_optimization_job(body: OptimizationJobBody, user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -> dict[str, object]:
+    _ensure_defaults(db, user_id)
+    if body.strategy_id not in {row[0] for row in STRATEGIES}:
+        raise HTTPException(404, "找不到策略")
+    active = db.scalar(select(DayTradeV2OptimizationJob).where(
+        DayTradeV2OptimizationJob.user_id == user_id,
+        DayTradeV2OptimizationJob.strategy_id == body.strategy_id,
+        DayTradeV2OptimizationJob.status.in_(("QUEUED", "RUNNING")),
+    ))
+    if active:
+        raise HTTPException(409, "同一台機器人同時只能執行一個優化任務")
+    dataset = db.get(DayTradeV2OptimizationDataset, body.dataset_id) if body.dataset_id else db.scalar(select(DayTradeV2OptimizationDataset).where(
+        DayTradeV2OptimizationDataset.user_id == user_id,
+        DayTradeV2OptimizationDataset.quality_status == "READY",
+    ).order_by(DayTradeV2OptimizationDataset.created_at.desc()))
+    if dataset and dataset.user_id != user_id:
+        raise HTTPException(404, "找不到資料集")
+    versions = list(db.scalars(select(DayTradeV2StrategyVersion.version).where(
+        DayTradeV2StrategyVersion.strategy_id == body.strategy_id,
+    )).all())
+    job = DayTradeV2OptimizationJob(
+        id=str(uuid4()), user_id=user_id, strategy_id=body.strategy_id,
+        champion_version=active_version(db, user_id, body.strategy_id), candidate_version=next_version(versions),
+        trigger_type="MANUAL", dataset_id=dataset.id if dataset else "",
+        status="QUEUED" if dataset and dataset.quality_status == "READY" else "DATA_INSUFFICIENT",
+        walk_forward_json=json.dumps({"trainDays": 120, "validationDays": 20, "oosDays": 20, "stepDays": 20}),
+        result_json=json.dumps({"reason": "等待至少160個交易日的合格分鐘資料"}, ensure_ascii=False) if not dataset or dataset.quality_status != "READY" else "{}",
+        completed_at=_now() if not dataset or dataset.quality_status != "READY" else None,
+    )
+    db.add(job)
+    _audit(db, user_id, "OPTIMIZATION_JOB_CREATED", "BACKTEST", {"strategyId": body.strategy_id, "status": job.status}, job.id)
+    db.commit()
+    return {"id": job.id, "status": job.status, "candidateVersion": job.candidate_version}
+
+
+class VersionActionBody(BaseModel):
+    confirmation_version: str
+    approval_code: str = ""
+    reason: str = ""
+
+
+def _next_trading_date(db: Session, current: date) -> date:
+    holidays = set(db.scalars(select(DayTradeV2CalendarHoliday.holiday_date)).all())
+    candidate = current + timedelta(days=1)
+    while candidate.weekday() >= 5 or candidate in holidays:
+        candidate += timedelta(days=1)
+    return candidate
+
+
+@router.post("/strategy-versions/{strategy_id}/{version}/approve")
+def approve_strategy_version(
+    strategy_id: str, version: str, body: VersionActionBody,
+    user_id: str = Depends(_user_id), db: Session = Depends(get_db),
+) -> dict[str, object]:
+    expected = os.getenv("DTV2_STRATEGY_APPROVAL_CODE", "")
+    if not expected:
+        raise HTTPException(503, "尚未設定伺服器策略批准碼")
+    if body.confirmation_version != version or not hmac.compare_digest(body.approval_code, expected):
+        raise HTTPException(403, "版本確認或策略批准碼錯誤")
+    deployment = db.scalar(select(DayTradeV2StrategyDeployment).where(
+        DayTradeV2StrategyDeployment.user_id == user_id,
+        DayTradeV2StrategyDeployment.strategy_id == strategy_id,
+        DayTradeV2StrategyDeployment.version == version,
+        DayTradeV2StrategyDeployment.role == "CHALLENGER",
+        DayTradeV2StrategyDeployment.status == "WAITING_APPROVAL",
+    ))
+    run = db.scalar(select(DayTradeV2ChallengerRun).where(
+        DayTradeV2ChallengerRun.user_id == user_id,
+        DayTradeV2ChallengerRun.strategy_id == strategy_id,
+        DayTradeV2ChallengerRun.challenger_version == version,
+    ).order_by(DayTradeV2ChallengerRun.started_at.desc()))
+    if not deployment or not run:
+        raise HTTPException(409, "候選版本尚未完成驗證或模擬觀察")
+    challenger_metrics = _json(run.challenger_metrics_json, {})
+    champion_metrics = _json(run.champion_metrics_json, {})
+    ready, reasons = challenger_ready(
+        full_trading_days=run.full_trading_days, trade_count=run.trade_count,
+        net_pnl=challenger_metrics.get("netPnl", 0), max_drawdown=challenger_metrics.get("maxDrawdown", 0),
+        champion_max_drawdown=champion_metrics.get("maxDrawdown", 0), error_count=run.error_count,
+    )
+    if not ready:
+        raise HTTPException(409, "；".join(reasons))
+    deployment.status = "PENDING_ACTIVATION"
+    deployment.approved_by = user_id
+    deployment.approved_at = _now()
+    deployment.effective_date = _next_trading_date(db, datetime.now(TAIPEI).date())
+    _audit(db, user_id, "STRATEGY_VERSION_APPROVED", "LIVE", {"strategyId": strategy_id, "version": version, "effectiveDate": str(deployment.effective_date)}, deployment.id)
+    _notification(db, user_id=user_id, mode="PAPER", event_id=f"version-approved:{deployment.id}", event_type="STRATEGY_VERSION_APPROVED", title="【策略版本已批准】", message=f"{strategy_id} {version} 將於 {deployment.effective_date} 08:30 生效")
+    db.commit()
+    return {"status": deployment.status, "effectiveDate": deployment.effective_date}
+
+
+@router.post("/strategy-versions/{strategy_id}/{version}/reject")
+def reject_strategy_version(
+    strategy_id: str, version: str, body: VersionActionBody,
+    user_id: str = Depends(_user_id), db: Session = Depends(get_db),
+) -> dict[str, object]:
+    if body.confirmation_version != version:
+        raise HTTPException(422, "請輸入完整版本號確認")
+    deployment = db.scalar(select(DayTradeV2StrategyDeployment).where(
+        DayTradeV2StrategyDeployment.user_id == user_id,
+        DayTradeV2StrategyDeployment.strategy_id == strategy_id,
+        DayTradeV2StrategyDeployment.version == version,
+    ))
+    if not deployment or deployment.status not in {"WAITING_APPROVAL", "RUNNING"}:
+        raise HTTPException(409, "候選版本狀態不可拒絕")
+    deployment.status = "REJECTED"
+    deployment.disabled_at = _now()
+    deployment.disabled_reason = body.reason or "使用者拒絕候選版本"
+    run = db.scalar(select(DayTradeV2ChallengerRun).where(
+        DayTradeV2ChallengerRun.user_id == user_id,
+        DayTradeV2ChallengerRun.strategy_id == strategy_id,
+        DayTradeV2ChallengerRun.challenger_version == version,
+    ).order_by(DayTradeV2ChallengerRun.started_at.desc()))
+    if run:
+        run.status = "REJECTED"
+        run.completed_at = _now()
+    version_row = db.scalar(select(DayTradeV2StrategyVersion).where(
+        DayTradeV2StrategyVersion.strategy_id == strategy_id,
+        DayTradeV2StrategyVersion.version == version,
+    ))
+    if version_row:
+        version_row.validation_status = "REJECTED"
+    _audit(db, user_id, "STRATEGY_VERSION_REJECTED", "PAPER", {"strategyId": strategy_id, "version": version, "reason": deployment.disabled_reason}, deployment.id)
+    db.commit()
+    return {"status": deployment.status}
+
+
+@router.post("/strategy-versions/{strategy_id}/{version}/rollback")
+def rollback_strategy_version(
+    strategy_id: str, version: str, body: VersionActionBody,
+    user_id: str = Depends(_user_id), db: Session = Depends(get_db),
+) -> dict[str, object]:
+    if body.confirmation_version != version:
+        raise HTTPException(422, "請輸入完整版本號確認")
+    current = db.scalar(select(DayTradeV2StrategyDeployment).where(
+        DayTradeV2StrategyDeployment.user_id == user_id,
+        DayTradeV2StrategyDeployment.strategy_id == strategy_id,
+        DayTradeV2StrategyDeployment.version == version,
+        DayTradeV2StrategyDeployment.status == "ACTIVE",
+    ))
+    previous = db.scalar(select(DayTradeV2StrategyDeployment).where(
+        DayTradeV2StrategyDeployment.user_id == user_id,
+        DayTradeV2StrategyDeployment.strategy_id == strategy_id,
+        DayTradeV2StrategyDeployment.status == "SUPERSEDED",
+    ).order_by(DayTradeV2StrategyDeployment.disabled_at.desc()))
+    if not current or not previous:
+        raise HTTPException(409, "沒有可回復的上一個驗證版本")
+    current.status = "ROLLBACK_DISABLED"
+    current.disabled_at = _now()
+    current.disabled_reason = body.reason or "新版本異常，等待安全回復"
+    current.rollback_to_version = previous.version
+    version_row = db.scalar(select(DayTradeV2StrategyVersion).where(
+        DayTradeV2StrategyVersion.strategy_id == strategy_id,
+        DayTradeV2StrategyVersion.version == version,
+    ))
+    if version_row:
+        version_row.validation_status = "ROLLBACK_DISABLED"
+    pending = DayTradeV2StrategyDeployment(
+        id=str(uuid4()), user_id=user_id, strategy_id=strategy_id, version=previous.version,
+        role="CHAMPION", status="PENDING_ACTIVATION",
+        effective_date=_next_trading_date(db, datetime.now(TAIPEI).date()), rollback_to_version=previous.version,
+    )
+    db.add(pending)
+    robot = db.scalar(select(DayTradeV2Robot).where(
+        DayTradeV2Robot.user_id == user_id, DayTradeV2Robot.strategy_id == strategy_id,
+    ))
+    if robot:
+        robot.status = "HALTED_TODAY"
+        robot.status_date = datetime.now(TAIPEI).date()
+    _audit(db, user_id, "STRATEGY_VERSION_ROLLED_BACK", "LIVE", {"from": version, "to": previous.version, "effectiveDate": str(pending.effective_date)}, current.id)
+    _notification(db, user_id=user_id, mode="PAPER", event_id=f"version-rollback:{current.id}", event_type="STRATEGY_VERSION_ROLLBACK", title="【策略版本緊急回復】", message=f"{strategy_id} 已停止新交易；{previous.version} 將於 {pending.effective_date} 08:30 恢復")
+    db.commit()
+    return {"status": "PENDING_ROLLBACK", "rollbackToVersion": previous.version, "effectiveDate": pending.effective_date}
+
+
 class BacktestBody(BaseModel):
     backtest_mode: str = "PORTFOLIO"
     strategy_id: str = "ALL"
@@ -856,8 +1695,10 @@ def create_backtest(body: BacktestBody, user_id: str = Depends(_user_id), db: Se
         status, source, precision = "DATA_INSUFFICIENT", "UNCONFIGURED", "NONE"
     else:
         parsed: dict[str, list[MinuteBar]] = {}
+        sectors: dict[str, str] = {}
         try:
             for symbol, rows in body.datasets.items():
+                sectors[symbol] = str((rows[0].get("sector") if rows else None) or "回測未分類")
                 parsed[symbol] = [MinuteBar(
                     timestamp=datetime.fromisoformat(str(row["timestamp"])), open=dec(row["open"]), high=dec(row["high"]),
                     low=dec(row["low"]), close=dec(row["close"]), volume=int(row["volume"]),
@@ -866,12 +1707,14 @@ def create_backtest(body: BacktestBody, user_id: str = Depends(_user_id), db: Se
             raise HTTPException(422, f"分鐘行情格式錯誤：{exc}") from exc
         if body.backtest_mode == "INDIVIDUAL" and body.strategy_id == "ALL":
             individual = {
-                strategy: run_backtest(parsed, strategy_id=strategy, portfolio=False)
+                strategy: run_backtest(parsed, strategy_id=strategy, portfolio=False, sector_by_symbol=sectors)
                 for strategy, _, _ in STRATEGIES
             }
             result = {"individual": individual, "message": "各機器人分別使用獨立3,000,000元；結果不可直接加總。"}
         else:
-            result = run_backtest(parsed, strategy_id=body.strategy_id, portfolio=body.backtest_mode == "PORTFOLIO")
+            result = run_backtest(parsed, strategy_id=body.strategy_id, portfolio=body.backtest_mode == "PORTFOLIO", sector_by_symbol=sectors)
+            if body.backtest_mode == "PORTFOLIO":
+                result["marketRegimeNotice"] = "未提供指數分鐘序列時，總控回測明確採用溫和多頭盤基準；策略優化資料集需提供完整市場脈絡。"
         status, source, precision = "COMPLETED", "REQUEST_DATASET", "1_MINUTE"
     job = DayTradeV2BacktestJob(
         id=job_id, user_id=user_id, backtest_mode=body.backtest_mode, strategy_id=body.strategy_id,

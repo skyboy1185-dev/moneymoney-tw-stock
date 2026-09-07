@@ -50,6 +50,15 @@ class DayTradeV2StrategyVersion(Base):
     strategy_id: Mapped[str] = mapped_column(String(60), nullable=False)
     version: Mapped[str] = mapped_column(String(30), nullable=False)
     definition_json: Mapped[str] = mapped_column(Text, nullable=False)
+    parent_version: Mapped[str] = mapped_column(String(30), nullable=False, default="")
+    parameters_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    change_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    data_period_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    backtest_result_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    oos_result_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    simulation_result_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    checksum: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    validation_status: Mapped[str] = mapped_column(String(30), nullable=False, default="UNVERIFIED")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
@@ -79,6 +88,7 @@ class DayTradeV2Signal(Base):
     reasons_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     skip_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
     market_context_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    controller_decision_id: Mapped[str] = mapped_column(String(80), nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
@@ -107,6 +117,7 @@ class DayTradeV2Order(Base):
     broker_accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
     error_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    controller_decision_id: Mapped[str] = mapped_column(String(80), nullable=False, default="")
 
 
 class DayTradeV2Fill(Base):
@@ -376,3 +387,223 @@ class DayTradeV2CalendarHoliday(Base):
     name: Mapped[str] = mapped_column(String(160), nullable=False)
     source: Mapped[str] = mapped_column(String(80), nullable=False, default="TWSE")
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class DayTradeV2StrategyDeployment(Base):
+    __tablename__ = "day_trade_v2_strategy_deployments"
+    __table_args__ = (
+        Index("ix_dtv2_deployment_active", "user_id", "strategy_id", "role", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    strategy_id: Mapped[str] = mapped_column(String(60), nullable=False)
+    version: Mapped[str] = mapped_column(String(30), nullable=False)
+    role: Mapped[str] = mapped_column(String(20), nullable=False, default="CHAMPION")
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="ACTIVE")
+    approved_by: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    effective_date: Mapped[date | None] = mapped_column(Date)
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    disabled_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    rollback_to_version: Mapped[str] = mapped_column(String(30), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class DayTradeV2StrategyHealthSnapshot(Base):
+    __tablename__ = "day_trade_v2_strategy_health_snapshots"
+    __table_args__ = (
+        UniqueConstraint("user_id", "mode", "strategy_id", "diagnosis_date", name="uq_dtv2_health_day"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    strategy_id: Mapped[str] = mapped_column(String(60), nullable=False)
+    strategy_version: Mapped[str] = mapped_column(String(30), nullable=False)
+    diagnosis_date: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False)
+    reasons_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    metrics_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    baseline_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    recommended_action: Mapped[str] = mapped_column(String(30), nullable=False, default="NONE")
+    capital_multiplier: Mapped[Decimal] = mapped_column(RATE, nullable=False, default=1)
+    risk_multiplier: Mapped[Decimal] = mapped_column(RATE, nullable=False, default=1)
+    calculated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class DayTradeV2StrategyRiskOverride(Base):
+    __tablename__ = "day_trade_v2_strategy_risk_overrides"
+    __table_args__ = (UniqueConstraint("user_id", "mode", "strategy_id", name="uq_dtv2_risk_override"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    strategy_id: Mapped[str] = mapped_column(String(60), nullable=False)
+    capital_multiplier: Mapped[Decimal] = mapped_column(RATE, nullable=False, default=1)
+    risk_multiplier: Mapped[Decimal] = mapped_column(RATE, nullable=False, default=1)
+    paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    source: Mapped[str] = mapped_column(String(30), nullable=False, default="HEALTH")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+
+class DayTradeV2OptimizationDataset(Base):
+    __tablename__ = "day_trade_v2_optimization_datasets"
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    storage_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    data_format: Mapped[str] = mapped_column(String(20), nullable=False)
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    trading_day_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    symbol_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    quality_status: Mapped[str] = mapped_column(String(30), nullable=False, default="PENDING")
+    quality_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class DayTradeV2OptimizationJob(Base):
+    __tablename__ = "day_trade_v2_optimization_jobs"
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    strategy_id: Mapped[str] = mapped_column(String(60), nullable=False)
+    champion_version: Mapped[str] = mapped_column(String(30), nullable=False)
+    candidate_version: Mapped[str] = mapped_column(String(30), nullable=False, default="")
+    trigger_type: Mapped[str] = mapped_column(String(30), nullable=False, default="MANUAL")
+    dataset_id: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="QUEUED")
+    progress_pct: Mapped[Decimal] = mapped_column(RATE, nullable=False, default=0)
+    search_space_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    walk_forward_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    result_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    error_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class DayTradeV2ChallengerRun(Base):
+    __tablename__ = "day_trade_v2_challenger_runs"
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    strategy_id: Mapped[str] = mapped_column(String(60), nullable=False)
+    champion_version: Mapped[str] = mapped_column(String(30), nullable=False)
+    challenger_version: Mapped[str] = mapped_column(String(30), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="RUNNING")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    full_trading_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    trade_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    champion_metrics_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    challenger_metrics_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_counted_date: Mapped[date | None] = mapped_column(Date)
+
+
+class DayTradeV2ChallengerPosition(Base):
+    __tablename__ = "day_trade_v2_challenger_positions"
+    __table_args__ = (UniqueConstraint("run_id", "role", "signal_key", name="uq_dtv2_shadow_signal"),)
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    strategy_version: Mapped[str] = mapped_column(String(30), nullable=False)
+    signal_key: Mapped[str] = mapped_column(String(180), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(12), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    entry_price: Mapped[Decimal] = mapped_column(PRICE, nullable=False)
+    stop_price: Mapped[Decimal] = mapped_column(PRICE, nullable=False)
+    target_price: Mapped[Decimal] = mapped_column(PRICE, nullable=False)
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="OPEN")
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class DayTradeV2ChallengerTrade(Base):
+    __tablename__ = "day_trade_v2_challenger_trades"
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(12), nullable=False)
+    entry_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    exit_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    entry_price: Mapped[Decimal] = mapped_column(PRICE, nullable=False)
+    exit_price: Mapped[Decimal] = mapped_column(PRICE, nullable=False)
+    net_pnl: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    cost: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class DayTradeV2MarketRegimeSnapshot(Base):
+    __tablename__ = "day_trade_v2_market_regime_snapshots"
+    __table_args__ = (UniqueConstraint("user_id", "mode", "bucket_at", name="uq_dtv2_regime_bucket"),)
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    bucket_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    proposed_regime: Mapped[str] = mapped_column(String(30), nullable=False)
+    effective_regime: Mapped[str] = mapped_column(String(30), nullable=False)
+    confidence: Mapped[Decimal] = mapped_column(RATE, nullable=False)
+    data_blocked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    reasons_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    inputs_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class DayTradeV2ControllerCycle(Base):
+    __tablename__ = "day_trade_v2_controller_cycles"
+    __table_args__ = (UniqueConstraint("user_id", "mode", "cycle_key", name="uq_dtv2_controller_cycle"),)
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    cycle_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    trading_date: Mapped[date] = mapped_column(Date, nullable=False)
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    regime_snapshot_id: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    candidate_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    selected_candidate_id: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="COMPLETED")
+    block_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class DayTradeV2ControllerCandidate(Base):
+    __tablename__ = "day_trade_v2_controller_candidates"
+    __table_args__ = (UniqueConstraint("user_id", "mode", "candidate_key", name="uq_dtv2_controller_candidate"),)
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    cycle_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    candidate_key: Mapped[str] = mapped_column(String(180), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(12), nullable=False)
+    stock_name: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    sector: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    strategy_id: Mapped[str] = mapped_column(String(60), nullable=False)
+    strategy_version: Mapped[str] = mapped_column(String(30), nullable=False)
+    signal_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    raw_score: Mapped[Decimal] = mapped_column(RATE, nullable=False)
+    final_score: Mapped[Decimal] = mapped_column(RATE, nullable=False)
+    rank: Mapped[int | None] = mapped_column(Integer)
+    entry_price: Mapped[Decimal] = mapped_column(PRICE, nullable=False)
+    stop_price: Mapped[Decimal] = mapped_column(PRICE, nullable=False)
+    target_price: Mapped[Decimal] = mapped_column(PRICE, nullable=False)
+    risk_reward: Mapped[Decimal] = mapped_column(RATE, nullable=False)
+    planned_capital: Mapped[Decimal] = mapped_column(MONEY, nullable=False, default=0)
+    allowed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="REJECTED")
+    score_details_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    reasons_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    blocked_reasons_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

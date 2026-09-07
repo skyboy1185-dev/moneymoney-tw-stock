@@ -160,6 +160,19 @@ def test_shared_portfolio_never_exceeds_three_million():
     assert max(entry_counts.values()) <= 3
 
 
+def test_portfolio_backtest_uses_controller_and_opens_at_most_one_position_per_decision_time():
+    bars = _opening_breakout_bars()
+    result = run_backtest(
+        {"2330": bars, "2454": bars, "2382": bars}, strategy_id="OPENING_RANGE_BREAKOUT",
+        config={"minimumConfidence": "0", "allowOddLots": True, "slippageBps": "0"}, portfolio=True,
+        sector_by_symbol={"2330": "半導體", "2454": "半導體", "2382": "電腦"},
+    )
+    counts = {}
+    for trade in result["trades"]:
+        counts[trade["entryTime"]] = counts.get(trade["entryTime"], 0) + 1
+    assert max(counts.values(), default=0) <= 1
+
+
 def test_restart_broker_sync_fails_closed_without_credentials():
     broker = DisabledLiveBrokerAdapter()
     state = broker.synchronize()

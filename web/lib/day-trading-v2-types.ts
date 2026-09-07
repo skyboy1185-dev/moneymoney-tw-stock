@@ -109,6 +109,8 @@ export type Dashboard = {
   runtime: RuntimeState;
   topCandidates: CandidateState[];
   skipReasons: Array<{ reason: string; count: number }>;
+  controller: ControllerDashboard;
+  optimization: OptimizationDashboard;
 };
 
 export type NotificationItem = {
@@ -136,4 +138,36 @@ export type CandidateState = {
   symbol: string; stockName: string; sector: string; strategyId: string; confidence: string;
   signalLevel: "GENERAL" | "WATCH" | "NEAR_ENTRY" | "RISK_GATE";
   primaryReason: string; reasons: string[]; quoteAt: string | null; barAt: string | null; scannedAt: string;
+};
+
+export type ControllerCandidate = {
+  id: string; cycleId: string; symbol: string; stockName: string; sector: string;
+  strategyId: string; strategyVersion: string; signalTime: string;
+  rawScore: string; finalScore: string; rank: number | null;
+  entryPrice: string; stopPrice: string; targetPrice: string; riskReward: string;
+  plannedCapital: string; allowed: boolean; status: string;
+  scoreDetails: Record<string, string | null>; reasons: string[]; blockedReasons: string[];
+};
+
+export type ControllerDashboard = {
+  marketRegime: string; marketRegimeLabel: string; confidence: string; reasons: string[];
+  dataBlocked: boolean; updatedAt: string | null; nextUpdateAt: string | null;
+  cycleId: string | null; cycleStatus: string; selectedCandidateId: string;
+  candidates: ControllerCandidate[];
+  strategyStates: Array<{ strategyId: string; name: string; status: string; riskMultiplier: string; candidateCount: number }>;
+};
+
+export type StrategyHealth = {
+  strategyId: string; name: string; version: string;
+  status: "NORMAL" | "ALERT" | "PAUSED" | "OPTIMIZING" | "WAITING_APPROVAL" | "INSUFFICIENT" | string;
+  reasons: string[]; metrics: Record<string, unknown>; baseline: Record<string, unknown>;
+  recommendedAction: string; capitalMultiplier: string; riskMultiplier: string;
+};
+
+export type OptimizationDashboard = {
+  health: StrategyHealth[];
+  jobs: Array<Record<string, unknown>>;
+  challengers: Array<Record<string, unknown>>;
+  deployments: Array<Record<string, unknown>>;
+  datasets: Array<Record<string, unknown>>;
 };
