@@ -330,6 +330,18 @@ def test_backtest_rejects_an_untradeable_next_bar_gap():
     assert all(trade["signalTime"] != bars[15].timestamp for trade in result["trades"])
 
 
+def test_portfolio_ranks_only_candidates_that_can_close_same_day():
+    complete = _opening_breakout_bars()
+    result = run_backtest(
+        {"2330": complete[:-1], "2454": complete}, strategy_id="OPENING_RANGE_BREAKOUT",
+        config={"minimumConfidence": "0", "allowOddLots": True, "slippageBps": "0"},
+        sector_by_symbol={"2330": "A", "2454": "B"},
+    )
+    assert result["trades"]
+    assert result["trades"][0]["symbol"] == "2454"
+    assert any(row["reason"] == "FORCED_CLOSE_MINUTE_MISSING" for row in result["skipReasons"])
+
+
 def test_individual_backtest_also_applies_controller_time_window(monkeypatch):
     start = datetime(2026, 9, 7, 3, 30, tzinfo=UTC)  # 11:30 Taipei, after opening strategy window
     bars = [MinuteBar(start + timedelta(minutes=i), Decimal("100"), Decimal("101"), Decimal("99"), Decimal("100"), 1000) for i in range(18)]
