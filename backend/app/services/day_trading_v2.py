@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 TAIPEI = ZoneInfo("Asia/Taipei")
 ZERO = Decimal("0")
 CENT = Decimal("0.01")
-BACKTEST_ENGINE_VERSION = "3.0.1"
+BACKTEST_ENGINE_VERSION = "3.1.0"
 
 STRATEGIES = (
     ("OPENING_RANGE_BREAKOUT", "開盤15分鐘區間突破", Decimal("750000")),
@@ -255,7 +255,7 @@ def run_backtest(
         if taipei_time(fill_bar.timestamp) >= latest_entry:
             skip("AFTER_LATEST_ENTRY_TIME")
             continue
-        entry = fill_bar.open * (Decimal("1") + dec(cfg["slippageBps"]) / Decimal("10000"))
+        entry = fill_bar.open
         chase_pct = (entry - signal.entry_price) / signal.entry_price * 100 if signal.entry_price else Decimal("999")
         if chase_pct > dec(cfg["maximumFillChasePct"]):
             skip("NEXT_BAR_CHASE_TOO_LARGE")
@@ -390,7 +390,7 @@ def run_backtest(
             else signal.target_price if exit_reason == "PROFIT_TARGET"
             else exit_bar.close
         )
-        exit_price = raw_exit * (Decimal("1") - dec(cfg["slippageBps"]) / Decimal("10000"))
+        exit_price = raw_exit
 
         reserved = sum(dec(position["entryCapital"]) for position in active)
         available = initial + realized_total - reserved
@@ -423,7 +423,7 @@ def run_backtest(
             entry_price=entry, exit_price=exit_price, quantity=quantity,
             commission_rate=cfg["commissionRate"], commission_discount=cfg["commissionDiscount"],
             minimum_commission=cfg["minimumCommission"], tax_rate=cfg["dayTradeTaxRate"],
-            slippage_bps=0, other_cost=cfg["otherCost"],
+            slippage_bps=cfg["slippageBps"], other_cost=cfg["otherCost"],
         )
         trade = {
             "symbol": symbol, "strategyId": signal.strategy_id, "signalTime": signal_time,
@@ -437,6 +437,9 @@ def run_backtest(
             "grossPnl": str(trade_result["grossPnl"]), "cost": str(trade_result["total"]),
             "netPnl": str(trade_result["netPnl"]), "buyTurnover": str(trade_result["buyTurnover"]),
             "sellTurnover": str(trade_result["sellTurnover"]), "totalTurnover": str(trade_result["totalTurnover"]),
+            "buyFee": str(trade_result["buy_fee"]), "sellFee": str(trade_result["sell_fee"]),
+            "transactionTax": str(trade_result["transaction_tax"]),
+            "slippage": str(trade_result["slippage"]), "otherCost": str(trade_result["other_cost"]),
             "listedCommission": str(trade_result["listedCommission"]),
             "paidCommission": str(trade_result["paidCommission"]),
             "commissionRebate": str(trade_result["commissionRebate"]),

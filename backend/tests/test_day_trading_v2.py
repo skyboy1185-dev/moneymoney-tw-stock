@@ -243,6 +243,21 @@ def test_backtest_fills_on_next_bar_not_signal_price():
     assert result["summary"]["commissionRebate"] == trade["commissionRebate"]
 
 
+def test_backtest_reports_slippage_as_an_explicit_cost_without_moving_fill_price():
+    result = run_backtest(
+        {"2330": _opening_breakout_bars()}, strategy_id="OPENING_RANGE_BREAKOUT",
+        config={"minimumConfidence": "0", "allowOddLots": True, "slippageBps": "5"},
+    )
+    trade = result["trades"][0]
+    assert trade["entryPrice"] == "101.90"
+    assert Decimal(trade["slippage"]) > 0
+    assert Decimal(trade["cost"]) == (
+        Decimal(trade["buyFee"]) + Decimal(trade["sellFee"])
+        + Decimal(trade["transactionTax"]) + Decimal(trade["slippage"])
+        + Decimal(trade["otherCost"])
+    )
+
+
 def test_backtest_trade_keeps_verified_entry_market_regime():
     bars = _opening_breakout_bars()
     result = run_backtest(
