@@ -11,6 +11,8 @@ describe("limit-up AI normalizers", () => {
     expect(dashboard.summary.candidateCount).toBe(1);
     expect(dashboard.performance.today.totalPnl).toBe(0);
     expect(dashboard.performance.month.winRate).toBe(0);
+    expect(dashboard.performance.all.grossProfit).toBe(0);
+    expect(dashboard.performance.all.grossLoss).toBe(0);
     expect(dashboard.settings.capital).toBe(3_000_000);
     expect(dashboard.candidates[0].score).toBe(88.5);
     expect(dashboard.candidates[0].failures).toEqual([]);
@@ -57,5 +59,14 @@ describe("limit-up AI normalizers", () => {
 
     expect(payload.items[0].id).toBe(42);
     expect(payload.unreadCount).toBe(1);
+  });
+
+  it("normalizes gross profit and loss performance totals", () => {
+    const dashboard = normalizeLimitUpDashboard({
+      performance: { all: { grossProfit: "12500", grossLoss: "3200" } },
+    });
+
+    expect(dashboard.performance.all.grossProfit).toBe(12_500);
+    expect(dashboard.performance.all.grossLoss).toBe(3_200);
   });
 });

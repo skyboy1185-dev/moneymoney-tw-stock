@@ -128,6 +128,8 @@ export interface LimitUpAiPerformanceBucket {
   winCount: number;
   lossCount: number;
   winRate: number;
+  grossProfit: number;
+  grossLoss: number;
   realizedPnl: number;
   unrealizedPnl: number;
   totalPnl: number;

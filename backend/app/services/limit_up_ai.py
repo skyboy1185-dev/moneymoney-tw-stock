@@ -31,6 +31,7 @@ LIMIT_UP_ACTIONABLE_SCORE = 82
 LIMIT_UP_ORDER_BOOK_SUPPORT_RATIO = 1.25
 LIMIT_UP_MAX_STOP_DISTANCE_PERCENT = 1.2
 LIMIT_UP_MAX_QUOTE_AGE_SECONDS = 8
+TRADE_NOTIFICATION_TYPES = ("BUY", "SELL", "TAKE_PROFIT", "STOP_LOSS")
 _FULL_MARKET_SIGNAL_CACHE: tuple[datetime, list[dict[str, Any]]] | None = None
 _FULL_MARKET_SIGNAL_BY_SYMBOL_CACHE: dict[str, tuple[datetime, dict[str, Any]]] = {}
 _FULL_MARKET_QUOTE_CURSOR = 0
@@ -870,32 +871,6 @@ def overnight_score(candidate: dict[str, Any] | None, price: float, position: Li
     return round(_clamp(score, 0, 100), 2)
 
 
-def _notify_candidate_alerts(db: Session, user_id: str, candidates: list[dict[str, Any]], now: datetime) -> None:
-    local = now.astimezone(TAIPEI)
-    bucket_minute = local.minute - (local.minute % 5)
-    bucket = local.replace(minute=bucket_minute, second=0, microsecond=0)
-    for candidate in candidates[:10]:
-        if not (candidate["actionable"] or candidate.get("alertable") or (candidate["category"] == "attack" and candidate["limitDistancePercent"] <= 3)):
-            continue
-        alert_type = "ACTIONABLE" if candidate["actionable"] else "NEAR_LIMIT"
-        _notify(
-            db,
-            user_id=user_id,
-            dedupe_key=f"candidate:{alert_type}:{candidate['symbol']}:{bucket:%Y%m%d%H%M}",
-            notification_type=alert_type,
-            priority=2,
-            title=f"專抓漲停飆股AI 候選：{candidate['symbol']} {candidate['stockName']}",
-            message=f"{candidate['categoryLabel']}，評分 {candidate['score']:.1f}，距漲停 {candidate['limitDistancePercent']:.2f}%。",
-            reason=(candidate["reasons"][0] if candidate["reasons"] else candidate["setupLabel"]),
-            created_at=now,
-            symbol=candidate["symbol"],
-            stock_name=candidate["stockName"],
-            setup_type=candidate["setupType"],
-            price=candidate["price"],
-            score=candidate["score"],
-        )
-
-
 def run_limit_up_cycle(db: Session, user_id: str, now: datetime | None = None) -> dict[str, Any]:
     current = now or datetime.now(UTC)
     settings = ensure_limit_up_settings(db, user_id, current)
@@ -904,7 +879,6 @@ def run_limit_up_cycle(db: Session, user_id: str, now: datetime | None = None) -
     for candidate in candidates:
         if candidate["actionable"]:
             _open_position(db, user_id, settings, candidate, current)
-    _notify_candidate_alerts(db, user_id, candidates, current)
     db.commit()
     return dashboard_payload(db, user_id, candidates=candidates, now=current)
 
@@ -1016,6 +990,8 @@ def limit_up_performance_payload(db: Session, user_id: str, now: datetime | None
             "winCount": len(wins),
             "lossCount": len(losses),
             "winRate": round(len(wins) / len(realized_rows) * 100, 2) if realized_rows else 0,
+            "grossProfit": round(sum(wins), 2),
+            "grossLoss": round(abs(sum(losses)), 2),
             "realizedPnl": round(realized, 2),
             "unrealizedPnl": round(unrealized, 2),
             "totalPnl": round(realized + unrealized, 2),
@@ -1045,7 +1021,10 @@ def list_limit_up_notifications(
     notification_type: str | None = None,
     unread_only: bool = False,
 ) -> dict[str, Any]:
-    query = select(LimitUpAiNotification).where(LimitUpAiNotification.user_id == user_id)
+    query = select(LimitUpAiNotification).where(
+        LimitUpAiNotification.user_id == user_id,
+        LimitUpAiNotification.notification_type.in_(TRADE_NOTIFICATION_TYPES),
+    )
     if notification_type:
         query = query.where(LimitUpAiNotification.notification_type == notification_type)
     if unread_only:
@@ -1053,6 +1032,7 @@ def list_limit_up_notifications(
     rows = db.scalars(query.order_by(LimitUpAiNotification.created_at.desc()).limit(limit)).all()
     unread = db.scalar(select(func.count()).select_from(LimitUpAiNotification).where(
         LimitUpAiNotification.user_id == user_id,
+        LimitUpAiNotification.notification_type.in_(TRADE_NOTIFICATION_TYPES),
         LimitUpAiNotification.is_read.is_(False),
     )) or 0
     return {"items": [_notification_payload(item) for item in rows], "unreadCount": unread}
@@ -1061,6 +1041,7 @@ def list_limit_up_notifications(
 def unread_limit_up_notification_count(db: Session, user_id: str) -> int:
     return int(db.scalar(select(func.count()).select_from(LimitUpAiNotification).where(
         LimitUpAiNotification.user_id == user_id,
+        LimitUpAiNotification.notification_type.in_(TRADE_NOTIFICATION_TYPES),
         LimitUpAiNotification.is_read.is_(False),
     )) or 0)
 
@@ -1069,6 +1050,7 @@ def mark_limit_up_notification_read(db: Session, user_id: str, notification_id: 
     item = db.scalar(select(LimitUpAiNotification).where(
         LimitUpAiNotification.id == notification_id,
         LimitUpAiNotification.user_id == user_id,
+        LimitUpAiNotification.notification_type.in_(TRADE_NOTIFICATION_TYPES),
     ))
     if item is None:
         return False
@@ -1083,6 +1065,7 @@ def mark_all_limit_up_notifications_read(db: Session, user_id: str, now: datetim
     current = now or datetime.now(UTC)
     rows = db.scalars(select(LimitUpAiNotification).where(
         LimitUpAiNotification.user_id == user_id,
+        LimitUpAiNotification.notification_type.in_(TRADE_NOTIFICATION_TYPES),
         LimitUpAiNotification.is_read.is_(False),
     )).all()
     for item in rows:
@@ -1153,7 +1136,7 @@ def dashboard_payload(
         "performance": performance,
         "notifications": latest_notifications,
         "unreadCount": unread,
-        "dataNotice": "第一版使用即時行情、大單連續性、VWAP/5分K與五檔快照估算；逐筆主動買盤不足時會標示估算。",
+        "dataNotice": "背景仍使用即時行情、大單連續性、VWAP／5分K與五檔快照判斷正式進場；本頁只顯示模擬買賣、留倉與績效，不保存候選觀察訊息。",
     }
 
 

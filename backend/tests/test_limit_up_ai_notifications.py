@@ -13,6 +13,7 @@ from app.services.limit_up_ai import (
     list_limit_up_notifications,
     mark_all_limit_up_notifications_read,
     mark_limit_up_notification_read,
+    run_limit_up_cycle,
     score_limit_up_candidate,
 )
 
@@ -115,9 +116,81 @@ def test_trade_flow_creates_deduped_buy_sell_notifications_and_performance() -> 
         assert performance["today"]["tradeCount"] == 1
         assert performance["today"]["realizedPnl"] > 0
         assert performance["today"]["winRate"] == 100
+        assert performance["today"]["grossProfit"] == performance["today"]["realizedPnl"]
+        assert performance["today"]["grossLoss"] == 0
 
         first_id = notifications["items"][0]["id"]
         assert mark_limit_up_notification_read(db, "test-user", first_id, NOW) is True
         assert list_limit_up_notifications(db, "test-user")["unreadCount"] == 1
         assert mark_all_limit_up_notifications_read(db, "test-user", NOW) == 1
         assert list_limit_up_notifications(db, "test-user")["unreadCount"] == 0
+
+
+def test_observation_notifications_are_hidden_and_do_not_count_as_unread() -> None:
+    with _session() as db:
+        db.add(LimitUpAiNotification(
+            user_id="test-user",
+            dedupe_key="candidate:ACTIONABLE:4939:202608271015",
+            notification_type="ACTIONABLE",
+            priority=2,
+            title="觀察通知",
+            message="候選仍在觀察",
+            symbol="4939",
+            stock_name="測試股",
+            reason="等待進場",
+            is_read=False,
+            created_at=NOW,
+        ))
+        db.commit()
+
+        hidden = db.scalar(select(LimitUpAiNotification))
+        assert hidden is not None
+        assert list_limit_up_notifications(db, "test-user") == {"items": [], "unreadCount": 0}
+        assert mark_limit_up_notification_read(db, "test-user", hidden.id, NOW) is False
+        assert mark_all_limit_up_notifications_read(db, "test-user", NOW) == 0
+        db.refresh(hidden)
+        assert hidden.is_read is False
+
+
+def test_performance_reports_gross_profit_and_loss() -> None:
+    with _session() as db:
+        settings = _settings()
+        db.add(settings)
+        db.commit()
+
+        winner = _candidate()
+        _open_position(db, "test-user", settings, winner, NOW)
+        winning_position = db.scalar(select(LimitUpAiPosition).where(LimitUpAiPosition.symbol == "4939"))
+        assert winning_position is not None
+        _sell_position(db, winning_position, winning_position.remaining_quantity, 110.0, "獲利出場", NOW)
+
+        loser = {**_candidate(), "id": "4940-long-test", "symbol": "4940", "stockName": "虧損測試股"}
+        _open_position(db, "test-user", settings, loser, NOW)
+        losing_position = db.scalar(select(LimitUpAiPosition).where(LimitUpAiPosition.symbol == "4940"))
+        assert losing_position is not None
+        _sell_position(db, losing_position, losing_position.remaining_quantity, 100.0, "停損出場", NOW)
+        db.commit()
+
+        performance = limit_up_performance_payload(db, "test-user", NOW)["today"]
+        assert performance["tradeCount"] == 2
+        assert performance["winRate"] == 50
+        assert performance["grossProfit"] > 0
+        assert performance["grossLoss"] > 0
+        assert performance["realizedPnl"] == performance["grossProfit"] - performance["grossLoss"]
+
+
+def test_full_cycle_creates_trade_notification_without_candidate_observation(monkeypatch) -> None:
+    with _session() as db:
+        settings = _settings()
+        db.add(settings)
+        db.commit()
+        candidate = {**_candidate(), "actionable": True}
+        monkeypatch.setattr(
+            "app.services.limit_up_ai.scan_limit_up_candidates",
+            lambda *_args, **_kwargs: [candidate],
+        )
+
+        run_limit_up_cycle(db, "test-user", NOW)
+
+        notifications = db.scalars(select(LimitUpAiNotification)).all()
+        assert [item.notification_type for item in notifications] == ["BUY"]

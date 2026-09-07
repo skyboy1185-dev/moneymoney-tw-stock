@@ -99,6 +99,8 @@ function normalizeBucket(value: unknown): LimitUpAiPerformanceBucket {
     winCount: finiteNumber(source.winCount),
     lossCount: finiteNumber(source.lossCount),
     winRate: finiteNumber(source.winRate),
+    grossProfit: finiteNumber(source.grossProfit),
+    grossLoss: finiteNumber(source.grossLoss),
     realizedPnl: finiteNumber(source.realizedPnl),
     unrealizedPnl: finiteNumber(source.unrealizedPnl),
     totalPnl: finiteNumber(source.totalPnl),
