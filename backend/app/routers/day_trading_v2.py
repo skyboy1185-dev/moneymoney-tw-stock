@@ -8,20 +8,21 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..database import SessionLocal, get_db
 from ..day_trading_v2_models import (
     DayTradeV2AuditEvent, DayTradeV2BacktestJob, DayTradeV2Fill,
-    DayTradeV2Notification, DayTradeV2Order, DayTradeV2Position,
+    DayTradeV2CandidateState, DayTradeV2Notification, DayTradeV2Order, DayTradeV2Position,
     DayTradeV2RiskDaily, DayTradeV2Robot, DayTradeV2Setting,
-    DayTradeV2Signal, DayTradeV2StrategyVersion, DayTradeV2Trade,
+    DayTradeV2RuntimeState, DayTradeV2ScheduleEvent, DayTradeV2Signal,
+    DayTradeV2SkipStat, DayTradeV2StrategyVersion, DayTradeV2Trade,
 )
 from ..services.day_trading_v2 import (
     DEFAULT_CONFIG, STRATEGIES, MinuteBar, calculate_position_size,
     calculate_trade_result, dec, evaluate_strategies, exit_action, market_gate_reasons,
-    merged_config, money, performance, resolve_duplicate_signals, risk_status,
+    merged_config, money, performance, resolve_duplicate_signals, risk_status, signal_level,
     run_backtest,
 )
 from ..services.day_trading import day_trading_engine
@@ -45,6 +46,10 @@ def _json(value: str, fallback):
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def _aware(value: datetime | None) -> datetime | None:
+    return value.replace(tzinfo=UTC) if value and value.tzinfo is None else value
 
 
 def _today_bounds() -> tuple[datetime, datetime]:
@@ -93,7 +98,6 @@ def _ensure_defaults(db: Session, user_id: str) -> tuple[DayTradeV2Setting, list
 def _trade_dict(row: DayTradeV2Trade) -> dict[str, object]:
     return {
         "id": row.id, "mode": row.mode, "symbol": row.symbol, "stockName": row.stock_name,
-        "sector": row.sector,
         "strategyId": row.strategy_id, "strategyVersion": row.strategy_version, "side": row.side,
         "quantity": row.quantity, "signalTime": row.signal_time, "entryOrderTime": row.entry_order_time,
         "entryFillTime": row.entry_fill_time, "entryPrice": str(row.entry_price),
@@ -109,7 +113,7 @@ def _trade_dict(row: DayTradeV2Trade) -> dict[str, object]:
 def _position_dict(row: DayTradeV2Position) -> dict[str, object]:
     unrealized = money((row.current_price - row.entry_price) * row.quantity)
     return {
-        "id": row.id, "mode": row.mode, "symbol": row.symbol, "stockName": row.stock_name,
+        "id": row.id, "mode": row.mode, "symbol": row.symbol, "stockName": row.stock_name, "sector": row.sector,
         "strategyId": row.strategy_id, "strategyVersion": row.strategy_version, "signalId": row.signal_id,
         "side": row.side, "quantity": row.quantity, "entryPrice": str(row.entry_price),
         "currentPrice": str(row.current_price), "stopPrice": str(row.stop_price),
@@ -132,6 +136,55 @@ def _audit(db: Session, user_id: str, action: str, mode: str, details: dict | No
     db.add(DayTradeV2AuditEvent(user_id=user_id, action=action, mode=mode, entity_id=entity_id, details_json=json.dumps(details or {}, ensure_ascii=False)))
 
 
+def _runtime_dict(runtime: DayTradeV2RuntimeState | None, config: dict[str, object]) -> dict[str, object]:
+    now = _now()
+    heartbeat_at = _aware(runtime.heartbeat_at) if runtime else None
+    quote_at = _aware(runtime.last_quote_at) if runtime else None
+    heartbeat_stale = bool(heartbeat_at and (now - heartbeat_at).total_seconds() > int(config["heartbeatTimeoutSeconds"]))
+    quote_stale = bool(runtime and runtime.scanning and (quote_at is None or (now - quote_at).total_seconds() > int(config["quoteTimeoutSeconds"])))
+    status = "ALERT" if heartbeat_stale or quote_stale else runtime.status if runtime else "WAITING"
+    return {
+        "running": bool(runtime and runtime.status == "RUNNING" and not heartbeat_stale),
+        "status": status, "phase": runtime.phase if runtime else "BEFORE_INITIALIZATION",
+        "autoStart": runtime.auto_start if runtime else bool(config["autoStart"]),
+        "initialized": bool(runtime and runtime.initialized),
+        "receivingQuotes": bool(runtime and runtime.receiving_quotes and not quote_stale),
+        "scanning": bool(runtime and runtime.scanning and not heartbeat_stale),
+        "orderAllowed": bool(runtime and runtime.order_allowed and not heartbeat_stale and not quote_stale),
+        "heartbeatAt": runtime.heartbeat_at if runtime else None, "lastQuoteAt": runtime.last_quote_at if runtime else None,
+        "lastScanAt": runtime.last_scan_at if runtime else None, "lastBarAt": runtime.last_bar_at if runtime else None,
+        "nextScanAt": runtime.next_scan_at if runtime else None, "nextEventType": runtime.next_event_type if runtime else "",
+        "nextEventAt": runtime.next_event_at if runtime else None,
+        "scannedStockCount": runtime.scanned_stock_count if runtime else 0,
+        "candidateCount": runtime.candidate_count if runtime else 0, "signalCount": runtime.signal_count if runtime else 0,
+        "orderCount": runtime.order_count if runtime else 0, "skippedCount": runtime.skipped_count if runtime else 0,
+        "completedTradeCount": runtime.completed_trade_count if runtime else 0,
+        "latestError": runtime.latest_error if runtime else "", "heartbeatStale": heartbeat_stale, "quoteStale": quote_stale,
+    }
+
+
+def _candidate_dict(row: DayTradeV2CandidateState) -> dict[str, object]:
+    return {
+        "symbol": row.symbol, "stockName": row.stock_name, "sector": row.sector,
+        "strategyId": row.strategy_id, "confidence": str(row.confidence), "signalLevel": row.signal_level,
+        "primaryReason": row.primary_reason, "reasons": _json(row.reasons_json, []),
+        "quoteAt": row.quote_at, "barAt": row.bar_at, "scannedAt": row.scanned_at,
+    }
+
+
+def _record_skip(db: Session, user_id: str, mode: str, trading_date: date, reason: str) -> None:
+    if not reason:
+        return
+    row = db.scalar(select(DayTradeV2SkipStat).where(
+        DayTradeV2SkipStat.user_id == user_id, DayTradeV2SkipStat.mode == mode,
+        DayTradeV2SkipStat.trading_date == trading_date, DayTradeV2SkipStat.reason == reason,
+    ))
+    if row is None:
+        db.add(DayTradeV2SkipStat(user_id=user_id, mode=mode, trading_date=trading_date, reason=reason, occurrence_count=1))
+    else:
+        row.occurrence_count += 1
+
+
 def _dashboard(db: Session, user_id: str) -> dict[str, object]:
     setting, robots = _ensure_defaults(db, user_id)
     mode = setting.trade_mode if setting.trade_mode in MODE_VALUES else "PAPER"
@@ -150,7 +203,24 @@ def _dashboard(db: Session, user_id: str) -> dict[str, object]:
     realized = sum((row.net_pnl for row in today_trades), Decimal("0"))
     unrealized = sum(((row.current_price - row.entry_price) * row.quantity for row in positions), Decimal("0"))
     used = sum((row.used_capital for row in positions), Decimal("0"))
-    system_status = "HALTED" if any(robot.status == "EMERGENCY_STOP" for robot in robots) else risk_status(realized, config)
+    trading_date = datetime.now(TAIPEI).date()
+    runtime = db.scalar(select(DayTradeV2RuntimeState).where(
+        DayTradeV2RuntimeState.user_id == user_id, DayTradeV2RuntimeState.mode == mode,
+        DayTradeV2RuntimeState.trading_date == trading_date,
+    ))
+    runtime_data = _runtime_dict(runtime, config)
+    candidate_rows = list(db.scalars(select(DayTradeV2CandidateState).where(
+        DayTradeV2CandidateState.user_id == user_id, DayTradeV2CandidateState.mode == mode,
+        DayTradeV2CandidateState.trading_date == trading_date,
+    ).order_by(DayTradeV2CandidateState.confidence.desc()).limit(30)).all())
+    held_symbols = {row.symbol for row in positions}
+    candidates = [row for row in candidate_rows if row.symbol not in held_symbols][:10]
+    skip_stats = list(db.scalars(select(DayTradeV2SkipStat).where(
+        DayTradeV2SkipStat.user_id == user_id, DayTradeV2SkipStat.mode == mode,
+        DayTradeV2SkipStat.trading_date == trading_date,
+    ).order_by(DayTradeV2SkipStat.occurrence_count.desc()).limit(30)).all())
+    runtime_halted = runtime_data["status"] in {"ALERT", "STOPPED", "EMERGENCY_STOP", "RISK_HALTED"}
+    system_status = "HALTED" if runtime_halted or any(robot.status == "EMERGENCY_STOP" for robot in robots) else risk_status(realized, config)
     robot_items = []
     for robot in sorted(robots, key=lambda item: item.id or 0):
         robot_trades = [row for row in all_trades if row.strategy_id == robot.strategy_id]
@@ -176,13 +246,78 @@ def _dashboard(db: Session, user_id: str) -> dict[str, object]:
         "availableCapital": str(money(dec(config["initialCapital"]) - used)),
         "remainingDailyRisk": str(money(max(dec(config["dailyStopLoss"]) + min(realized, Decimal("0")), Decimal("0")))),
         "positions": [_position_dict(row) for row in positions], "recentTrades": [_trade_dict(row) for row in all_trades[:100]],
-        "robots": robot_items,
+        "robots": robot_items, "runtime": runtime_data,
+        "topCandidates": [_candidate_dict(row) for row in candidates],
+        "skipReasons": [{"reason": row.reason, "count": row.occurrence_count} for row in skip_stats],
     }
 
 
 @router.get("/dashboard")
 def dashboard(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -> dict[str, object]:
     return _dashboard(db, user_id)
+
+
+def _today_runtime(db: Session, user_id: str, mode: str, config: dict[str, object]) -> DayTradeV2RuntimeState:
+    trading_date = datetime.now(TAIPEI).date()
+    runtime = db.scalar(select(DayTradeV2RuntimeState).where(
+        DayTradeV2RuntimeState.user_id == user_id, DayTradeV2RuntimeState.mode == mode,
+        DayTradeV2RuntimeState.trading_date == trading_date,
+    ))
+    if runtime is None:
+        runtime = DayTradeV2RuntimeState(
+            user_id=user_id, mode=mode, trading_date=trading_date,
+            auto_start=bool(config["autoStart"]), status="WAITING",
+        )
+        db.add(runtime)
+        db.flush()
+    return runtime
+
+
+def _set_runtime_status(db: Session, user_id: str, action: str, status: str) -> dict[str, object]:
+    setting, robots = _ensure_defaults(db, user_id)
+    config = merged_config(_json(setting.config_json, {}))
+    runtime = _today_runtime(db, user_id, setting.trade_mode, config)
+    runtime.status = status
+    runtime.initialized = runtime.initialized or status == "RUNNING"
+    runtime.initialized_at = runtime.initialized_at or (_now() if runtime.initialized else None)
+    runtime.started_at = runtime.started_at or (_now() if status == "RUNNING" else None)
+    runtime.scanning = status == "RUNNING"
+    runtime.order_allowed = False
+    runtime.latest_error = "" if status == "RUNNING" else runtime.latest_error
+    if status == "RUNNING":
+        for robot in robots:
+            if robot.enabled and robot.status in {"EMERGENCY_STOP", "DISABLED"}:
+                robot.status = "READY"
+    _audit(db, user_id, action, setting.trade_mode, {"runtimeStatus": status})
+    db.commit()
+    return _runtime_dict(runtime, config)
+
+
+@router.get("/runtime")
+def runtime_status(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -> dict[str, object]:
+    setting, _ = _ensure_defaults(db, user_id)
+    config = merged_config(_json(setting.config_json, {}))
+    return _runtime_dict(_today_runtime(db, user_id, setting.trade_mode, config), config)
+
+
+@router.post("/control/start-today")
+def start_today(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -> dict[str, object]:
+    return _set_runtime_status(db, user_id, "START_TODAY", "RUNNING")
+
+
+@router.post("/control/pause")
+def pause_trading(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -> dict[str, object]:
+    return _set_runtime_status(db, user_id, "PAUSE_NEW_TRADES", "PAUSED")
+
+
+@router.post("/control/resume")
+def resume_trading(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -> dict[str, object]:
+    return _set_runtime_status(db, user_id, "RESUME_TRADING", "RUNNING")
+
+
+@router.post("/control/stop")
+def stop_strategies(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -> dict[str, object]:
+    return _set_runtime_status(db, user_id, "STOP_ALL_STRATEGIES", "STOPPED")
 
 
 @router.get("/settings")
@@ -206,9 +341,34 @@ def save_settings(body: SettingsBody, user_id: str = Depends(_user_id), db: Sess
     config = merged_config(body.config)
     if dec(config["initialCapital"]) != Decimal("3000000"):
         raise HTTPException(422, "目前共用總資金必須為3,000,000元")
+    thresholds = [dec(config[key]) for key in ("generalScanThreshold", "watchThreshold", "nearEntryThreshold", "riskGateThreshold")]
+    if thresholds != sorted(set(thresholds)) or thresholds[0] < 0 or thresholds[-1] > 100:
+        raise HTTPException(422, "訊號分級必須依序為一般 < 觀察 < 接近進場 < 風控，且介於0至100分")
+    if not 1 <= int(config["scanIntervalSeconds"]) <= 5:
+        raise HTTPException(422, "進場策略掃描頻率必須介於1至5秒")
+    if not 1 <= int(config["heartbeatSeconds"]) <= 30 or int(config["heartbeatTimeoutSeconds"]) <= int(config["heartbeatSeconds"]):
+        raise HTTPException(422, "心跳更新必須介於1至30秒，逾時門檻必須大於更新間隔")
+    time_keys = (
+        "resetTime", "universeLoadTime", "historyLoadTime", "healthCheckTime", "candidatePoolTime",
+        "readyNotificationTime", "marketOpenTime", "openingRangeReadyTime", "summary1000Time",
+        "summary1100Time", "summary1200Time", "latestEntryTime", "forcedCloseTime", "marketCloseTime",
+        "brokerSyncTime", "closeReportTime",
+    )
+    try:
+        schedule = [datetime.strptime(str(config[key]), "%H:%M:%S").time() for key in time_keys]
+    except ValueError as exc:
+        raise HTTPException(422, "排程時間格式必須為HH:MM:SS") from exc
+    if schedule != sorted(schedule):
+        raise HTTPException(422, "每日排程時間必須依執行順序遞增")
     setting.trade_mode = body.mode
     setting.live_enabled = False
     setting.config_json = json.dumps(config)
+    runtime = db.scalar(select(DayTradeV2RuntimeState).where(
+        DayTradeV2RuntimeState.user_id == user_id, DayTradeV2RuntimeState.mode == body.mode,
+        DayTradeV2RuntimeState.trading_date == datetime.now(TAIPEI).date(),
+    ))
+    if runtime:
+        runtime.auto_start = bool(config["autoStart"])
     _audit(db, user_id, "SETTINGS_UPDATED", body.mode, {"config": config})
     db.commit()
     return {"mode": setting.trade_mode, "liveEnabled": False, "config": config}
@@ -328,19 +488,52 @@ def paper_entry(body: PaperEntryBody, user_id: str = Depends(_user_id), db: Sess
     return _position_dict(position)
 
 
-@router.post("/scan-now")
-def scan_now(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -> dict[str, object]:
-    """Evaluate the current verified MIS minute bars for the signed-in user."""
+def _scan_now(user_id: str, db: Session, coordinator_now: datetime | None = None) -> dict[str, object]:
+    """Evaluate verified MIS bars. The coordinator calls this every five seconds."""
     setting, _ = _ensure_defaults(db, user_id)
     config = merged_config(_json(setting.config_json, {}))
     if setting.trade_mode != "PAPER":
         return {"evaluated": 0, "executed": 0, "skipped": 0, "message": "目前模式不執行即時模擬訊號"}
+    current = coordinator_now or _now()
+    local_now = current.astimezone(TAIPEI)
+    trading_date = local_now.date()
+    runtime = _today_runtime(db, user_id, "PAPER", config)
     regime = day_trading_engine.market_regime()
     candidates = day_trading_engine.signals()
+    realtime_quote_times: list[datetime] = []
+    for candidate in candidates:
+        if candidate.get("dataSource") != "TWSE MIS" or not candidate.get("quoteIsRealtime"):
+            continue
+        try:
+            quote_time = datetime.fromisoformat(str(candidate.get("quoteTimestamp")))
+            realtime_quote_times.append(quote_time if quote_time.tzinfo else quote_time.replace(tzinfo=UTC))
+        except (TypeError, ValueError):
+            continue
+    latest_quote = max(realtime_quote_times, default=None)
+    if latest_quote:
+        runtime.last_quote_at = latest_quote
+    entry_cutoff = datetime.strptime(str(config["latestEntryTime"]), "%H:%M:%S").time()
+    market_open = datetime.strptime(str(config["marketOpenTime"]), "%H:%M:%S").time()
+    market_close = datetime.strptime(str(config["marketCloseTime"]), "%H:%M:%S").time()
+    in_market_hours = market_open <= local_now.time() < market_close
+    quote_fresh = bool(latest_quote and abs((current - latest_quote).total_seconds()) <= int(config["quoteTimeoutSeconds"]))
+    runtime.receiving_quotes = quote_fresh
+    runtime.order_allowed = bool(
+        runtime.status == "RUNNING" and in_market_hours and local_now.time() < entry_cutoff
+        and quote_fresh and regime.get("dataStatus") == "normal"
+    )
+    if in_market_hours and not quote_fresh:
+        runtime.latest_error = "行情中斷或延遲，已禁止建立新部位"
+        _notification(
+            db, user_id=user_id, mode="PAPER", event_id=f"market-data-interrupted:{user_id}:{trading_date}",
+            event_type="MARKET_DATA_INTERRUPTED", title="行情中斷警報",
+            message="超過行情逾時門檻仍未收到可靠即時行情，系統已停止建立新部位。",
+        )
+    elif quote_fresh and runtime.latest_error.startswith("行情中斷"):
+        runtime.latest_error = ""
     existing_positions = list(db.scalars(select(DayTradeV2Position).where(
         DayTradeV2Position.user_id == user_id, DayTradeV2Position.mode == "PAPER", DayTradeV2Position.status == "OPEN",
     )).all())
-    local_now = _now().astimezone(TAIPEI)
     force_close_at = datetime.strptime(str(config["forcedCloseTime"]), "%H:%M:%S").time()
     exits: list[dict[str, object]] = []
     for position in list(existing_positions):
@@ -378,40 +571,99 @@ def scan_now(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) ->
         DayTradeV2Trade.user_id == user_id, DayTradeV2Trade.mode == "PAPER",
         DayTradeV2Trade.exit_fill_time >= start, DayTradeV2Trade.exit_fill_time < end,
     )).all(), Decimal("0"))
-    evaluated = executed = skipped = 0
+    day_risk = risk_status(daily_pnl, config)
+    if day_risk == "HALTED":
+        runtime.status = "RISK_HALTED"
+        runtime.order_allowed = False
+        _notification(
+            db, user_id=user_id, mode="PAPER", event_id=f"daily-loss-limit:{user_id}:{trading_date}",
+            event_type="DAILY_LOSS_LIMIT", title="已達每日虧損上限",
+            message=f"今日已實現損益{money(daily_pnl)}元，五台機器人停止建立新部位。",
+        )
+    elif day_risk == "REDUCED":
+        _notification(
+            db, user_id=user_id, mode="PAPER", event_id=f"risk-reduced:{user_id}:{trading_date}",
+            event_type="RISK_REDUCED", title="系統進入減半模式",
+            message=f"今日已實現損益{money(daily_pnl)}元，後續新部位風險額度減半。",
+        )
+    evaluated = executed = skipped = generated = 0
+    latest_bar_at: datetime | None = None
     items: list[dict[str, object]] = []
     for candidate in candidates:
         if candidate.get("direction") != "long":
             continue
         symbol = str(candidate.get("symbol") or "")
-        raw_bars = day_trading_engine.minute_bars_for(symbol)
-        if len(raw_bars) < 16:
+        if not symbol:
             continue
-        bars = [MinuteBar(
-            timestamp=datetime.fromisoformat(str(row["timestamp"])), open=dec(row["open"]), high=dec(row["high"]),
-            low=dec(row["low"]), close=dec(row["close"]), volume=int(row["volume"]),
-        ) for row in raw_bars]
-        winner, duplicates = resolve_duplicate_signals(evaluate_strategies(bars))
+        raw_bars = day_trading_engine.minute_bars_for(symbol)
+        winner = None
+        duplicates = []
+        bars: list[MinuteBar] = []
+        candidate_reasons: list[str] = []
+        if len(raw_bars) < 16:
+            candidate_reasons.append("分鐘行情尚未累積完成")
+        else:
+            bars = [MinuteBar(
+                timestamp=datetime.fromisoformat(str(row["timestamp"])), open=dec(row["open"]), high=dec(row["high"]),
+                low=dec(row["low"]), close=dec(row["close"]), volume=int(row["volume"]),
+            ) for row in raw_bars]
+            winner, duplicates = resolve_duplicate_signals(evaluate_strategies(bars))
+            latest_bar_at = max(latest_bar_at, bars[-1].timestamp) if latest_bar_at else bars[-1].timestamp
         evaluated += 1
+        score = winner.confidence if winner else dec(candidate.get("confidenceScore") or 0)
+        strategy_id = winner.strategy_id if winner else ""
+        if winner is None and not candidate_reasons:
+            candidate_reasons.append(str((candidate.get("warnings") or ["策略條件尚未完全符合"])[0]))
+        if winner and score < dec(config["riskGateThreshold"]):
+            candidate_reasons.append("信心分數不足")
+        previous_candidate = db.scalar(select(DayTradeV2CandidateState).where(
+            DayTradeV2CandidateState.user_id == user_id, DayTradeV2CandidateState.mode == "PAPER",
+            DayTradeV2CandidateState.trading_date == trading_date, DayTradeV2CandidateState.symbol == symbol,
+        ))
+        primary_reason = candidate_reasons[0] if candidate_reasons else "已達下單前風控門檻"
+        if previous_candidate is None:
+            previous_candidate = DayTradeV2CandidateState(
+                user_id=user_id, mode="PAPER", trading_date=trading_date, symbol=symbol,
+                stock_name=str(candidate.get("stockName") or ""), sector=str((candidate.get("themes") or [""])[0]),
+                scanned_at=current,
+            )
+            db.add(previous_candidate)
+            previous_reason = ""
+        else:
+            previous_reason = previous_candidate.primary_reason
+        previous_candidate.stock_name = str(candidate.get("stockName") or "")
+        previous_candidate.sector = str((candidate.get("themes") or [""])[0])
+        previous_candidate.strategy_id = strategy_id
+        previous_candidate.confidence = score
+        previous_candidate.signal_level = signal_level(score, config)
+        previous_candidate.primary_reason = primary_reason
+        previous_candidate.reasons_json = json.dumps(candidate_reasons or list(winner.reasons if winner else []), ensure_ascii=False)
+        previous_candidate.quote_at = latest_quote if candidate.get("quoteIsRealtime") else None
+        previous_candidate.bar_at = bars[-1].timestamp if bars else None
+        previous_candidate.scanned_at = current
+        if primary_reason and primary_reason != previous_reason:
+            _record_skip(db, user_id, "PAPER", trading_date, primary_reason)
         if winner is None:
             continue
         signal_key = f"v2:{symbol}:{bars[-1].timestamp.isoformat()}:{winner.strategy_id}"
         if db.get(DayTradeV2Signal, signal_key):
             continue
         reasons = market_gate_reasons(
-            now=_now(), market_crashing=dec(regime.get("score", 0)) <= -60,
-            quote_reliable=candidate.get("dataSource") == "TWSE MIS" and bool(candidate.get("quoteIsRealtime")),
+            now=current, market_crashing=dec(regime.get("score", 0)) <= -60,
+            quote_reliable=quote_fresh and candidate.get("dataSource") == "TWSE MIS" and bool(candidate.get("quoteIsRealtime")),
             volume=int(candidate.get("volume") or 0), turnover=candidate.get("turnover") or 0,
             spread_pct=candidate.get("spreadPercentage") or 999,
             vwap_deviation_pct=candidate.get("vwapDeviationPercent") or 0,
-            blocked=bool(candidate.get("tradeRestricted")), connection_ok=regime.get("dataStatus") == "normal",
+            blocked=bool(candidate.get("tradeRestricted")), connection_ok=regime.get("dataStatus") == "normal" and quote_fresh,
             available_capital=dec(config["initialCapital"]) - used,
             open_positions=len(existing_positions), sector_positions=sum(
                 row.sector == str((candidate.get("themes") or [""])[0]) for row in existing_positions
             ), realized_pnl=daily_pnl, config=config,
         )
-        if winner.confidence < dec(config["minimumConfidence"]):
+        if winner.confidence < max(dec(config["minimumConfidence"]), dec(config["riskGateThreshold"])):
             reasons.append("訊號分數不足")
+        if runtime.status != "RUNNING":
+            reasons.append("系統目前不允許下單")
         risk_reward = (winner.target_price - winner.entry_price) / (winner.entry_price - winner.stop_price)
         if risk_reward < dec(config["minimumRiskReward"]):
             reasons.append("風險報酬比不足")
@@ -427,17 +679,22 @@ def scan_now(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) ->
                     reasons_json=json.dumps(duplicate.reasons, ensure_ascii=False), skip_reason="重複訊號，未執行",
                 ))
                 skipped += 1
+                generated += 1
+                _record_skip(db, user_id, "PAPER", trading_date, "重複訊號，未執行")
         if reasons:
+            unique_reasons = list(dict.fromkeys(reasons))
             db.add(DayTradeV2Signal(
                 id=signal_key, user_id=user_id, mode="PAPER", strategy_id=winner.strategy_id,
                 strategy_version="2.0.0", symbol=symbol, stock_name=str(candidate.get("stockName") or ""),
                 signal_time=bars[-1].timestamp, signal_price=winner.entry_price, confidence=winner.confidence,
                 risk_reward=risk_reward, stop_price=winner.stop_price, target_price=winner.target_price,
                 status="SKIPPED", reasons_json=json.dumps(winner.reasons, ensure_ascii=False),
-                skip_reason="、".join(dict.fromkeys(reasons)), market_context_json=json.dumps(regime, default=str, ensure_ascii=False),
+                skip_reason="、".join(unique_reasons), market_context_json=json.dumps(regime, default=str, ensure_ascii=False),
             ))
-            skipped += 1
-            items.append({"symbol": symbol, "status": "SKIPPED", "reason": "、".join(dict.fromkeys(reasons))})
+            skipped += 1; generated += 1
+            for reason in unique_reasons:
+                _record_skip(db, user_id, "PAPER", trading_date, reason)
+            items.append({"symbol": symbol, "status": "SKIPPED", "reason": "、".join(unique_reasons)})
             continue
         try:
             position = paper_entry(PaperEntryBody(
@@ -448,6 +705,7 @@ def scan_now(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) ->
                 reasons=list(winner.reasons), sector=str((candidate.get("themes") or [""])[0]),
             ), user_id, db)
             executed += 1
+            generated += 1
             created_position = db.get(DayTradeV2Position, str(position["id"]))
             if created_position is not None:
                 existing_positions.append(created_position)
@@ -462,9 +720,35 @@ def scan_now(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) ->
                 status="SKIPPED", reasons_json=json.dumps(winner.reasons, ensure_ascii=False), skip_reason=str(exc.detail),
             ))
             skipped += 1
+            generated += 1
+            _record_skip(db, user_id, "PAPER", trading_date, str(exc.detail))
             items.append({"symbol": symbol, "status": "SKIPPED", "reason": str(exc.detail)})
+    runtime.last_scan_at = current
+    runtime.last_bar_at = latest_bar_at or runtime.last_bar_at
+    runtime.next_scan_at = current + timedelta(seconds=int(config["scanIntervalSeconds"]))
+    runtime.scanned_stock_count = int(db.scalar(select(func.count()).select_from(DayTradeV2CandidateState).where(
+        DayTradeV2CandidateState.user_id == user_id, DayTradeV2CandidateState.mode == "PAPER",
+        DayTradeV2CandidateState.trading_date == trading_date,
+    )) or 0)
+    runtime.candidate_count = int(db.scalar(select(func.count()).select_from(DayTradeV2CandidateState).where(
+        DayTradeV2CandidateState.user_id == user_id, DayTradeV2CandidateState.mode == "PAPER",
+        DayTradeV2CandidateState.trading_date == trading_date,
+        DayTradeV2CandidateState.confidence >= dec(config["watchThreshold"]),
+    )) or 0)
+    runtime.signal_count += generated
+    runtime.order_count += executed
+    runtime.skipped_count += skipped
+    runtime.completed_trade_count = int(db.scalar(select(func.count()).select_from(DayTradeV2Trade).where(
+        DayTradeV2Trade.user_id == user_id, DayTradeV2Trade.mode == "PAPER",
+        DayTradeV2Trade.exit_fill_time >= start, DayTradeV2Trade.exit_fill_time < end,
+    )) or 0)
     db.commit()
     return {"evaluated": evaluated, "executed": executed, "skipped": skipped, "exits": exits, "items": items}
+
+
+@router.post("/scan-now")
+def scan_now(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -> dict[str, object]:
+    return _scan_now(user_id, db)
 
 
 class CloseBody(BaseModel):
@@ -521,8 +805,13 @@ def close_position(position_id: str, body: CloseBody, user_id: str = Depends(_us
 @router.post("/emergency-stop")
 def emergency_stop(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -> dict[str, object]:
     setting, robots = _ensure_defaults(db, user_id)
+    config = merged_config(_json(setting.config_json, {}))
     for robot in robots:
         robot.status = "EMERGENCY_STOP"
+    runtime = _today_runtime(db, user_id, setting.trade_mode, config)
+    runtime.status = "EMERGENCY_STOP"
+    runtime.scanning = False
+    runtime.order_allowed = False
     _notification(db, user_id=user_id, mode=setting.trade_mode, event_id=f"emergency:{uuid4()}", event_type="EMERGENCY_STOP", title="全系統緊急停機", message="已停止所有後續新委託；未平倉部位仍需執行平倉流程")
     _audit(db, user_id, "EMERGENCY_STOP", setting.trade_mode)
     db.commit()

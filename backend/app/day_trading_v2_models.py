@@ -280,3 +280,99 @@ class DayTradeV2SystemError(Base):
     message: Mapped[str] = mapped_column(Text, nullable=False)
     context_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class DayTradeV2RuntimeState(Base):
+    __tablename__ = "day_trade_v2_runtime_states"
+    __table_args__ = (UniqueConstraint("user_id", "mode", "trading_date", name="uq_dtv2_runtime_day"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    mode: Mapped[str] = mapped_column(String(20), nullable=False, default="PAPER")
+    trading_date: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="WAITING")
+    phase: Mapped[str] = mapped_column(String(40), nullable=False, default="BEFORE_INITIALIZATION")
+    auto_start: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    initialized: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    receiving_quotes: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    scanning: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    order_allowed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_quote_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_scan_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_bar_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_scan_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_event_type: Mapped[str] = mapped_column(String(60), nullable=False, default="")
+    next_event_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    scanned_stock_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    candidate_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    signal_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    order_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    skipped_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completed_trade_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    latest_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    lease_owner: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    initialized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+
+class DayTradeV2CandidateState(Base):
+    __tablename__ = "day_trade_v2_candidate_states"
+    __table_args__ = (UniqueConstraint("user_id", "mode", "trading_date", "symbol", name="uq_dtv2_candidate_day_symbol"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    trading_date: Mapped[date] = mapped_column(Date, nullable=False)
+    symbol: Mapped[str] = mapped_column(String(12), nullable=False)
+    stock_name: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    sector: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    strategy_id: Mapped[str] = mapped_column(String(60), nullable=False, default="")
+    confidence: Mapped[Decimal] = mapped_column(RATE, nullable=False, default=0)
+    signal_level: Mapped[str] = mapped_column(String(30), nullable=False, default="GENERAL")
+    primary_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    reasons_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    quote_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    bar_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    scanned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class DayTradeV2SkipStat(Base):
+    __tablename__ = "day_trade_v2_skip_stats"
+    __table_args__ = (UniqueConstraint("user_id", "mode", "trading_date", "reason", name="uq_dtv2_skip_reason_day"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    trading_date: Mapped[date] = mapped_column(Date, nullable=False)
+    reason: Mapped[str] = mapped_column(String(200), nullable=False)
+    occurrence_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+
+class DayTradeV2ScheduleEvent(Base):
+    __tablename__ = "day_trade_v2_schedule_events"
+    __table_args__ = (UniqueConstraint("user_id", "mode", "trading_date", "event_type", name="uq_dtv2_schedule_event_day"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    trading_date: Mapped[date] = mapped_column(Date, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(60), nullable=False)
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="PENDING")
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+
+class DayTradeV2CalendarHoliday(Base):
+    __tablename__ = "day_trade_v2_calendar_holidays"
+
+    holiday_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    source: Mapped[str] = mapped_column(String(80), nullable=False, default="TWSE")
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Activity, Bell, Bot, CircleDollarSign, History, OctagonX, RefreshCw, Settings, ShieldAlert, SlidersHorizontal, WalletCards } from "lucide-react";
+import { Activity, Bell, Bot, CircleDollarSign, Clock3, History, OctagonX, Pause, Play, RefreshCw, Settings, ShieldAlert, SlidersHorizontal, Square, WalletCards } from "lucide-react";
 import type { Dashboard, Performance, TradingMode } from "@/lib/day-trading-v2-types";
 import { dayTradingV2Client } from "@/services/day-trading-v2-client";
 
@@ -81,9 +81,7 @@ export function DayTradingV2Page({ userId }: { userId: string }) {
 
   useEffect(() => {
     void load();
-    const timer = window.setInterval(() => {
-      void dayTradingV2Client.scanNow(userId).then(() => load(true)).catch(() => load(true));
-    }, 10_000);
+    const timer = window.setInterval(() => { void load(true); }, 10_000);
     return () => window.clearInterval(timer);
   }, [load, userId]);
 
@@ -105,7 +103,19 @@ export function DayTradingV2Page({ userId }: { userId: string }) {
     ["dailyStopLoss", "單日停機門檻", "元"], ["monthlyMaxDrawdown", "單月最大回撤", "元"],
     ["minimumConfidence", "最低信心分數", "分"], ["minimumRiskReward", "最低風險報酬比", "倍"],
     ["maximumSpreadPct", "最大買賣價差", "%"], ["maximumVwapDeviationPct", "最大VWAP偏離", "%"],
+    ["watchThreshold", "觀察名單門檻", "分"], ["nearEntryThreshold", "接近進場門檻", "分"],
+    ["riskGateThreshold", "下單前風控門檻", "分"], ["scanIntervalSeconds", "進場掃描間隔", "秒"],
+    ["heartbeatSeconds", "心跳更新間隔", "秒"], ["heartbeatTimeoutSeconds", "心跳逾時", "秒"],
+    ["quoteTimeoutSeconds", "行情逾時", "秒"],
+    ["resetTime", "每日初始化", ""], ["universeLoadTime", "載入股票池", ""],
+    ["historyLoadTime", "載入昨日行情", ""], ["healthCheckTime", "服務健康檢查", ""],
+    ["candidatePoolTime", "建立候選池", ""], ["readyNotificationTime", "盤前通知", ""],
+    ["marketOpenTime", "開始掃描", ""], ["openingRangeReadyTime", "開盤區間完成", ""],
+    ["summary1000Time", "10點摘要", ""], ["summary1100Time", "11點摘要", ""],
+    ["summary1200Time", "12點摘要", ""],
     ["latestEntryTime", "最晚新倉時間", ""], ["forcedCloseTime", "強制平倉時間", ""],
+    ["marketCloseTime", "停止盤中策略", ""], ["brokerSyncTime", "收盤後同步", ""],
+    ["closeReportTime", "收盤報告", ""],
   ];
 
   return <section className="dt2-page">
@@ -122,6 +132,24 @@ export function DayTradingV2Page({ userId }: { userId: string }) {
       <span><Activity size={15} />即時行情：{data.marketData.realtime}</span>
       <span className={data.marketData.backtestReady ? "ok" : "warn"}><History size={15} />歷史分鐘資料：{data.marketData.historicalMinute ?? "未設定"}</span>
       <span className="warn"><ShieldAlert size={15} />真實下單：{data.liveTrading.reason}</span>
+    </div>
+
+    <div className={`dt2-runtime ${data.runtime.heartbeatStale || data.runtime.quoteStale ? "alarm" : ""}`}>
+      <div className="dt2-runtime-head"><Activity size={17} /><strong>背景交易系統</strong><span className={data.runtime.running ? "ok" : "warn"}>{data.runtime.status}｜{data.runtime.phase}</span></div>
+      <div className="dt2-runtime-grid">
+        <span>執行：<b>{data.runtime.running ? "是" : "否"}</b></span><span>初始化：<b>{data.runtime.initialized ? "完成" : "尚未"}</b></span>
+        <span>行情：<b>{data.runtime.receivingQuotes ? "接收中" : "未接收"}</b></span><span>掃描：<b>{data.runtime.scanning ? "執行中" : "未執行"}</b></span>
+        <span>允許下單：<b>{data.runtime.orderAllowed ? "是" : "否"}</b></span><span>模式：<b>{data.mode === "PAPER" ? "模擬交易" : data.mode}</b></span>
+        <span>最近心跳：<b>{dateTime(data.runtime.heartbeatAt)}</b></span><span>最近行情：<b>{dateTime(data.runtime.lastQuoteAt)}</b></span>
+        <span>最近掃描：<b>{dateTime(data.runtime.lastScanAt)}</b></span><span>下一次掃描：<b>{dateTime(data.runtime.nextScanAt)}</b></span>
+        <span>下一排程：<b>{data.runtime.nextEventType || "—"} {dateTime(data.runtime.nextEventAt)}</b></span><span>最近錯誤：<b>{data.runtime.latestError || "無"}</b></span>
+      </div>
+      <div className="dt2-runtime-actions">
+        <button disabled={busy} onClick={() => void run(() => dayTradingV2Client.startToday(userId), "今日背景交易系統已啟動")}><Play size={14} />今日啟動</button>
+        <button disabled={busy} onClick={() => void run(() => dayTradingV2Client.pause(userId), "已暫停建立新部位")}><Pause size={14} />暫停新交易</button>
+        <button disabled={busy} onClick={() => void run(() => dayTradingV2Client.resume(userId), "已恢復盤中掃描與新交易")}><Play size={14} />恢復交易</button>
+        <button disabled={busy} onClick={() => void run(() => dayTradingV2Client.stop(userId), "已停止全部策略")}><Square size={14} />停止全部策略</button>
+      </div>
     </div>
 
     <nav className="dt2-tabs">
@@ -142,6 +170,7 @@ export function DayTradingV2Page({ userId }: { userId: string }) {
         <article><span>目前可用資金</span><strong>{number(data.availableCapital)}元</strong><small>含交易成本預留</small></article>
         <article><span>當日剩餘承受虧損</span><strong className={Number(data.remainingDailyRisk) < 12000 ? "warn" : ""}>{number(data.remainingDailyRisk)}元</strong><small>停機門檻24,000元</small></article>
       </div>
+      <article className="dt2-panel"><header><Clock3 size={17} /><strong>盤中掃描與最接近進場前10檔</strong><small>已掃描 {data.runtime.scannedStockCount}檔｜候選 {data.runtime.candidateCount}檔｜訊號 {data.runtime.signalCount}｜下單 {data.runtime.orderCount}｜跳過 {data.runtime.skippedCount}</small></header><div className="dt2-table candidates"><table><thead><tr><th>股票</th><th>分數</th><th>分級</th><th>對應機器人</th><th>尚未進場主要原因</th><th>行情時間</th><th>掃描時間</th></tr></thead><tbody>{data.topCandidates.map((candidate) => <tr key={candidate.symbol}><td><b>{candidate.symbol}</b><small>{candidate.stockName}</small></td><td><b>{number(candidate.confidence, 1)}</b></td><td>{candidate.signalLevel === "RISK_GATE" ? "下單前風控" : candidate.signalLevel === "NEAR_ENTRY" ? "接近進場" : candidate.signalLevel === "WATCH" ? "觀察名單" : "一般掃描"}</td><td>{(robotById.get(candidate.strategyId) ?? candidate.strategyId) || "條件比對中"}</td><td>{candidate.primaryReason}</td><td>{dateTime(candidate.quoteAt)}</td><td>{dateTime(candidate.scannedAt)}</td></tr>)}</tbody></table></div>{!data.topCandidates.length && <p className="dt2-empty">系統仍會持續心跳；目前尚無候選股票資料。</p>}</article>
       <div className="dt2-grid two">
         <article className="dt2-panel"><header><Bot size={17} /><strong>五台機器人狀態</strong></header>{data.robots.map((robot) => <div className="dt2-robot-row" key={robot.strategyId}><span className={robot.enabled ? "dot on" : "dot"} /><div><b>{robot.name}</b><small>額度 {number(robot.allocation)}元｜只做多</small></div><em className={tone(robot.today.netPnl)}>{signedMoney(robot.today.netPnl)}</em></div>)}</article>
         <article className="dt2-panel"><header><Bell size={17} /><strong>最新買賣與風控訊息</strong></header>{notifications.items.slice(0, 6).map((item) => <div className="dt2-event" key={item.id}><ModeBadge mode={item.mode} /><div><b>{item.title}</b><small>{item.message}</small></div><time>{dateTime(item.createdAt)}</time></div>)}{!notifications.items.length && <p className="dt2-empty">目前沒有通知</p>}</article>
@@ -156,12 +185,12 @@ export function DayTradingV2Page({ userId }: { userId: string }) {
 
     {section === "backtest" && <div className="dt2-grid two"><article className="dt2-panel"><header><SlidersHorizontal size={17} /><strong>策略回測中心</strong></header><div className="dt2-form"><label>回測模式<select value={backtestMode} onChange={(event) => setBacktestMode(event.target.value)}><option value="PORTFOLIO">模式B：五台共用300萬元</option><option value="INDIVIDUAL">模式A：個別機器人各300萬元</option></select></label><label>策略<select value={backtestStrategy} onChange={(event) => setBacktestStrategy(event.target.value)}><option value="ALL">五台全部</option>{data.robots.map((robot) => <option key={robot.strategyId} value={robot.strategyId}>{robot.name}</option>)}</select></label><label>開始日期<input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} /></label><label>結束日期<input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} /></label><button disabled={busy} onClick={() => void run(async () => { const result = await dayTradingV2Client.backtest(userId, { backtest_mode: backtestMode, strategy_id: backtestStrategy, start_date: startDate, end_date: endDate }); setBacktestResult(result); }, "回測任務已完成檢查")}>執行回測</button></div></article><article className="dt2-panel"><header><History size={17} /><strong>回測結果</strong></header>{backtestResult ? <pre className="dt2-result">{String(backtestResult.message ?? JSON.stringify(backtestResult.summary, null, 2))}</pre> : <div className="dt2-data-warning"><ShieldAlert size={22} /><b>歷史分鐘行情尚未設定</b><p>系統不會拿日K或稀疏快照產生虛假當沖績效。接上合格分鐘資料後，會套用延遲、滑價、成本、部分成交與共用資金限制。</p></div>}</article></div>}
 
-    {section === "performance" && <div className="dt2-stack"><article className="dt2-panel"><header><CircleDollarSign size={17} /><strong>今日績效</strong></header><PerfCards data={data.today} /></article><article className="dt2-panel"><header><CircleDollarSign size={17} /><strong>本月績效</strong></header><PerfCards data={data.month} /></article><article className="dt2-panel"><header><CircleDollarSign size={17} /><strong>全期間績效</strong></header><PerfCards data={data.all} /></article></div>}
+    {section === "performance" && <div className="dt2-stack"><article className="dt2-panel"><header><CircleDollarSign size={17} /><strong>今日績效</strong></header><PerfCards data={data.today} /></article><article className="dt2-panel"><header><ShieldAlert size={17} /><strong>今日未進場原因統計</strong></header><div className="dt2-skip-list">{data.skipReasons.map((item) => <div key={item.reason}><span>{item.reason}</span><b>{item.count}次</b></div>)}</div>{!data.skipReasons.length && <p className="dt2-empty">目前沒有跳過訊號</p>}</article><article className="dt2-panel"><header><CircleDollarSign size={17} /><strong>本月績效</strong></header><PerfCards data={data.month} /></article><article className="dt2-panel"><header><CircleDollarSign size={17} /><strong>全期間績效</strong></header><PerfCards data={data.all} /></article></div>}
 
     {section === "notifications" && <article className="dt2-panel"><header><Bell size={17} /><strong>系統通知中心</strong><small>唯一事件ID防止相同通知重複送出。</small></header>{notifications.items.map((item) => <div className="dt2-event full" key={item.id}><ModeBadge mode={item.mode} /><div><b>{item.title}</b><small>{item.message}</small></div><time>{dateTime(item.createdAt)}</time></div>)}{!notifications.items.length && <p className="dt2-empty">目前沒有通知</p>}</article>}
 
     {section === "risk" && <div className="dt2-grid two"><article className="dt2-panel"><header><ShieldAlert size={17} /><strong>共用資金與風控</strong></header><dl className="dt2-rules"><div><dt>總資金</dt><dd>3,000,000元</dd></div><div><dt>單筆最大風險</dt><dd>{number(config.maxRiskPerTrade as string)}元</dd></div><div><dt>單日減半 / 停機</dt><dd>{number(config.dailyReduceLoss as string)} / {number(config.dailyStopLoss as string)}元</dd></div><div><dt>同時持倉</dt><dd>最多{config.maxOpenPositions as number}筆</dd></div><div><dt>同產業持倉</dt><dd>最多{config.maxSectorPositions as number}檔</dd></div><div><dt>新倉截止</dt><dd>{String(config.latestEntryTime)}</dd></div><div><dt>強制平倉</dt><dd>{String(config.forcedCloseTime)}</dd></div><div><dt>方向</dt><dd>只允許做多</dd></div></dl></article><article className="dt2-panel danger"><header><OctagonX size={17} /><strong>緊急控制</strong></header><p>停機會立即阻止所有後續新委託。取消未成交委託與持倉平倉是不同操作。</p><div className="dt2-danger-actions"><button disabled={busy} onClick={() => void run(() => dayTradingV2Client.emergencyStop(userId), "全系統已停止新委託")}>全系統停機</button><button disabled={busy} onClick={() => void run(() => dayTradingV2Client.cancelAll(userId), "已取消所有未成交委託")}>取消所有未成交委託</button><button disabled={busy || !data.positions.length} onClick={() => { if (window.confirm(`確認以畫面現價平倉全部${data.positions.length}筆模擬部位？`)) void run(() => Promise.all(data.positions.map((position) => dayTradingV2Client.closePosition(userId, position.id, position.currentPrice, "緊急全部平倉"))), "全部模擬部位已平倉"); }}>一鍵全部平倉</button></div></article></div>}
 
-    {section === "settings" && <div className="dt2-grid two"><article className="dt2-panel"><header><Settings size={17} /><strong>交易模式</strong></header><div className="dt2-mode-select"><button className={data.mode === "PAPER" ? "active" : ""} onClick={() => void run(() => dayTradingV2Client.saveSettings(userId, "PAPER", config), "已切換為模擬交易")}>【模擬交易】</button><button className={data.mode === "BACKTEST" ? "active" : ""} onClick={() => void run(() => dayTradingV2Client.saveSettings(userId, "BACKTEST", config), "已切換為歷史回測")}>【歷史回測】</button><button disabled title={data.liveTrading.reason}>【真實交易】鎖定</button></div><p className="dt2-data-warning">預設只啟動模擬交易。真實交易必須先接上券商API、同步持倉與未成交委託，並完成二次確認。</p></article><article className="dt2-panel"><header><SlidersHorizontal size={17} /><strong>可調整參數</strong></header><div className="dt2-settings-grid">{settingsFields.map(([key, label, unit]) => <label key={key}>{label}<span><input value={String(config[key])} onChange={(event) => setData((current) => current ? { ...current, config: { ...current.config, [key]: event.target.value } } : current)} />{unit}</span></label>)}</div><button className="dt2-save" disabled={busy} onClick={() => void run(() => dayTradingV2Client.saveSettings(userId, data.mode, config), "設定已儲存並寫入稽核紀錄")}>儲存設定</button></article></div>}
+    {section === "settings" && <div className="dt2-grid two"><article className="dt2-panel"><header><Settings size={17} /><strong>交易模式</strong></header><div className="dt2-mode-select"><button className={data.mode === "PAPER" ? "active" : ""} onClick={() => void run(() => dayTradingV2Client.saveSettings(userId, "PAPER", config), "已切換為模擬交易")}>【模擬交易】</button><button className={data.mode === "BACKTEST" ? "active" : ""} onClick={() => void run(() => dayTradingV2Client.saveSettings(userId, "BACKTEST", config), "已切換為歷史回測")}>【歷史回測】</button><button disabled title={data.liveTrading.reason}>【真實交易】鎖定</button></div><label className="dt2-check"><input type="checkbox" checked={Boolean(config.autoStart)} onChange={(event) => setData((current) => current ? { ...current, config: { ...current.config, autoStart: event.target.checked } } : current)} />交易日自動啟動模擬交易</label><div className="dt2-check-group">{([["emailReady", "08:55 Email"], ["emailOpeningRange", "09:15 Email"], ["emailHourlySummary", "整點摘要 Email"], ["emailCloseReport", "13:40 Email"]] as const).map(([key, label]) => <label className="dt2-check" key={key}><input type="checkbox" checked={Boolean(config[key])} onChange={(event) => setData((current) => current ? { ...current, config: { ...current.config, [key]: event.target.checked } } : current)} />{label}</label>)}</div><p className="dt2-data-warning">預設只啟動模擬交易。真實交易必須先接上券商API、同步持倉與未成交委託，並完成二次確認。</p></article><article className="dt2-panel"><header><SlidersHorizontal size={17} /><strong>可調整參數</strong></header><div className="dt2-settings-grid">{settingsFields.map(([key, label, unit]) => <label key={key}>{label}<span><input value={String(config[key])} onChange={(event) => setData((current) => current ? { ...current, config: { ...current.config, [key]: event.target.value } } : current)} />{unit}</span></label>)}</div><button className="dt2-save" disabled={busy} onClick={() => void run(() => dayTradingV2Client.saveSettings(userId, data.mode, config), "設定已儲存並寫入稽核紀錄")}>儲存設定</button></article></div>}
   </section>;
 }

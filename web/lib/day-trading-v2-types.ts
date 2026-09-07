@@ -106,6 +106,9 @@ export type Dashboard = {
   positions: Position[];
   recentTrades: Trade[];
   robots: Robot[];
+  runtime: RuntimeState;
+  topCandidates: CandidateState[];
+  skipReasons: Array<{ reason: string; count: number }>;
 };
 
 export type NotificationItem = {
@@ -117,4 +120,20 @@ export type NotificationItem = {
   message: string;
   read: boolean;
   createdAt: string;
+};
+
+export type RuntimeState = {
+  running: boolean; status: string; phase: string; autoStart: boolean; initialized: boolean;
+  receivingQuotes: boolean; scanning: boolean; orderAllowed: boolean;
+  heartbeatAt: string | null; lastQuoteAt: string | null; lastScanAt: string | null; lastBarAt: string | null;
+  nextScanAt: string | null; nextEventType: string; nextEventAt: string | null;
+  scannedStockCount: number; candidateCount: number; signalCount: number; orderCount: number;
+  skippedCount: number; completedTradeCount: number; latestError: string;
+  heartbeatStale: boolean; quoteStale: boolean;
+};
+
+export type CandidateState = {
+  symbol: string; stockName: string; sector: string; strategyId: string; confidence: string;
+  signalLevel: "GENERAL" | "WATCH" | "NEAR_ENTRY" | "RISK_GATE";
+  primaryReason: string; reasons: string[]; quoteAt: string | null; barAt: string | null; scannedAt: string;
 };

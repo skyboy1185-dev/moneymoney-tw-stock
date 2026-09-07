@@ -61,7 +61,7 @@ def _amount(value: object) -> int:
         return 0
 
 
-def parse_twse_volume_rank(payload: object, limit: int = POPULAR_STOCKS_PER_MARKET) -> tuple[ThemeStock, ...]:
+def parse_twse_volume_rank(payload: object, limit: int = POPULAR_STOCKS_PER_MARKET, *, exclude_financial: bool = True) -> tuple[ThemeStock, ...]:
     if isinstance(payload, list):
         ranked = sorted(
             (item for item in payload if isinstance(item, dict)),
@@ -82,7 +82,7 @@ def parse_twse_volume_rank(payload: object, limit: int = POPULAR_STOCKS_PER_MARK
         return ()
     stocks: list[ThemeStock] = []
     for symbol, name in rows:
-        if not _is_common_stock_symbol(symbol) or not name or _is_financial_stock(symbol, name):
+        if not _is_common_stock_symbol(symbol) or not name or (exclude_financial and _is_financial_stock(symbol, name)):
             continue
         stocks.append(ThemeStock(symbol, name, "上市", "市場熱門", (POPULAR_THEME,)))
         if len(stocks) >= limit:
@@ -90,7 +90,7 @@ def parse_twse_volume_rank(payload: object, limit: int = POPULAR_STOCKS_PER_MARK
     return tuple(stocks)
 
 
-def parse_tpex_volume_rank(payload: object, limit: int = POPULAR_STOCKS_PER_MARKET) -> tuple[ThemeStock, ...]:
+def parse_tpex_volume_rank(payload: object, limit: int = POPULAR_STOCKS_PER_MARKET, *, exclude_financial: bool = True) -> tuple[ThemeStock, ...]:
     if not isinstance(payload, list):
         return ()
     dictionary_rows = [row for row in payload if isinstance(row, dict)]
@@ -108,7 +108,7 @@ def parse_tpex_volume_rank(payload: object, limit: int = POPULAR_STOCKS_PER_MARK
     for row in dictionary_rows:
         symbol = str(row.get("SecuritiesCompanyCode", "")).strip()
         name = str(row.get("CompanyName", "")).strip()
-        if not _is_common_stock_symbol(symbol) or not name or _is_financial_stock(symbol, name):
+        if not _is_common_stock_symbol(symbol) or not name or (exclude_financial and _is_financial_stock(symbol, name)):
             continue
         stocks.append(ThemeStock(symbol, name, "上櫃", "市場熱門", (POPULAR_THEME,)))
         if len(stocks) >= limit:
@@ -133,6 +133,9 @@ def merge_momentum_stocks(popular: Sequence[ThemeStock]) -> tuple[tuple[ThemeSto
 
 
 class OfficialPopularStockProvider:
+    def __init__(self, *, include_financial: bool = False) -> None:
+        self.include_financial = include_financial
+
     async def fetch(self) -> tuple[ThemeStock, ...]:
         timeout = httpx.Timeout(8.0, connect=4.0)
         headers = {"User-Agent": "MoneyMoney-TWSE/1.0"}
@@ -146,11 +149,11 @@ class OfficialPopularStockProvider:
         stocks: list[ThemeStock] = []
         twse_response, tpex_response = responses
         if isinstance(twse_response, httpx.Response) and twse_response.is_success:
-            twse_stocks = parse_twse_volume_rank(twse_response.json())
+            twse_stocks = parse_twse_volume_rank(twse_response.json(), exclude_financial=not self.include_financial)
         else:
             twse_stocks = ()
         if isinstance(tpex_response, httpx.Response) and tpex_response.is_success:
-            tpex_stocks = parse_tpex_volume_rank(tpex_response.json())
+            tpex_stocks = parse_tpex_volume_rank(tpex_response.json(), exclude_financial=not self.include_financial)
         else:
             tpex_stocks = ()
         # 上市、上櫃成交熱門股交錯加入，避免擴充名額被單一市場占滿。

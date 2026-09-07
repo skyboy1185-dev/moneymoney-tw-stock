@@ -52,7 +52,46 @@ DEFAULT_CONFIG: dict[str, object] = {
     "slippageBps": "5",
     "otherCost": "0",
     "forceCloseEnabled": True,
+    "autoStart": True,
+    "heartbeatSeconds": 10,
+    "heartbeatTimeoutSeconds": 45,
+    "quoteTimeoutSeconds": 15,
+    "scanIntervalSeconds": 5,
+    "generalScanThreshold": "0",
+    "watchThreshold": "60",
+    "nearEntryThreshold": "70",
+    "riskGateThreshold": "80",
+    "resetTime": "08:30:00",
+    "universeLoadTime": "08:35:00",
+    "historyLoadTime": "08:40:00",
+    "healthCheckTime": "08:45:00",
+    "candidatePoolTime": "08:50:00",
+    "readyNotificationTime": "08:55:00",
+    "marketOpenTime": "09:00:00",
+    "openingRangeReadyTime": "09:15:00",
+    "summary1000Time": "10:00:00",
+    "summary1100Time": "11:00:00",
+    "summary1200Time": "12:00:00",
+    "marketCloseTime": "13:30:00",
+    "brokerSyncTime": "13:35:00",
+    "closeReportTime": "13:40:00",
+    "emailReady": True,
+    "emailOpeningRange": True,
+    "emailHourlySummary": False,
+    "emailCloseReport": True,
 }
+
+
+def signal_level(score: object, config: Mapping[str, object] | None = None) -> str:
+    cfg = merged_config(config)
+    value = dec(score)
+    if value >= dec(cfg["riskGateThreshold"]):
+        return "RISK_GATE"
+    if value >= dec(cfg["nearEntryThreshold"]):
+        return "NEAR_ENTRY"
+    if value >= dec(cfg["watchThreshold"]):
+        return "WATCH"
+    return "GENERAL"
 
 
 def dec(value: object) -> Decimal:
