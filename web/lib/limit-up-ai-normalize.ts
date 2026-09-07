@@ -92,21 +92,31 @@ function normalizeSettings(value: unknown): LimitUpAiSettings {
 
 function normalizeBucket(value: unknown): LimitUpAiPerformanceBucket {
   const source = record(value);
+  const winCount = finiteNumber(source.winCount);
+  const lossCount = finiteNumber(source.lossCount);
+  const averageWin = finiteNumber(source.averageWin);
+  const averageLoss = finiteNumber(source.averageLoss);
+  const grossProfit = source.grossProfit === undefined || source.grossProfit === null
+    ? averageWin * winCount
+    : finiteNumber(source.grossProfit);
+  const grossLoss = source.grossLoss === undefined || source.grossLoss === null
+    ? Math.abs(averageLoss * lossCount)
+    : Math.abs(finiteNumber(source.grossLoss));
   return {
     tradeCount: finiteNumber(source.tradeCount),
     buyCount: finiteNumber(source.buyCount),
     sellCount: finiteNumber(source.sellCount),
-    winCount: finiteNumber(source.winCount),
-    lossCount: finiteNumber(source.lossCount),
+    winCount,
+    lossCount,
     winRate: finiteNumber(source.winRate),
-    grossProfit: finiteNumber(source.grossProfit),
-    grossLoss: finiteNumber(source.grossLoss),
+    grossProfit,
+    grossLoss,
     realizedPnl: finiteNumber(source.realizedPnl),
     unrealizedPnl: finiteNumber(source.unrealizedPnl),
     totalPnl: finiteNumber(source.totalPnl),
     totalReturnPct: finiteNumber(source.totalReturnPct),
-    averageWin: finiteNumber(source.averageWin),
-    averageLoss: finiteNumber(source.averageLoss),
+    averageWin,
+    averageLoss,
     maximumSingleLoss: finiteNumber(source.maximumSingleLoss),
     openPositionCount: finiteNumber(source.openPositionCount),
   };

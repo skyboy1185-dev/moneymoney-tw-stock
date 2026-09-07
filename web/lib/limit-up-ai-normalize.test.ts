@@ -69,4 +69,13 @@ describe("limit-up AI normalizers", () => {
     expect(dashboard.performance.all.grossProfit).toBe(12_500);
     expect(dashboard.performance.all.grossLoss).toBe(3_200);
   });
+
+  it("derives gross totals from the previous backend performance fields", () => {
+    const dashboard = normalizeLimitUpDashboard({
+      performance: { today: { winCount: 2, lossCount: 3, averageWin: 1200, averageLoss: -400 } },
+    });
+
+    expect(dashboard.performance.today.grossProfit).toBe(2_400);
+    expect(dashboard.performance.today.grossLoss).toBe(1_200);
+  });
 });
