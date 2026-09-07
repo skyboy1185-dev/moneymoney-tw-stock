@@ -21,8 +21,10 @@ from ..day_trading_v2_models import (
     DayTradeV2RiskDaily, DayTradeV2Robot, DayTradeV2Setting,
     DayTradeV2RuntimeState, DayTradeV2ScheduleEvent, DayTradeV2Signal,
     DayTradeV2SkipStat, DayTradeV2StrategyVersion, DayTradeV2Trade,
-    DayTradeV2ChallengerRun, DayTradeV2ControllerCandidate, DayTradeV2ControllerCycle,
+    DayTradeV2ChallengerEvent, DayTradeV2ChallengerPosition, DayTradeV2ChallengerRun,
+    DayTradeV2ChallengerTrade, DayTradeV2ControllerCandidate, DayTradeV2ControllerCycle,
     DayTradeV2MarketRegimeSnapshot, DayTradeV2OptimizationDataset, DayTradeV2OptimizationJob,
+    DayTradeV2OptimizationTrial,
     DayTradeV2StrategyDeployment, DayTradeV2StrategyHealthSnapshot, DayTradeV2StrategyRiskOverride,
 )
 from ..services.day_trading_v2 import (
@@ -1545,6 +1547,13 @@ def create_optimization_job(body: OptimizationJobBody, user_id: str = Depends(_u
     ))
     if active:
         raise HTTPException(409, "同一台機器人同時只能執行一個優化任務")
+    active_challenger = db.scalar(select(DayTradeV2ChallengerRun).where(
+        DayTradeV2ChallengerRun.user_id == user_id,
+        DayTradeV2ChallengerRun.strategy_id == body.strategy_id,
+        DayTradeV2ChallengerRun.status.in_(("RUNNING", "WAITING_APPROVAL", "APPROVED_PENDING_ACTIVATION")),
+    ))
+    if active_challenger:
+        raise HTTPException(409, "同一策略已有挑戰者正在模擬、等待批准或等待生效")
     dataset = db.get(DayTradeV2OptimizationDataset, body.dataset_id) if body.dataset_id else db.scalar(select(DayTradeV2OptimizationDataset).where(
         DayTradeV2OptimizationDataset.user_id == user_id,
         DayTradeV2OptimizationDataset.quality_status == "READY",
@@ -1567,6 +1576,113 @@ def create_optimization_job(body: OptimizationJobBody, user_id: str = Depends(_u
     _audit(db, user_id, "OPTIMIZATION_JOB_CREATED", "BACKTEST", {"strategyId": body.strategy_id, "status": job.status}, job.id)
     db.commit()
     return {"id": job.id, "status": job.status, "candidateVersion": job.candidate_version}
+
+
+@router.get("/optimization/health-history")
+def optimization_health_history(
+    strategy_id: str = Query(...), limit: int = Query(default=60, ge=1, le=250),
+    user_id: str = Depends(_user_id), db: Session = Depends(get_db),
+) -> dict[str, object]:
+    if strategy_id not in {row[0] for row in STRATEGIES}:
+        raise HTTPException(404, "找不到策略")
+    setting, _ = _ensure_defaults(db, user_id)
+    mode = setting.trade_mode if setting.trade_mode in MODE_VALUES else "PAPER"
+    rows = list(db.scalars(select(DayTradeV2StrategyHealthSnapshot).where(
+        DayTradeV2StrategyHealthSnapshot.user_id == user_id,
+        DayTradeV2StrategyHealthSnapshot.mode == mode,
+        DayTradeV2StrategyHealthSnapshot.strategy_id == strategy_id,
+    ).order_by(
+        DayTradeV2StrategyHealthSnapshot.diagnosis_date.desc(),
+        DayTradeV2StrategyHealthSnapshot.calculated_at.desc(),
+    ).limit(limit)).all())
+    return {"strategyId": strategy_id, "mode": mode, "items": [{
+        "id": row.id, "strategyVersion": row.strategy_version,
+        "diagnosisDate": row.diagnosis_date, "status": row.status,
+        "reasons": _json(row.reasons_json, []), "metrics": _json(row.metrics_json, {}),
+        "baseline": _json(row.baseline_json, {}), "recommendedAction": row.recommended_action,
+        "capitalMultiplier": str(row.capital_multiplier), "riskMultiplier": str(row.risk_multiplier),
+        "calculatedAt": row.calculated_at,
+    } for row in rows]}
+
+
+@router.get("/optimization/jobs/{job_id}")
+def optimization_job_detail(
+    job_id: str, user_id: str = Depends(_user_id), db: Session = Depends(get_db),
+) -> dict[str, object]:
+    job = db.scalar(select(DayTradeV2OptimizationJob).where(
+        DayTradeV2OptimizationJob.id == job_id,
+        DayTradeV2OptimizationJob.user_id == user_id,
+    ))
+    if not job:
+        raise HTTPException(404, "找不到優化任務")
+    trials = list(db.scalars(select(DayTradeV2OptimizationTrial).where(
+        DayTradeV2OptimizationTrial.job_id == job_id,
+    ).order_by(DayTradeV2OptimizationTrial.candidate_index)).all())
+    return {
+        "id": job.id, "strategyId": job.strategy_id, "championVersion": job.champion_version,
+        "candidateVersion": job.candidate_version, "triggerType": job.trigger_type,
+        "datasetId": job.dataset_id, "status": job.status, "progressPct": str(job.progress_pct),
+        "searchSpace": _json(job.search_space_json, {}), "walkForward": _json(job.walk_forward_json, {}),
+        "result": _json(job.result_json, {}), "error": job.error_message,
+        "createdAt": job.created_at, "completedAt": job.completed_at,
+        "trials": [{
+            "id": row.id, "candidateIndex": row.candidate_index,
+            "parameters": _json(row.parameters_json, {}),
+            "validationMetrics": _json(row.validation_metrics_json, {}),
+            "oosMetrics": _json(row.oos_metrics_json, {}),
+            "selected": row.selected, "passed": row.passed, "status": row.status,
+            "failures": _json(row.failures_json, []), "createdAt": row.created_at,
+        } for row in trials],
+    }
+
+
+@router.get("/optimization/challengers/{run_id}")
+def challenger_run_detail(
+    run_id: str, user_id: str = Depends(_user_id), db: Session = Depends(get_db),
+) -> dict[str, object]:
+    run = db.scalar(select(DayTradeV2ChallengerRun).where(
+        DayTradeV2ChallengerRun.id == run_id,
+        DayTradeV2ChallengerRun.user_id == user_id,
+    ))
+    if not run:
+        raise HTTPException(404, "找不到挑戰者模擬紀錄")
+    positions = list(db.scalars(select(DayTradeV2ChallengerPosition).where(
+        DayTradeV2ChallengerPosition.run_id == run_id,
+    ).order_by(DayTradeV2ChallengerPosition.opened_at.desc()).limit(500)).all())
+    trades = list(db.scalars(select(DayTradeV2ChallengerTrade).where(
+        DayTradeV2ChallengerTrade.run_id == run_id,
+    ).order_by(DayTradeV2ChallengerTrade.exit_time.desc()).limit(500)).all())
+    events = list(db.scalars(select(DayTradeV2ChallengerEvent).where(
+        DayTradeV2ChallengerEvent.run_id == run_id,
+    ).order_by(DayTradeV2ChallengerEvent.occurred_at.desc()).limit(500)).all())
+    return {
+        "id": run.id, "strategyId": run.strategy_id, "championVersion": run.champion_version,
+        "challengerVersion": run.challenger_version, "status": run.status,
+        "startedAt": run.started_at, "completedAt": run.completed_at,
+        "fullTradingDays": run.full_trading_days, "tradeCount": run.trade_count,
+        "errorCount": run.error_count, "championMetrics": _json(run.champion_metrics_json, {}),
+        "challengerMetrics": _json(run.challenger_metrics_json, {}),
+        "positions": [{
+            "id": row.id, "role": row.role, "strategyVersion": row.strategy_version,
+            "signalKey": row.signal_key, "symbol": row.symbol, "quantity": row.quantity,
+            "entryPrice": str(row.entry_price), "stopPrice": str(row.stop_price),
+            "targetPrice": str(row.target_price), "openedAt": row.opened_at,
+            "status": row.status, "closedAt": row.closed_at,
+        } for row in positions],
+        "trades": [{
+            "id": row.id, "role": row.role, "symbol": row.symbol,
+            "entryTime": row.entry_time, "exitTime": row.exit_time, "quantity": row.quantity,
+            "entryPrice": str(row.entry_price), "exitPrice": str(row.exit_price),
+            "netPnl": str(row.net_pnl), "cost": str(row.cost),
+        } for row in trades],
+        "events": [{
+            "id": row.id, "eventId": row.event_id, "role": row.role,
+            "eventType": row.event_type, "strategyId": row.strategy_id,
+            "strategyVersion": row.strategy_version, "signalKey": row.signal_key,
+            "symbol": row.symbol, "occurredAt": row.occurred_at,
+            "payload": _json(row.payload_json, {}),
+        } for row in events],
+    }
 
 
 class VersionActionBody(BaseModel):
@@ -1617,6 +1733,7 @@ def approve_strategy_version(
     if not ready:
         raise HTTPException(409, "；".join(reasons))
     deployment.status = "PENDING_ACTIVATION"
+    run.status = "APPROVED_PENDING_ACTIVATION"
     deployment.approved_by = user_id
     deployment.approved_at = _now()
     deployment.effective_date = _next_trading_date(db, datetime.now(TAIPEI).date())

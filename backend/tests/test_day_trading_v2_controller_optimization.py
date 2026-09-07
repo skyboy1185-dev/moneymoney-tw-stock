@@ -10,7 +10,11 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base
-from app.day_trading_v2_models import DayTradeV2StrategyDeployment, DayTradeV2StrategyVersion
+from app.day_trading_v2_models import (
+    DayTradeV2ChallengerEvent, DayTradeV2ChallengerRun, DayTradeV2OptimizationJob,
+    DayTradeV2OptimizationTrial, DayTradeV2StrategyDeployment, DayTradeV2StrategyRiskOverride,
+    DayTradeV2StrategyVersion, DayTradeV2Trade,
+)
 from app.day_trading_v2_models import DayTradeV2ControllerCandidate, DayTradeV2Order, DayTradeV2RuntimeState, DayTradeV2Signal
 from app.services.day_trading_v2_controller import (
     ControllerCandidateInput, MarketInputs, REGIME_CRASH, REGIME_MILD, REGIME_RANGE,
@@ -19,8 +23,11 @@ from app.services.day_trading_v2_controller import (
 )
 from app.services.day_trading_v2_datasets import DatasetValidationError, load_dataset, parse_dataset, persist_dataset
 from app.services.day_trading_v2_health import (
-    active_version, apply_pending_deployments, handle_strategy_runtime_error,
+    _ensure_optimization_job, active_version, apply_pending_deployments, handle_strategy_runtime_error,
+    run_health_diagnosis,
 )
+from app.services.day_trading_v2_challenger import _record_event
+from app.services.day_trading_v2 import DEFAULT_CONFIG
 from app.services.day_trading_v2_optimization import (
     bounded_parameter_candidates, candidate_passes, challenger_ready, diagnose_health,
     walk_forward_splits,
@@ -213,6 +220,7 @@ def test_pending_strategy_version_activates_only_on_effective_day_and_history_st
             DayTradeV2StrategyVersion(strategy_id="OPENING_RANGE_BREAKOUT", version="2.0.1", parent_version="2.0.0", definition_json="{}"),
             DayTradeV2StrategyDeployment(id="old", user_id="test-user", strategy_id="OPENING_RANGE_BREAKOUT", version="2.0.0", role="CHAMPION", status="ACTIVE", activated_at=datetime(2026, 9, 1, tzinfo=UTC)),
             DayTradeV2StrategyDeployment(id="new", user_id="test-user", strategy_id="OPENING_RANGE_BREAKOUT", version="2.0.1", role="CHALLENGER", status="PENDING_ACTIVATION", effective_date=date(2026, 9, 8)),
+            DayTradeV2ChallengerRun(id="run", user_id="test-user", strategy_id="OPENING_RANGE_BREAKOUT", champion_version="2.0.0", challenger_version="2.0.1", status="APPROVED_PENDING_ACTIVATION", started_at=datetime(2026, 9, 1, tzinfo=UTC)),
         ])
         db.commit()
         assert apply_pending_deployments(db, "test-user", date(2026, 9, 7), datetime(2026, 9, 7, tzinfo=UTC)) == 0
@@ -221,7 +229,126 @@ def test_pending_strategy_version_activates_only_on_effective_day_and_history_st
         assert active_version(db, "test-user", "OPENING_RANGE_BREAKOUT") == "2.0.1"
         old = db.get(DayTradeV2StrategyDeployment, "old")
         assert old.status == "SUPERSEDED"
+        assert db.get(DayTradeV2ChallengerRun, "run").status == "PROMOTED"
         assert db.scalar(select(DayTradeV2StrategyVersion).where(DayTradeV2StrategyVersion.version == "2.0.0")) is not None
+
+
+def test_challenger_events_are_idempotent_and_keep_simulation_context():
+    engine = create_engine("sqlite+pysqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+    occurred_at = datetime(2026, 9, 7, 1, 30, tzinfo=UTC)
+    with sessions() as db:
+        run = DayTradeV2ChallengerRun(
+            id="event-run", user_id="event-user", strategy_id="VWAP_TREND_PULLBACK",
+            champion_version="2.0.0", challenger_version="2.0.1", status="RUNNING", started_at=occurred_at,
+        )
+        db.add(run)
+        db.flush()
+        for _ in range(2):
+            _record_event(
+                db, run=run, role="CHALLENGER", version="2.0.1", event_type="SIGNAL_REJECTED",
+                event_id="event-run:rejected:2330:202609070930", occurred_at=occurred_at,
+                signal_key="2330:202609070930", symbol="2330",
+                payload={"score": "76", "reasons": ["信心分數不足"], "marketRegime": "RANGE"},
+            )
+        db.commit()
+        events = list(db.scalars(select(DayTradeV2ChallengerEvent)).all())
+        assert len(events) == 1
+        assert '"score": "76"' in events[0].payload_json
+        assert "信心分數不足" in events[0].payload_json
+
+
+def test_active_challenger_prevents_duplicate_automatic_optimization_job():
+    engine = create_engine("sqlite+pysqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+    with sessions() as db:
+        db.add(DayTradeV2ChallengerRun(
+            id="active-run", user_id="health-user", strategy_id="VOLUME_HIGH_BREAKOUT",
+            champion_version="2.0.0", challenger_version="2.0.1", status="WAITING_APPROVAL",
+            started_at=datetime(2026, 9, 7, tzinfo=UTC),
+        ))
+        db.commit()
+        _ensure_optimization_job(db, "health-user", "VOLUME_HIGH_BREAKOUT", "2.0.0", date(2026, 9, 7))
+        db.flush()
+        assert db.scalar(select(DayTradeV2OptimizationJob)) is None
+
+
+def test_optimization_job_detail_returns_every_candidate_trial():
+    from app.routers.day_trading_v2 import optimization_job_detail
+
+    engine = create_engine("sqlite+pysqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+    with sessions() as db:
+        db.add(DayTradeV2OptimizationJob(
+            id="job-detail", user_id="detail-user", strategy_id="OPENING_RANGE_BREAKOUT",
+            champion_version="2.0.0", candidate_version="2.0.1", status="COMPLETED",
+        ))
+        db.add_all([
+            DayTradeV2OptimizationTrial(id="trial-1", job_id="job-detail", candidate_index=0, parameters_json='{"volumeMultiplier":"1.0"}', validation_metrics_json='{"netPnl":"100"}'),
+            DayTradeV2OptimizationTrial(id="trial-2", job_id="job-detail", candidate_index=1, parameters_json='{"volumeMultiplier":"1.1"}', validation_metrics_json='{"netPnl":"200"}', selected=True),
+        ])
+        db.commit()
+        result = optimization_job_detail("job-detail", "detail-user", db)
+        assert [row["candidateIndex"] for row in result["trials"]] == [0, 1]
+        assert result["trials"][1]["selected"] is True
+
+
+def test_optimizer_persists_and_updates_each_validation_trial(monkeypatch):
+    from app.services import day_trading_v2_optimizer as optimizer
+
+    engine = create_engine("sqlite+pysqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+    monkeypatch.setattr(optimizer, "SessionLocal", sessions)
+    optimizer._persist_validation_trial("persist-job", 3, {"volumeMultiplier": Decimal("1.1")}, {"netPnl": "100"})
+    optimizer._persist_validation_trial("persist-job", 3, {"volumeMultiplier": Decimal("1.2")}, {"netPnl": "250"})
+    with sessions() as db:
+        rows = list(db.scalars(select(DayTradeV2OptimizationTrial)).all())
+        assert len(rows) == 1
+        assert '"1.2"' in rows[0].parameters_json
+        assert '"250"' in rows[0].validation_metrics_json
+
+
+def test_bad_paper_performance_reduces_risk_then_pauses_and_queues_offline_optimization():
+    engine = create_engine("sqlite+pysqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+    with sessions() as db:
+        base_time = datetime(2026, 9, 1, 5, 0, tzinfo=UTC)
+        for index in range(20):
+            moment = base_time + timedelta(minutes=index)
+            db.add(DayTradeV2Trade(
+                id=f"loss-{index}", user_id="poor-user", mode="PAPER", symbol="2330",
+                stock_name="台積電", strategy_id="OPENING_RANGE_BREAKOUT", strategy_version="2.0.0",
+                quantity=1000, signal_time=moment, entry_order_time=moment, entry_fill_time=moment,
+                entry_price=Decimal("100"), exit_signal_time=moment, exit_order_time=moment,
+                exit_fill_time=moment, exit_price=Decimal("99"), gross_pnl=Decimal("-1000"),
+                buy_fee=Decimal("0"), sell_fee=Decimal("0"), transaction_tax=Decimal("0"),
+                slippage=Decimal("0"), other_cost=Decimal("0"), net_pnl=Decimal("-1000"),
+                net_return_pct=Decimal("-1"), entry_reason="測試", exit_reason="停損",
+            ))
+        db.commit()
+        first = run_health_diagnosis(db, "poor-user", "PAPER", DEFAULT_CONFIG, datetime(2026, 9, 7, tzinfo=UTC))
+        db.flush()
+        target = next(row for row in first if row.strategy_id == "OPENING_RANGE_BREAKOUT")
+        override = db.scalar(select(DayTradeV2StrategyRiskOverride).where(
+            DayTradeV2StrategyRiskOverride.user_id == "poor-user",
+            DayTradeV2StrategyRiskOverride.strategy_id == "OPENING_RANGE_BREAKOUT",
+        ))
+        assert target.status == "ALERT"
+        assert override.risk_multiplier == Decimal("0.5") and override.paused is False
+        assert db.scalar(select(DayTradeV2OptimizationJob).where(
+            DayTradeV2OptimizationJob.strategy_id == "OPENING_RANGE_BREAKOUT",
+        )).status == "DATA_INSUFFICIENT"
+
+        second = run_health_diagnosis(db, "poor-user", "PAPER", DEFAULT_CONFIG, datetime(2026, 9, 8, tzinfo=UTC))
+        db.flush()
+        target = next(row for row in second if row.strategy_id == "OPENING_RANGE_BREAKOUT")
+        assert target.recommended_action == "PAUSE"
+        assert override.paused is True and override.risk_multiplier == 0
 
 
 def test_new_strategy_runtime_error_stops_version_and_queues_previous_version():

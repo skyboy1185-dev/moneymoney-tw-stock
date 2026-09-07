@@ -11,7 +11,8 @@ from sqlalchemy import select
 from ..database import SessionLocal
 from ..day_trading_v2_models import (
     DayTradeV2ChallengerRun, DayTradeV2Notification, DayTradeV2OptimizationDataset,
-    DayTradeV2OptimizationJob, DayTradeV2StrategyDeployment, DayTradeV2StrategyVersion,
+    DayTradeV2OptimizationJob, DayTradeV2OptimizationTrial,
+    DayTradeV2StrategyDeployment, DayTradeV2StrategyVersion,
 )
 from .day_trading_v2 import DEFAULT_STRATEGY_PARAMETERS, dec, performance, run_backtest
 from .day_trading_v2_datasets import DatasetValidationError, load_dataset
@@ -89,6 +90,30 @@ def _summary(trades, sectors, datasets):
     return base
 
 
+def _persist_validation_trial(
+    job_id: str, candidate_index: int, parameters: dict[str, object], summary: dict[str, object],
+) -> None:
+    with SessionLocal() as db:
+        row = db.scalar(select(DayTradeV2OptimizationTrial).where(
+            DayTradeV2OptimizationTrial.job_id == job_id,
+            DayTradeV2OptimizationTrial.candidate_index == candidate_index,
+        ))
+        values = {
+            "parameters_json": json.dumps(parameters, default=str, ensure_ascii=False),
+            "validation_metrics_json": json.dumps(summary, default=str, ensure_ascii=False),
+            "status": "VALIDATED",
+        }
+        if row is None:
+            row = DayTradeV2OptimizationTrial(
+                id=str(uuid4()), job_id=job_id, candidate_index=candidate_index, **values,
+            )
+            db.add(row)
+        else:
+            for key, value in values.items():
+                setattr(row, key, value)
+        db.commit()
+
+
 def execute_optimization_job(job_id: str) -> None:
     with SessionLocal() as db:
         job = db.get(DayTradeV2OptimizationJob, job_id)
@@ -121,14 +146,15 @@ def execute_optimization_job(job_id: str) -> None:
         for index, parameters in enumerate(candidates):
             trades = _run_ranges(datasets, validation_ranges, job.strategy_id, parameters, config, sectors, regimes)
             summary = _summary(trades, sectors, datasets)
-            scored.append((dec(summary["netPnl"]), dec(summary.get("profitFactor") or 0), parameters, summary))
+            scored.append((dec(summary["netPnl"]), dec(summary.get("profitFactor") or 0), index, parameters, summary))
+            _persist_validation_trial(job_id, index, parameters, summary)
             if index % 5 == 0:
                 with SessionLocal() as db:
                     active = db.get(DayTradeV2OptimizationJob, job_id)
                     if active:
                         active.progress_pct = min(Decimal("70"), Decimal(index + 1) / len(candidates) * 70)
                         db.commit()
-        _, _, selected, validation_summary = max(scored, key=lambda row: (row[0], row[1]))
+        _, _, selected_index, selected, validation_summary = max(scored, key=lambda row: (row[0], row[1]))
         oos_ranges = [fold["oos"] for fold in splits]
         candidate_trades = _run_ranges(datasets, oos_ranges, job.strategy_id, selected, config, sectors, regimes)
         champion_trades = _run_ranges(datasets, oos_ranges, job.strategy_id, champion_parameters, config, sectors, regimes)
@@ -164,6 +190,16 @@ def execute_optimization_job(job_id: str) -> None:
             job.progress_pct = Decimal("100")
             job.status = "CHALLENGER_SIMULATION" if passed else "REJECTED"
             job.completed_at = datetime.now(UTC)
+            trial = db.scalar(select(DayTradeV2OptimizationTrial).where(
+                DayTradeV2OptimizationTrial.job_id == job_id,
+                DayTradeV2OptimizationTrial.candidate_index == selected_index,
+            ))
+            if trial:
+                trial.selected = True
+                trial.passed = passed
+                trial.status = "CHALLENGER_SIMULATION" if passed else "REJECTED"
+                trial.oos_metrics_json = json.dumps(candidate_summary, default=str, ensure_ascii=False)
+                trial.failures_json = json.dumps(failures, ensure_ascii=False)
             if passed:
                 version = DayTradeV2StrategyVersion(
                     strategy_id=job.strategy_id, version=job.candidate_version,

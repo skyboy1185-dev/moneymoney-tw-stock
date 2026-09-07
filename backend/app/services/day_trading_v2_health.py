@@ -9,7 +9,7 @@ from uuid import uuid4
 from sqlalchemy import select
 
 from ..day_trading_v2_models import (
-    DayTradeV2Notification, DayTradeV2OptimizationDataset, DayTradeV2OptimizationJob,
+    DayTradeV2ChallengerRun, DayTradeV2Notification, DayTradeV2OptimizationDataset, DayTradeV2OptimizationJob,
     DayTradeV2AuditEvent, DayTradeV2CalendarHoliday,
     DayTradeV2Robot, DayTradeV2StrategyDeployment, DayTradeV2StrategyHealthSnapshot,
     DayTradeV2StrategyRiskOverride, DayTradeV2StrategyVersion, DayTradeV2Trade,
@@ -116,8 +116,10 @@ def run_health_diagnosis(db, user_id: str, mode: str, config: dict[str, object],
             db.add(override)
         if diagnosis.status == "ALERT":
             # Risk may only stay unchanged or decrease automatically.
-            override.capital_multiplier = min(override.capital_multiplier, diagnosis.capital_multiplier)
-            override.risk_multiplier = min(override.risk_multiplier, diagnosis.risk_multiplier)
+            current_capital = dec(override.capital_multiplier if override.capital_multiplier is not None else 1)
+            current_risk = dec(override.risk_multiplier if override.risk_multiplier is not None else 1)
+            override.capital_multiplier = min(current_capital, diagnosis.capital_multiplier)
+            override.risk_multiplier = min(current_risk, diagnosis.risk_multiplier)
             override.paused = diagnosis.recommended_action == "PAUSE" or override.paused
             override.reason = "；".join(diagnosis.reasons)
             event_id = f"strategy-health:{user_id}:{mode}:{strategy_id}:{day}"
@@ -164,12 +166,28 @@ def apply_pending_deployments(db, user_id: str, trading_date, now: datetime) -> 
         ))
         if version:
             version.validation_status = "CHAMPION"
+        challenger_run = db.scalar(select(DayTradeV2ChallengerRun).where(
+            DayTradeV2ChallengerRun.user_id == user_id,
+            DayTradeV2ChallengerRun.strategy_id == deployment.strategy_id,
+            DayTradeV2ChallengerRun.challenger_version == deployment.version,
+            DayTradeV2ChallengerRun.status == "APPROVED_PENDING_ACTIVATION",
+        ).order_by(DayTradeV2ChallengerRun.started_at.desc()))
+        if challenger_run:
+            challenger_run.status = "PROMOTED"
+            challenger_run.completed_at = now
         activated += 1
     db.flush()
     return activated
 
 
 def _ensure_optimization_job(db, user_id: str, strategy_id: str, champion_version: str, day) -> None:
+    challenger = db.scalar(select(DayTradeV2ChallengerRun).where(
+        DayTradeV2ChallengerRun.user_id == user_id,
+        DayTradeV2ChallengerRun.strategy_id == strategy_id,
+        DayTradeV2ChallengerRun.status.in_(("RUNNING", "WAITING_APPROVAL", "APPROVED_PENDING_ACTIVATION")),
+    ))
+    if challenger:
+        return
     active = db.scalar(select(DayTradeV2OptimizationJob).where(
         DayTradeV2OptimizationJob.user_id == user_id,
         DayTradeV2OptimizationJob.strategy_id == strategy_id,

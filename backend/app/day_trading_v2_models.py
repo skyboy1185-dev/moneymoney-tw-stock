@@ -496,6 +496,26 @@ class DayTradeV2OptimizationJob(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class DayTradeV2OptimizationTrial(Base):
+    __tablename__ = "day_trade_v2_optimization_trials"
+    __table_args__ = (
+        UniqueConstraint("job_id", "candidate_index", name="uq_dtv2_optimization_trial_candidate"),
+        Index("ix_dtv2_optimization_trial_job", "job_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    job_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    candidate_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    parameters_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    validation_metrics_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    oos_metrics_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    selected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    passed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="VALIDATED")
+    failures_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
 class DayTradeV2ChallengerRun(Base):
     __tablename__ = "day_trade_v2_challenger_runs"
 
@@ -548,6 +568,27 @@ class DayTradeV2ChallengerTrade(Base):
     exit_price: Mapped[Decimal] = mapped_column(PRICE, nullable=False)
     net_pnl: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
     cost: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class DayTradeV2ChallengerEvent(Base):
+    __tablename__ = "day_trade_v2_challenger_events"
+    __table_args__ = (
+        UniqueConstraint("event_id", name="uq_dtv2_challenger_event"),
+        Index("ix_dtv2_challenger_event_run", "run_id", "occurred_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    event_id: Mapped[str] = mapped_column(String(220), nullable=False)
+    run_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    strategy_id: Mapped[str] = mapped_column(String(60), nullable=False)
+    strategy_version: Mapped[str] = mapped_column(String(30), nullable=False)
+    signal_key: Mapped[str] = mapped_column(String(180), nullable=False, default="")
+    symbol: Mapped[str] = mapped_column(String(12), nullable=False, default="")
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
