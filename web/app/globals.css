@@ -1196,6 +1196,9 @@ footer span { color: #566177; }
 .manual-signal-badge.ma-multi-up { color: #ff8f98; background: rgba(255,92,101,.12); }
 .manual-signal-badge.ma-multi-up.temporary { color: #f2c96d; background: rgba(242,201,109,.12); }
 .manual-signal-badge.deduction-high { color: #60dda2; background: rgba(35,200,117,.1); }
+.manual-bullish-badge { margin-left: 7px; display: inline-flex; padding: 3px 7px; color: #ff8f98; background: rgba(255,92,101,.14); border: 1px solid rgba(255,92,101,.35); border-radius: 999px; font-size: 10px; font-weight: 800; white-space: nowrap; }
+.screener-table tr.bullish-alignment-row td:first-child { border-left: 3px solid #ff5c65; }
+.screener-table tr.bullish-alignment-row td { background: rgba(255,92,101,.035); }
 
 /* AI 決策中心 */
 .ai-center { display: grid; gap: 16px; }

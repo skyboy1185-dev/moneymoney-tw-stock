@@ -5,6 +5,7 @@ import {
   detectSingleKdBullishDivergence,
   detectDoubleKdBullishDivergence,
   estimateMacdBarsToPositive,
+  isShortTermBullishAlignment,
   MANUAL_STRATEGIES,
   matchesManualStrategy,
 } from "./manual-strategy-service";
@@ -59,6 +60,23 @@ describe("策略選股器嚴格訊號規則", () => {
     expect(signal?.projectedMa20).toBeGreaterThan(signal?.ma20 ?? Infinity);
     expect(signal?.nextDayUpMinimumClose).toBe(21);
     expect(signal?.continuationBufferPercent).toBe(19.05);
+  });
+
+  it("股價高於 MA5、MA60 且 MA5 大於 MA10 大於 MA20 時標示多頭排列", () => {
+    const signal = calculateMultiMovingAverageUpSignal(candlesFromCloses(
+      Array.from({ length: 65 }, (_, index) => index + 1),
+    ));
+    expect(signal?.matches).toBe(true);
+    expect(signal?.ma60).not.toBeNull();
+    expect(signal?.bullishAlignment).toBe(true);
+  });
+
+  it("多頭排列採嚴格價格與均線順序，資料不足時不標示", () => {
+    expect(isShortTermBullishAlignment(110, 105, 100, 95, 90)).toBe(true);
+    expect(isShortTermBullishAlignment(105, 105, 100, 95, 90)).toBe(false);
+    expect(isShortTermBullishAlignment(89, 85, 80, 75, 90)).toBe(false);
+    expect(isShortTermBullishAlignment(110, 100, 100, 95, 90)).toBe(false);
+    expect(isShortTermBullishAlignment(110, 105, 100, 95, null)).toBe(false);
   });
 
   it("任一均線今日未上彎時排除", () => {

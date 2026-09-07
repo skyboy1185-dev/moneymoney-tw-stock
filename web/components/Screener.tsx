@@ -70,7 +70,7 @@ export function Screener({ onSelectStock }: { onSelectStock: (symbol: string) =>
   ];
   const columns: [SortKey, string][] = isMultiMaUpStrategy
     ? [...commonColumns,
-      ["ma5", "MA5"], ["ma10", "MA10"], ["ma20", "MA20"],
+      ["ma5", "MA5"], ["ma10", "MA10"], ["ma20", "MA20"], ["ma60", "MA60"],
       ["ma5SlopePercent", "MA5 今日斜率"], ["ma10SlopePercent", "MA10 今日斜率"],
       ["ma20SlopePercent", "MA20 今日斜率"], ["projectedMa5", "明日推估 MA5"],
       ["projectedMa10", "明日推估 MA10"], ["projectedMa20", "明日推估 MA20"],
@@ -183,14 +183,14 @@ export function Screener({ onSelectStock }: { onSelectStock: (symbol: string) =>
             <div className="table-scroll">
               <table className="screener-table manual-table">
                 <thead><tr>{columns.map(([key, label]) => <th key={key}><button onClick={() => toggleSort(key)}>{label}<span className={sort.key === key ? "sorted" : ""}>{sort.key === key && sort.direction === "desc" ? "↓" : "↑"}</span></button></th>)}</tr></thead>
-                <tbody>{visible.map((row) => <tr key={row.symbol}>
+                <tbody>{visible.map((row) => <tr key={row.symbol} className={isMultiMaUpStrategy && row.bullishAlignment ? "bullish-alignment-row" : undefined}>
                   <td>{row.rank}</td>
                   <td><button className="symbol-link" onClick={() => onSelectStock(row.symbol)}>{row.symbol}</button></td>
-                  <td><strong>{row.name}</strong></td><td>{row.market}</td><td>{safeNumber(row.price)}</td>
+                  <td><strong>{row.name}</strong>{isMultiMaUpStrategy && row.bullishAlignment && <span className="manual-bullish-badge">多頭排列</span>}</td><td>{row.market}</td><td>{safeNumber(row.price)}</td>
                   <td className={valueClass(row.changePercent)}>{formatPercent(row.changePercent)}</td>
                   <td>{formatVolume(row.volume)}</td><td>{timeframeLabel[row.timeframe]}</td>
                   {isMultiMaUpStrategy ? <>
-                    <td>{safeNumber(row.ma5, 2)}</td><td>{safeNumber(row.ma10, 2)}</td><td>{safeNumber(row.ma20, 2)}</td>
+                    <td>{safeNumber(row.ma5, 2)}</td><td>{safeNumber(row.ma10, 2)}</td><td>{safeNumber(row.ma20, 2)}</td><td>{safeNumber(row.ma60, 2)}</td>
                     <td className="text-up">{formatPercent(row.ma5SlopePercent)}</td>
                     <td className="text-up">{formatPercent(row.ma10SlopePercent)}</td>
                     <td className="text-up">{formatPercent(row.ma20SlopePercent)}</td>

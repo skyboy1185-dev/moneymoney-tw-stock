@@ -50,6 +50,7 @@ export interface ManualScreenRow {
   ma5?: number;
   ma10?: number;
   ma20?: number;
+  ma60?: number | null;
   ma5SlopePercent?: number;
   ma10SlopePercent?: number;
   ma20SlopePercent?: number;
@@ -58,6 +59,7 @@ export interface ManualScreenRow {
   projectedMa20?: number;
   nextDayUpMinimumClose?: number;
   continuationBufferPercent?: number;
+  bullishAlignment?: boolean;
   signalStatus?: "temporary" | "confirmed";
   divergencePreviousDate?: string;
   divergenceMiddleDate?: string;

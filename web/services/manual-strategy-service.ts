@@ -27,6 +27,7 @@ export interface MultiMovingAverageUpSignal {
   ma5: number;
   ma10: number;
   ma20: number;
+  ma60: number | null;
   ma5SlopePercent: number;
   ma10SlopePercent: number;
   ma20SlopePercent: number;
@@ -35,6 +36,7 @@ export interface MultiMovingAverageUpSignal {
   projectedMa20: number;
   nextDayUpMinimumClose: number;
   continuationBufferPercent: number;
+  bullishAlignment: boolean;
   matches: boolean;
 }
 
@@ -42,6 +44,20 @@ const round = (value: number, digits = 4) => {
   const factor = 10 ** digits;
   return Math.round(value * factor) / factor;
 };
+
+export function isShortTermBullishAlignment(
+  price: number,
+  ma5: number | null,
+  ma10: number | null,
+  ma20: number | null,
+  ma60: number | null,
+): boolean {
+  return ma5 != null && ma10 != null && ma20 != null && ma60 != null
+    && price > ma5
+    && price > ma60
+    && ma5 > ma10
+    && ma10 > ma20;
+}
 
 /**
  * Confirm that MA5/10/20 are rising now and would still rise on the next
@@ -83,6 +99,7 @@ export function calculateMultiMovingAverageUpSignal(
     ma5: current.ma5,
     ma10: current.ma10,
     ma20: current.ma20,
+    ma60: current.ma60,
     ma5SlopePercent: slopes[0],
     ma10SlopePercent: slopes[1],
     ma20SlopePercent: slopes[2],
@@ -91,6 +108,13 @@ export function calculateMultiMovingAverageUpSignal(
     projectedMa20: projected[2],
     nextDayUpMinimumClose: round(nextDayUpMinimumClose),
     continuationBufferPercent,
+    bullishAlignment: isShortTermBullishAlignment(
+      latestClose,
+      current.ma5,
+      current.ma10,
+      current.ma20,
+      current.ma60,
+    ),
     matches: currentMas.every((value, index) => value > previousMas[index])
       && outgoingCloses.every((outgoingClose) => latestClose > outgoingClose),
   };
@@ -330,6 +354,7 @@ export async function screenStocksByStrategy(strategyId: string): Promise<Manual
         ma5: multiMaUp?.ma5,
         ma10: multiMaUp?.ma10,
         ma20: multiMaUp?.ma20,
+        ma60: multiMaUp?.ma60,
         ma5SlopePercent: multiMaUp?.ma5SlopePercent,
         ma10SlopePercent: multiMaUp?.ma10SlopePercent,
         ma20SlopePercent: multiMaUp?.ma20SlopePercent,
@@ -338,6 +363,7 @@ export async function screenStocksByStrategy(strategyId: string): Promise<Manual
         projectedMa20: multiMaUp?.projectedMa20,
         nextDayUpMinimumClose: multiMaUp?.nextDayUpMinimumClose,
         continuationBufferPercent: multiMaUp?.continuationBufferPercent,
+        bullishAlignment: multiMaUp?.bullishAlignment,
         signalStatus: stock.dataQuality?.status === "official_close" ? "confirmed" : "temporary",
         divergencePreviousDate: divergence?.previousDate,
         divergenceMiddleDate: divergence?.middleDate,
