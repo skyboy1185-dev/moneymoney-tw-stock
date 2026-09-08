@@ -64,6 +64,18 @@ class StrongStockDataRun(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class StrongStockScanArchive(Base):
+    """Append-only inputs; daily ranking refreshes must not erase past observations."""
+    __tablename__ = "strong_stock_scan_archives"
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    strategy_version: Mapped[str] = mapped_column(String(30), nullable=False)
+    config_json: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class StrongStockMarketRegime(Base):
     __tablename__ = "strong_stock_market_regimes"
     __table_args__ = (UniqueConstraint("trade_date", name="uq_strong_stock_market_regime_date"),)

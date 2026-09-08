@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Activity, Bell, CandlestickChart, Database, History, Pause, Play, RefreshCw, Search, Settings, ShieldAlert, Target, TrendingUp, WalletCards } from "lucide-react";
 import type { StrongDashboard, StrongRanking } from "@/lib/strong-stock-types";
-import { StrongStockBacktest } from "./StrongStockBacktest";
+import { StrongStockHistory } from "./StrongStockHistory";
 import { strongStockClient } from "@/services/strong-stock-client";
 
 type Section = "overview" | "ranking" | "positions" | "trades" | "backtest" | "notifications" | "data" | "settings";
@@ -102,7 +102,7 @@ export function StrongStockPage({ userId, onSelectStock }: { userId: string; onS
 
     {section === "trades" && <><div className="strong-metrics compact"><article><span>已完成交易</span><strong>{n(p.tradeCount)}</strong></article><article><span>獲利／虧損</span><strong>{n(p.winCount)}／{n(p.lossCount)}</strong></article><article><span>獲利因子</span><strong>{p.profitFactor ?? "樣本不足"}</strong></article><article><span>使用資金</span><strong>{n(p.investedCapital)}元</strong></article></div><article className="strong-panel"><header><History size={17} /><div><strong>完成交易</strong><small>損益已扣手續費、交易稅與滑價</small></div></header><div className="strong-table"><table><thead><tr><th>股票</th><th>型態／版本</th><th>買進／賣出</th><th>價格／股數</th><th>毛損益</th><th>成本</th><th>淨損益</th><th>出場原因</th></tr></thead><tbody>{data.trades.map((row) => <tr key={row.id}><td><b>{row.symbol}</b><small>{row.name}</small></td><td>{statusLabel(row.entryType)}<small>v{row.strategyVersion}</small></td><td>{dt(row.entryAt)}<small>{dt(row.exitAt)}</small></td><td>{n(row.entryPrice, 2)} → {n(row.exitPrice, 2)}<small>{n(row.quantity)}股</small></td><td className={tone(row.grossPnl)}>{signed(row.grossPnl)}</td><td>{n(Number(row.buyFee) + Number(row.sellFee) + Number(row.tax) + Number(row.slippage))}</td><td className={tone(row.netPnl)}>{signed(row.netPnl)}<small>{signed(row.returnPct)}%</small></td><td>{row.exitReason}</td></tr>)}</tbody></table></div>{!data.trades.length && <p className="strong-empty">尚無已完成交易，勝率不顯示為0%</p>}</article></>}
 
-    {section === "backtest" && <StrongStockBacktest userId={userId} />}
+    {section === "backtest" && <StrongStockHistory userId={userId} />}
 
     {section === "notifications" && <article className="strong-panel"><header><Bell size={17} /><div><strong>強勢股通知中心</strong><small>事件ID避免重複通知</small></div></header><div className="strong-notification-list">{data.notifications.map((row) => <article key={row.id} className={row.priority === "HIGH" ? "high" : ""}><div><b>{row.title}</b><time>{dt(row.createdAt)}</time></div><p>{row.message}</p></article>)}{!data.notifications.length && <p className="strong-empty">目前沒有通知</p>}</div></article>}
 

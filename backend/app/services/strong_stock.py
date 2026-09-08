@@ -16,6 +16,7 @@ from ..strong_stock_models import (
     StrongStockIndustryRanking, StrongStockMarketRegime, StrongStockNotification, StrongStockOrder,
     StrongStockPosition, StrongStockRanking, StrongStockSetting, StrongStockStrategyVersion,
     StrongStockTrade,
+    StrongStockScanArchive,
 )
 
 
@@ -302,6 +303,11 @@ def commission(notional: Decimal, config: dict[str, object]) -> Decimal:
 
 def scan_and_persist(db: Session, payload: AdaptiveScanPayload, at: datetime, config_override: dict[str, object] | None = None) -> dict[str, object]:
     config = merged_config(config_override)
+    db.add(StrongStockScanArchive(
+        id=str(uuid4()), trade_date=payload.market.trade_date, observed_at=at,
+        strategy_version=STRATEGY_VERSION, config_json=json.dumps(config, ensure_ascii=False),
+        payload_json=payload.model_dump_json(),
+    ))
     decision = classify_market(payload.market, config)
     trade_date = payload.market.trade_date
     db.execute(delete(StrongStockMarketRegime).where(StrongStockMarketRegime.trade_date == trade_date))

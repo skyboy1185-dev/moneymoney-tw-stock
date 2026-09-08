@@ -273,16 +273,20 @@ class BacktestBody(BaseModel):
     symbols: list[str] = Field(default_factory=list, max_length=30)
 
 
-HISTORICAL_DATA_GAPS = [
-    "歷史上市、上櫃及下市股票母體", "基本面與月營收實際公布時間",
-    "歷史產業分類", "完整除權息、分割與減資事件", "可驗證成交容量資料",
-]
+@router.get('/backtest-coverage')
+def backtest_coverage(start_date: date, end_date: date, db: Session = Depends(get_db)) -> dict[str, object]:
+    if end_date < start_date or (end_date - start_date).days > 366 * 10:
+        raise HTTPException(422, '請選擇正確日期，範圍最多十年')
+    from ..services.strong_stock_history import history_coverage
+    return history_coverage(db, start_date, end_date)
 
 
 @router.post("/backtests")
 def create_backtest(body: BacktestBody, background_tasks: BackgroundTasks, uid: str = Depends(user_id), db: Session = Depends(get_db)) -> dict[str, object]:
     if body.end_date < body.start_date:
         raise HTTPException(422, "結束日期不可早於開始日期")
+    if (body.end_date - body.start_date).days > 366 * 10:
+        raise HTTPException(422, '日期範圍最多十年')
     if body.mode == 'FREE_PRICE_VOLUME':
         from ..services.strong_stock_backtest import DEFAULT_SYMBOLS, run_backtest
         if body.benchmark != '0050':
@@ -313,15 +317,14 @@ def create_backtest(body: BacktestBody, background_tasks: BackgroundTasks, uid: 
         db.commit()
         background_tasks.add_task(run_backtest, job.id, symbols, body.start_date, end)
         return {'id': job.id, 'status': job.status, 'result': {}}
+    from ..services.strong_stock_history import history_coverage
+    coverage = history_coverage(db, body.start_date, body.end_date)
     job = StrongStockBacktestJob(
         id=str(uuid4()), user_id=uid, start_date=body.start_date, end_date=body.end_date,
-        status="DATA_INSUFFICIENT", data_status_json=json.dumps({"missing": HISTORICAL_DATA_GAPS}, ensure_ascii=False),
-        request_json=body.model_dump_json(), result_json=json.dumps({
-            "message": "歷史時間點資料尚未通過完整性檢查，系統不會產生可能含未來資料或存活者偏誤的績效。",
-            "missing": HISTORICAL_DATA_GAPS,
-        }, ensure_ascii=False), completed_at=datetime.now(UTC),
+        status="DATA_INSUFFICIENT", data_status_json=json.dumps(coverage, ensure_ascii=False),
+        request_json=body.model_dump_json(), result_json=json.dumps(coverage, ensure_ascii=False), completed_at=datetime.now(UTC),
     )
-    db.add(job); audit(db, uid, "BACKTEST_BLOCKED_DATA_INSUFFICIENT", "BACKTEST", job.id, {"missing": HISTORICAL_DATA_GAPS}); db.commit()
+    db.add(job); audit(db, uid, "BACKTEST_BLOCKED_DATA_INSUFFICIENT", "BACKTEST", job.id, {"missing": coverage['missing']}); db.commit()
     return {"id": job.id, "status": job.status, "result": parse_json(job.result_json, {})}
 
 
