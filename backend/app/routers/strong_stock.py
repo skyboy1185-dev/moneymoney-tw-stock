@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
+from typing import Literal
+from zoneinfo import ZoneInfo
+import re
 from decimal import Decimal
 import json
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
@@ -266,6 +269,8 @@ class BacktestBody(BaseModel):
     start_date: date
     end_date: date
     benchmark: str = "0050"
+    mode: Literal['FULL', 'FREE_PRICE_VOLUME'] = 'FULL'
+    symbols: list[str] = Field(default_factory=list, max_length=30)
 
 
 HISTORICAL_DATA_GAPS = [
@@ -275,9 +280,39 @@ HISTORICAL_DATA_GAPS = [
 
 
 @router.post("/backtests")
-def create_backtest(body: BacktestBody, uid: str = Depends(user_id), db: Session = Depends(get_db)) -> dict[str, object]:
+def create_backtest(body: BacktestBody, background_tasks: BackgroundTasks, uid: str = Depends(user_id), db: Session = Depends(get_db)) -> dict[str, object]:
     if body.end_date < body.start_date:
         raise HTTPException(422, "結束日期不可早於開始日期")
+    if body.mode == 'FREE_PRICE_VOLUME':
+        from ..services.strong_stock_backtest import DEFAULT_SYMBOLS, run_backtest
+        if body.benchmark != '0050':
+            raise HTTPException(422, '免費版基準為 0050')
+        today = datetime.now(ZoneInfo('Asia/Taipei')).date()
+        end = min(body.end_date, today - timedelta(days=1))
+        if body.start_date > end or (end - body.start_date).days > 366 * 5:
+            raise HTTPException(422, '請選擇已完成交易日，回測範圍最多五年')
+        symbols = list(dict.fromkeys(s.strip().upper() for s in body.symbols)) or DEFAULT_SYMBOLS
+        if any(not re.fullmatch(r'[0-9]{4}\.(TW|TWO)', s) or s == '0050.TW' for s in symbols):
+            raise HTTPException(422, '股票代碼格式：2330.TW（上市）或 3693.TWO（上櫃），基準 ETF 不納入股票池')
+        # A process restart can interrupt background work. Do not leave stale jobs running forever.
+        stale = list(db.scalars(select(StrongStockBacktestJob).where(
+            StrongStockBacktestJob.user_id == uid, StrongStockBacktestJob.status == 'RUNNING',
+            StrongStockBacktestJob.created_at < datetime.now(UTC) - timedelta(minutes=5))).all())
+        for previous in stale:
+            previous.status = 'FAILED'
+            previous.result_json = json.dumps({'message': '回測逾時或服務重啟，請重新執行。'}, ensure_ascii=False)
+            previous.completed_at = datetime.now(UTC)
+        db.flush()
+        active = db.scalar(select(StrongStockBacktestJob.id).where(
+            StrongStockBacktestJob.user_id == uid, StrongStockBacktestJob.status == 'RUNNING'))
+        if active:
+            raise HTTPException(409, '已有回測執行中，請等待完成')
+        job = StrongStockBacktestJob(id=str(uuid4()), user_id=uid, start_date=body.start_date, end_date=end,
+                                    status='RUNNING', request_json=json.dumps({**body.model_dump(mode='json'), 'symbols': symbols}))
+        db.add(job)
+        db.commit()
+        background_tasks.add_task(run_backtest, job.id, symbols, body.start_date, end)
+        return {'id': job.id, 'status': job.status, 'result': {}}
     job = StrongStockBacktestJob(
         id=str(uuid4()), user_id=uid, start_date=body.start_date, end_date=body.end_date,
         status="DATA_INSUFFICIENT", data_status_json=json.dumps({"missing": HISTORICAL_DATA_GAPS}, ensure_ascii=False),
@@ -294,6 +329,20 @@ def create_backtest(body: BacktestBody, uid: str = Depends(user_id), db: Session
 def backtests(uid: str = Depends(user_id), db: Session = Depends(get_db)) -> dict[str, object]:
     rows = list(db.scalars(select(StrongStockBacktestJob).where(StrongStockBacktestJob.user_id == uid).order_by(StrongStockBacktestJob.created_at.desc()).limit(100)).all())
     return {"items": [{"id": row.id, "startDate": row.start_date, "endDate": row.end_date, "status": row.status, "dataStatus": parse_json(row.data_status_json, {}), "result": parse_json(row.result_json, {}), "createdAt": row.created_at, "completedAt": row.completed_at} for row in rows]}
+
+
+@router.get('/backtests/{job_id}')
+def backtest_detail(job_id: str, uid: str = Depends(user_id), db: Session = Depends(get_db)) -> dict[str, object]:
+    job = db.get(StrongStockBacktestJob, job_id)
+    if job is None or job.user_id != uid:
+        raise HTTPException(404, '找不到回測任務')
+    created = job.created_at.replace(tzinfo=UTC) if job.created_at.tzinfo is None else job.created_at
+    if job.status == 'RUNNING' and datetime.now(UTC) - created > timedelta(minutes=5):
+        job.status = 'FAILED'
+        job.result_json = json.dumps({'message': '回測逾時或服務重啟，請重新執行。'}, ensure_ascii=False)
+        job.completed_at = datetime.now(UTC)
+        db.commit()
+    return {'id': job.id, 'status': job.status, 'result': parse_json(job.result_json, {})}
 
 
 @router.get("/stream")

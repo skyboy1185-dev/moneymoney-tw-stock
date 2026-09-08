@@ -24,5 +24,7 @@ export const strongStockClient = {
   close: (userId: string, positionId: string, price: string, reason: string) => request(`positions/${positionId}/close`, userId, { method: "POST", body: JSON.stringify({ price, reason }) }),
   backtest: (userId: string, startDate: string, endDate: string, benchmark = "0050") => request<Record<string, unknown>>("backtests", userId, { method: "POST", body: JSON.stringify({ start_date: startDate, end_date: endDate, benchmark }) }),
   backtests: (userId: string) => request<{ items: Array<Record<string, unknown>> }>("backtests", userId),
+  freeBacktest: (userId: string, startDate: string, endDate: string, symbols: string[]) => request<Record<string, unknown>>("backtests", userId, { method: "POST", body: JSON.stringify({ start_date: startDate, end_date: endDate, symbols, mode: "FREE_PRICE_VOLUME" }) }),
+  backtestDetail: (userId: string, id: string) => request<Record<string, unknown>>(`backtests/${encodeURIComponent(id)}`, userId),
   readNotification: (userId: string, id: number) => request(`notifications/${id}/read`, userId, { method: "POST" }),
 };
