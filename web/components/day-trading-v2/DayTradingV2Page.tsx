@@ -172,10 +172,12 @@ function RegimeResearchResult({ data, robotById }: { data: Record<string, unknow
       const validation = record(fold.validationRegimes) ?? {};
       const baseline = performanceFrom(record(fold.baselineOutOfSample)?.summary);
       const summary = performanceFrom(record(fold.outOfSample)?.summary);
+      const stressed = performanceFrom(record(fold.stressedOutOfSample)?.summary);
       return <section key={index}>
         <h3>窗口 {index + 1}：測試 {Array.isArray(ranges.oos) ? ranges.oos.join(" ～ ") : "—"}</h3>
         <p>訓練：{Array.isArray(ranges.train) ? ranges.train.join(" ～ ") : "—"}；驗證：{Array.isArray(ranges.validation) ? ranges.validation.join(" ～ ") : "—"}</p>
         <p>測試淨損益：{summary ? signedMoney(summary.netPnl) : "—"}（{summary?.tradeCount ?? 0} 筆）；原五策略組合：{baseline ? signedMoney(baseline.netPnl) : "—"}。</p>
+        {stressed && <p>滑價加倍的壓力測試：{signedMoney(stressed.netPnl)}（{stressed.tradeCount} 筆）。此結果未用來重新挑選候選。</p>}
         <div className="dt2-table"><table><thead><tr><th>盤勢</th><th>測試前凍結的選擇</th><th>驗證淨損益／筆數</th><th>測試淨損益／筆數</th></tr></thead><tbody>
           {Object.entries(names).map(([id, name]) => {
             const val = performanceFrom(validation[id]);
@@ -183,8 +185,14 @@ function RegimeResearchResult({ data, robotById }: { data: Record<string, unknow
             return <tr key={id}><td>{name}</td><td>{candidateName(frozen[id])}</td><td>{val ? `${signedMoney(val.netPnl)}／${val.tradeCount} 筆` : "—"}</td><td>{test?.tradeCount ? `${signedMoney(test.netPnl)}／${test.tradeCount} 筆` : "無交易／未證實獲利"}</td></tr>;
           })}
         </tbody></table></div>
-        <details><summary>候選策略訓練結果（不是測試績效）</summary><div className="dt2-table"><table><thead><tr><th>候選</th><th>淨損益</th><th>筆數</th></tr></thead><tbody>
-          {list(fold.trainingTrials).map((trial, i) => { const metrics = performanceFrom(trial.summary); return <tr key={i}><td>{candidateName(trial.candidate)}</td><td>{metrics ? signedMoney(metrics.netPnl) : "—"}</td><td>{metrics?.tradeCount ?? 0}</td></tr>; })}
+        <details><summary>候選策略 × 盤勢訓練結果（不是測試績效）</summary><div className="dt2-table"><table><thead><tr><th>候選</th><th>合計淨損益／筆數</th>{Object.entries(names).map(([id, name]) => <th key={id}>{name}</th>)}</tr></thead><tbody>
+          {list(fold.trainingTrials).map((trial, i) => {
+            const metrics = performanceFrom(trial.summary);
+            const byRegime = record(trial.regimes) ?? {};
+            return <tr key={i}><td>{candidateName(trial.candidate)}</td><td>{metrics ? `${signedMoney(metrics.netPnl)}／${metrics.tradeCount} 筆` : "—"}</td>
+              {Object.keys(names).map((id) => { const metric = performanceFrom(byRegime[id]); const raw = record(byRegime[id]); return <td key={id}>{metric?.tradeCount ? `${signedMoney(metric.netPnl)}／${metric.tradeCount} 筆` : "無交易"}<small>{metric && (metric.tradeCount < 30 || Number(raw?.activeDays ?? 0) < 10) ? "樣本不足" : "僅訓練期統計"}</small></td>; })}
+            </tr>;
+          })}
         </tbody></table></div></details>
       </section>;
     })}
