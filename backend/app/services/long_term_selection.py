@@ -1351,7 +1351,13 @@ class _PortfolioQuote:
 
 async def _yahoo_portfolio_quotes(requests: list[StockQuoteRequest]) -> dict[str, _PortfolioQuote]:
     """Free backup for held-position valuation when the MIS refresh is unavailable."""
-    async with httpx.AsyncClient(timeout=3.0) as client:
+    async with httpx.AsyncClient(
+        timeout=3.0,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
+        },
+    ) as client:
         async def fetch(request: StockQuoteRequest) -> tuple[str, _PortfolioQuote | None]:
             ticker = f"{request.symbol}{'.TWO' if request.market in {'上櫃', 'TPEX', 'OTC'} else '.TW'}"
             for url in YAHOO_QUOTE_URLS:
