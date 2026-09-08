@@ -1423,7 +1423,7 @@ async def portfolio_payload(db: Session, mode: PortfolioMode) -> dict[str, objec
     (quotes, quote_error), (dividend_histories, dividend_error) = await asyncio.gather(
         load_quotes(), load_dividends(),
     )
-    if quote_error is not None:
+    if quote_error is not None and PORTFOLIO_QUOTE_TIMEOUT_SECONDS >= 1:
         yahoo_quotes = await _yahoo_portfolio_quotes(requests[:len(open_positions)])
         if yahoo_quotes:
             quotes = {**quotes, **yahoo_quotes}
