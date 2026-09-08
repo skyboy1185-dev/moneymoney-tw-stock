@@ -55,6 +55,7 @@ YAHOO_QUOTE_URLS = (
     "https://query1.finance.yahoo.com/v8/finance/chart/{ticker}",
     "https://query2.finance.yahoo.com/v8/finance/chart/{ticker}",
 )
+TWSE_DAILY_QUOTES_URL = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
 BENCHMARK_DEFINITIONS = (
     {"symbol": "0050", "name": "元大台灣50", "market": "上市"},
     {"symbol": "00881", "name": "國泰台灣科技龍頭", "market": "上市"},
@@ -1368,6 +1369,22 @@ async def _yahoo_portfolio_quotes(requests: list[StockQuoteRequest]) -> dict[str
     return {symbol: quote for symbol, quote in rows if quote is not None}
 
 
+async def _twse_daily_portfolio_quotes(requests: list[StockQuoteRequest]) -> dict[str, _PortfolioQuote]:
+    wanted = {request.symbol for request in requests}
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            response = await client.get(TWSE_DAILY_QUOTES_URL)
+            response.raise_for_status()
+            rows = response.json()
+        return {
+            str(row["Code"]): _PortfolioQuote(float(str(row["ClosingPrice"]).replace(",", "")))
+            for row in rows if str(row.get("Code")) in wanted
+            and str(row.get("ClosingPrice")) not in {"", "--", "-"}
+        }
+    except (httpx.HTTPError, TypeError, ValueError, KeyError):
+        return {}
+
+
 async def portfolio_payload(db: Session, mode: PortfolioMode) -> dict[str, object]:
     current = datetime.now(UTC)
     current_date = current.astimezone(TAIPEI).date()
@@ -1431,6 +1448,8 @@ async def portfolio_payload(db: Session, mode: PortfolioMode) -> dict[str, objec
     )
     if quote_error is not None and PORTFOLIO_QUOTE_TIMEOUT_SECONDS >= 1:
         yahoo_quotes = await _yahoo_portfolio_quotes(requests[:len(open_positions)])
+        if not yahoo_quotes:
+            yahoo_quotes = await _twse_daily_portfolio_quotes(requests[:len(open_positions)])
         if yahoo_quotes:
             quotes = {**quotes, **yahoo_quotes}
             quote_error = f"{quote_error}_yahoo_fallback"
