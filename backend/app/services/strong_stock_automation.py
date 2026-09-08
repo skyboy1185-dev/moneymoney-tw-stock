@@ -124,7 +124,9 @@ class StrongStockAutomation:
                         scan_config = merged_config(json.loads(settings[0].config_json)) if settings else merged_config()
                     except (TypeError, ValueError):
                         scan_config = merged_config()
-                    scan = scan_and_persist(db, payload, current, scan_config)
+                    # Inputs only become observable after the downloads finish;
+                    # using the poll's start time can falsely place them in the future.
+                    scan = scan_and_persist(db, payload, datetime.now(UTC), scan_config)
                     queued = {uid: queue_paper_orders(db, uid, payload.market.trade_date) for uid in users}
                     for uid in users:
                         snapshot_equity(db, uid, payload.market.trade_date)
