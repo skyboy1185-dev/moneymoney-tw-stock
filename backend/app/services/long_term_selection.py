@@ -1350,11 +1350,18 @@ async def portfolio_payload(db: Session, mode: PortfolioMode) -> dict[str, objec
         LongTermPosition.status == "closed",
     ).order_by(LongTermPosition.exit_time.desc())).all())
     closed_positions = all_closed_positions[:30]
+    # Portfolio gain/loss has priority over the long-horizon comparison table.
+    # A TOP-50 benchmark expands this request to 56 symbols, which can time out
+    # the free MIS feed and leave the three tracked positions at entry price.
+    # The comparison constituents retain their last saved prices until their
+    # scheduled refresh; only holdings and the three market benchmarks are
+    # fetched for the interactive portfolio view.
     requests = [StockQuoteRequest(position.stock_code, position.stock_name, position.market_type) for position in open_positions]
     active_benchmarks = benchmark_definitions(db)
     requests.extend([
         StockQuoteRequest(str(item["symbol"]), str(item["name"]), str(item["market"]))
         for item in active_benchmarks
+        if item.get("benchmarkType") != "ten_year_cagr"
     ])
     dividend_requests = [
         (position.stock_code, position.market_type)

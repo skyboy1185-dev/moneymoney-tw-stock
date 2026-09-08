@@ -195,7 +195,10 @@ def test_top_fifty_cagr_benchmarks_are_merged_into_one_equal_weight_row(monkeypa
     ) for index in range(50)]
     at = datetime(2026, 8, 10, 1, 15, tzinfo=UTC)
 
-    async def no_live_quotes(_requests):
+    live_quote_requests: list[list[str]] = []
+
+    async def no_live_quotes(requests):
+        live_quote_requests.append([request.symbol for request in requests])
         return {}
 
     async def no_cash_dividends(requests):
@@ -226,6 +229,8 @@ def test_top_fifty_cagr_benchmarks_are_merged_into_one_equal_weight_row(monkeypa
     assert group["constituents"][0]["allocationWeightPercent"] == 2
     assert group["cumulativeReturnPercent"] == 0
     assert group["annualizedReturn10Year"] == 25.5
+    assert len(live_quote_requests) == 1
+    assert all(candidate.symbol not in live_quote_requests[0] for candidate in candidates)
 
 
 def test_focused_long_ranking_keeps_three_long_positions() -> None:
