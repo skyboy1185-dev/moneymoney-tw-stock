@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Activity, Bell, Bot, CircleDollarSign, Clock3, History, OctagonX, Pause, Play, RefreshCw, Settings, ShieldAlert, SlidersHorizontal, Square, WalletCards } from "lucide-react";
-import type { Dashboard, Performance, RegimePerformance, RegimePerformanceRow, TradingMode } from "@/lib/day-trading-v2-types";
+import type { Dashboard, NotificationItem, Performance, RegimePerformance, RegimePerformanceRow, TradingMode } from "@/lib/day-trading-v2-types";
 import { dayTradingV2Client } from "@/services/day-trading-v2-client";
+import { v2Headline, v2QuoteLabel, v2SourceLabel, v2SourceStatus } from "@/lib/day-trading-v2-status";
 
 type Section = "overview" | "controller" | "optimization" | "robots" | "positions" | "trades" | "backtest" | "performance" | "notifications" | "risk" | "settings";
 
@@ -209,7 +210,8 @@ function RegimePerformancePanel({ data }: { data: RegimePerformance }) {
 export function DayTradingV2Page({ userId }: { userId: string }) {
   const [section, setSection] = useState<Section>("overview");
   const [data, setData] = useState<Dashboard | null>(null);
-  const [notifications, setNotifications] = useState<{ unread: number; items: Array<{ id: number; title: string; message: string; mode: TradingMode; createdAt: string }> }>({ unread: 0, items: [] });
+  const [notifications, setNotifications] = useState<{ unread: number; items: NotificationItem[] }>({ unread: 0, items: [] });
+  const [notificationError, setNotificationError] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -241,16 +243,15 @@ export function DayTradingV2Page({ userId }: { userId: string }) {
   const [endDate, setEndDate] = useState(today);
 
   const load = useCallback(async (quiet = false) => {
+    if (!userId) return;
     if (!quiet) setLoading(true);
     try {
-      const [dashboard, noteData, backtestData, presetData] = await Promise.all([
+      const [dashboard, backtestData, presetData] = await Promise.all([
         dayTradingV2Client.dashboard(userId),
-        dayTradingV2Client.notifications(userId),
         dayTradingV2Client.backtests(userId).catch(() => ({ items: [] as Array<Record<string, unknown>> })),
         dayTradingV2Client.backtestPresets(userId).catch(() => null),
       ]);
       setData(dashboard);
-      setNotifications(noteData);
       setBacktestHistory(backtestData.items);
       if (presetData) setBacktestPresets(presetData);
       setError("");
@@ -261,11 +262,32 @@ export function DayTradingV2Page({ userId }: { userId: string }) {
     }
   }, [userId]);
 
+  const loadNotifications = useCallback(async () => {
+    if (!userId) return;
+    try {
+      setNotifications(await dayTradingV2Client.notifications(userId));
+      setNotificationError("");
+    } catch (caught) {
+      setNotificationError(caught instanceof Error ? caught.message : "讀取通知失敗");
+    }
+  }, [userId]);
+
   useEffect(() => {
     void load();
     const timer = window.setInterval(() => { void load(true); }, 10_000);
     return () => window.clearInterval(timer);
   }, [load, userId]);
+
+  useEffect(() => {
+    void loadNotifications();
+    const timer = window.setInterval(() => { void loadNotifications(); }, 10_000);
+    const resume = () => { if (document.visibilityState === "visible") void loadNotifications(); };
+    document.addEventListener("visibilitychange", resume);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", resume);
+    };
+  }, [loadNotifications]);
 
   useEffect(() => {
     if (!backtestJobId) return;
@@ -313,7 +335,7 @@ export function DayTradingV2Page({ userId }: { userId: string }) {
 
   async function run(action: () => Promise<unknown>, success: string) {
     setBusy(true); setError(""); setNotice("");
-    try { await action(); setNotice(success); await load(true); }
+    try { await action(); setNotice(success); await Promise.all([load(true), loadNotifications()]); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "操作失敗"); }
     finally { setBusy(false); }
   }
@@ -359,8 +381,17 @@ export function DayTradingV2Page({ userId }: { userId: string }) {
     }
   }
 
-  if (loading && !data) return <div className="dt2-loading"><span className="spinner" /><p>正在載入超強AI當沖系統…</p></div>;
-  if (!data) return <div className="error-banner">{error || "系統資料暫時無法使用"}</div>;
+  if (loading && !data && !notifications.items.length) return <div className="dt2-loading"><span className="spinner" /><p>正在載入當沖機器人2…</p></div>;
+  if (!data) return <section className="dt2-page">
+    <header className="dt2-hero"><h1>當沖機器人2</h1></header>
+    {loading ? <p role="status">交易總覽載入中，通知持續更新。</p>
+      : <div className="error-banner">{error || "系統資料暫時無法使用"}</div>}
+    {notificationError && <div className="error-banner">{notificationError}</div>}
+    <article className="dt2-panel"><header><Bell size={17} /><strong>當沖機器人2通知</strong></header>
+      {notifications.items.map((item) => <div className="dt2-event full" key={item.id}><ModeBadge mode={item.mode} /><div><b>{item.title}</b><small>{item.message}</small></div><time>{dateTime(item.createdAt)}</time></div>)}
+      {!notifications.items.length && <p className="dt2-empty">目前沒有通知</p>}
+    </article>
+  </section>;
 
   const config = data.config;
   const settingsFields: Array<[string, string, string]> = [
@@ -405,16 +436,16 @@ export function DayTradingV2Page({ userId }: { userId: string }) {
 
   return <section className="dt2-page">
     <header className="dt2-hero">
-      <div><span className="section-kicker">當沖機器人2</span><h1>超強AI當沖系統</h1><p>五台純做多機器人，共用3,000,000元。回測、模擬與真實交易資料完全分開。</p></div>
+      <div><span className="section-kicker">當沖機器人2</span><h1>當沖機器人2</h1><p>五台純做多機器人，共用3,000,000元。回測、模擬與真實交易資料完全分開。</p></div>
       <div className="dt2-hero-actions">
         <ModeBadge mode={data.mode} />
-        <span className={`dt2-status ${data.systemStatus.toLowerCase()}`}>{data.systemStatus === "NORMAL" ? "系統正常" : data.systemStatus === "REDUCED" ? "風險減半" : "系統停機"}</span>
+        <span className={`dt2-status ${data.systemStatus.toLowerCase()}`}>{v2Headline(data.systemStatus, data.runtime)}</span>
         <button onClick={() => void load()} disabled={busy}><RefreshCw size={15} />重新整理</button>
       </div>
     </header>
 
     <div className="dt2-source-bar">
-      <span><Activity size={15} />即時行情：{data.marketData.realtime}</span>
+      <span><Activity size={15} />即時行情：{v2SourceLabel(data.runtime, data.marketData.realtime)}</span>
       <span className={data.marketData.backtestReady ? "ok" : "warn"}><History size={15} />歷史分鐘資料：{data.marketData.historicalMinute ?? "未設定"}</span>
       <span className="warn"><ShieldAlert size={15} />真實下單：{data.liveTrading.reason}</span>
     </div>
@@ -423,12 +454,24 @@ export function DayTradingV2Page({ userId }: { userId: string }) {
       <div className="dt2-runtime-head"><Activity size={17} /><strong>背景交易系統</strong><span className={data.runtime.running ? "ok" : "warn"}>{data.runtime.status}｜{data.runtime.phase}</span></div>
       <div className="dt2-runtime-grid">
         <span>執行：<b>{data.runtime.running ? "是" : "否"}</b></span><span>初始化：<b>{data.runtime.initialized ? "完成" : "尚未"}</b></span>
-        <span>行情：<b>{data.runtime.receivingQuotes ? "接收中" : "未接收"}</b></span><span>掃描：<b>{data.runtime.scanning ? "執行中" : "未執行"}</b></span>
+        <span>行情：<b>{v2QuoteLabel(data.runtime)}</b></span><span>掃描：<b>{data.runtime.scanning ? "執行中" : "未執行"}</b></span>
         <span>允許下單：<b>{data.runtime.orderAllowed ? "是" : "否"}</b></span><span>模式：<b>{data.mode === "PAPER" ? "模擬交易" : data.mode}</b></span>
         <span>最近心跳：<b>{dateTime(data.runtime.heartbeatAt)}</b></span><span>最近行情：<b>{dateTime(data.runtime.lastQuoteAt)}</b></span>
         <span>最近掃描：<b>{dateTime(data.runtime.lastScanAt)}</b></span><span>下一次掃描：<b>{dateTime(data.runtime.nextScanAt)}</b></span>
-        <span>下一排程：<b>{data.runtime.nextEventType || "—"} {dateTime(data.runtime.nextEventAt)}</b></span><span>最近錯誤：<b>{data.runtime.latestError || "無"}</b></span>
+        <span>下一排程：<b>{data.runtime.nextEventType || "—"} {dateTime(data.runtime.nextEventAt)}</b></span><span>執行異常：<b>{(data.runtime.executionError ?? data.runtime.latestError) || "無"}</b></span>
+        <span>行情說明：<b>{data.runtime.dataReason || "無"}</b></span>
+        {data.runtime.quoteHealth && <><span>新鮮報價：<b>{data.runtime.quoteHealth.freshCount}/{data.runtime.quoteHealth.trackedCount}</b></span><span>最近接收：<b>{dateTime(data.runtime.quoteHealth.lastReceivedAt)}</b></span><span>追蹤容量：<b>{data.runtime.quoteHealth.overCapacity ? "超過容量，部分股票等待更新" : "正常"}</b></span></>}
+        {v2SourceStatus(data.runtime) && <span>來源狀態：<b>{v2SourceStatus(data.runtime)}</b></span>}
       </div>
+      {data.runtime.quoteHealth?.providerMode && <details className="dt2-quote-details">
+        <summary>行情連線詳細資料</summary>
+        <div className="dt2-runtime-grid">
+          <span>串流訂閱：<b>{data.runtime.quoteHealth.subscriptionCount ?? 0}/{data.runtime.quoteHealth.subscriptionLimit ?? "—"}</b></span>
+          <span>重新連線：<b>{data.runtime.quoteHealth.reconnectAttempts ?? 0} 次</b></span>
+          <span>來源切換：<b>{data.runtime.quoteHealth.sourceSwitchCount ?? 0} 次</b></span>
+          <span>最近切換：<b>{dateTime(data.runtime.quoteHealth.lastSourceSwitchAt)}</b></span>
+        </div>
+      </details>}
       <div className="dt2-runtime-actions">
         <button disabled={busy} onClick={() => void run(() => dayTradingV2Client.startToday(userId), "今日背景交易系統已啟動")}><Play size={14} />今日啟動</button>
         <button disabled={busy} onClick={() => void run(() => dayTradingV2Client.pause(userId), "已暫停建立新部位")}><Pause size={14} />暫停新交易</button>
@@ -442,6 +485,7 @@ export function DayTradingV2Page({ userId }: { userId: string }) {
     </nav>
     {error && <div className="error-banner" role="alert">{error}</div>}
     {notice && <div className="dt2-notice">{notice}</div>}
+    {notificationError && <div className="error-banner">{notificationError}</div>}
 
     {section === "overview" && <>
       <div className="dt2-metric-grid">

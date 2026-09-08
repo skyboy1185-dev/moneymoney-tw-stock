@@ -33,7 +33,7 @@ TAIPEI = ZoneInfo("Asia/Taipei")
 class StrongStockAutomation:
     def __init__(self) -> None:
         self._task: asyncio.Task[None] | None = None
-        self._last_intraday_minute: tuple[object, int] | None = None
+        self._last_intraday_quote_at: datetime | None = None
         self._last_close_attempt_at: datetime | None = None
         self._state: dict[str, object] = {
             "status": "stopped", "lastRunAt": None, "lastSuccessAt": None,
@@ -126,8 +126,12 @@ class StrongStockAutomation:
                 result = {"status": "completed", **scan, "queued": queued}
                 await self._dispatch_email()
         elif time(9, 0) <= local.time() <= time(13, 30):
-            minute_key = (local.date(), local.hour * 60 + local.minute)
-            if not force and self._last_intraday_minute == minute_key:
+            quote_poll_seconds = max(2.0, get_settings().strong_stock_quote_poll_seconds)
+            quote_age_seconds = (
+                (current - self._last_intraday_quote_at).total_seconds()
+                if self._last_intraday_quote_at is not None else quote_poll_seconds
+            )
+            if not force and quote_age_seconds < quote_poll_seconds:
                 result = {"status": "intraday_wait"}
             else:
                 from .strong_stock import dec
@@ -148,7 +152,7 @@ class StrongStockAutomation:
                 with SessionLocal() as db:
                     fills = {uid: fill_pending_orders(db, uid, decimal_prices, local) for uid in users}
                     exits = {uid: monitor_positions(db, uid, decimal_prices, local) for uid in users}
-                self._last_intraday_minute = minute_key
+                self._last_intraday_quote_at = current
                 result = {"status": "intraday_monitor", "users": len(users), "fills": fills, "exits": exits}
         else:
             result = {"status": "waiting_schedule", "next": "09:00持倉監控／14:30盤後資料檢查"}

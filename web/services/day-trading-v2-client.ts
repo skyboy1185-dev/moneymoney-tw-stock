@@ -2,6 +2,13 @@ import type { Dashboard, NotificationItem, RegimePerformance, TradingMode } from
 
 const base = "/api/day-trading-v2";
 
+export class DayTradingV2RequestError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message);
+    this.name = "DayTradingV2RequestError";
+  }
+}
+
 async function request<T>(path: string, userId: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${base}/${path}`, {
     ...init,
@@ -10,7 +17,7 @@ async function request<T>(path: string, userId: string, init?: RequestInit): Pro
     cache: "no-store",
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.detail ?? payload.error ?? "當沖機器人2服務暫時無法使用");
+  if (!response.ok) throw new DayTradingV2RequestError(payload.detail ?? payload.error ?? "當沖機器人2服務暫時無法使用", response.status);
   return payload as T;
 }
 

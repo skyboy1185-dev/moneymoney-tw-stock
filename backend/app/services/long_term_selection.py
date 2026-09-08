@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 import json
+import logging
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -38,12 +39,17 @@ MINIMUM_HOLDING_TRADING_DAYS = 5
 SIMULATION_CAPITAL = 1_000_000.0
 LONG_TERM_MAX_ENTRY_PREMIUM_PCT = 3.0
 LONG_TERM_MAX_LIVE_QUOTE_AGE_SECONDS = 300
+# Rendering the portfolio must not wait for a troubled market-data upstream.
+# Stored position and benchmark prices remain an honest, useful fallback.
+PORTFOLIO_QUOTE_TIMEOUT_SECONDS = 3.0
+PORTFOLIO_DIVIDEND_TIMEOUT_SECONDS = 4.0
 PortfolioMode = Literal["long_only", "focused_long"]
 Direction = Literal["long", "short"]
 MODE_TARGET_COUNTS: dict[str, int] = {"long_only": PORTFOLIO_SIZE, "focused_long": FOCUSED_PORTFOLIO_SIZE}
 SYNC_DUPLICATE_STATUS = "cancelled_duplicate"
 SKIPPED_UNFILLED_STATUS = "skipped_unfilled"
 TAIPEI = ZoneInfo("Asia/Taipei")
+logger = logging.getLogger(__name__)
 BENCHMARK_DEFINITIONS = (
     {"symbol": "0050", "name": "元大台灣50", "market": "上市"},
     {"symbol": "00881", "name": "國泰台灣科技龍頭", "market": "上市"},
@@ -800,6 +806,13 @@ def run_long_term_selection(
             latest = prices.get(position.stock_code)
             if latest is not None:
                 position.last_price = _decimal(latest)
+                # The API can calculate a newer intraday return, but the
+                # persisted position must record the daily gain/loss as well.
+                # This is also the value used when the UI falls back to the
+                # last stored market price.
+                position.actual_return_pct = _decimal(actual_return_percent(
+                    float(position.entry_price), latest, position.direction,
+                ))
             latest_stock = stocks_by_code.get(position.stock_code)
             latest_pick: LongTermPick | None = None
             if latest_stock is not None:
@@ -1350,9 +1363,39 @@ async def portfolio_payload(db: Session, mode: PortfolioMode) -> dict[str, objec
     dividend_requests.extend(
         (str(item["symbol"]), str(item["market"])) for item in active_benchmarks
     )
-    quotes, dividend_histories = await asyncio.gather(
-        official_market_data_provider.get_quotes(requests),
-        long_term_dividend_provider.get_histories(dividend_requests),
+    async def load_quotes() -> tuple[dict[str, object], str | None]:
+        try:
+            return await asyncio.wait_for(
+                official_market_data_provider.get_quotes(requests),
+                timeout=PORTFOLIO_QUOTE_TIMEOUT_SECONDS,
+            ), None
+        except asyncio.TimeoutError:
+            logger.warning("Long-term portfolio quote refresh timed out after %ss", PORTFOLIO_QUOTE_TIMEOUT_SECONDS)
+            return {}, "timeout"
+        except Exception:
+            logger.exception("Long-term portfolio quote refresh failed")
+            return {}, "unavailable"
+
+    async def load_dividends() -> tuple[dict[str, DividendHistory], str | None]:
+        try:
+            return await asyncio.wait_for(
+                long_term_dividend_provider.get_histories(dividend_requests),
+                timeout=PORTFOLIO_DIVIDEND_TIMEOUT_SECONDS,
+            ), None
+        except asyncio.TimeoutError:
+            logger.warning("Long-term portfolio dividend refresh timed out after %ss", PORTFOLIO_DIVIDEND_TIMEOUT_SECONDS)
+            return {}, "timeout"
+        except Exception:
+            logger.exception("Long-term portfolio dividend refresh failed")
+            return {}, "unavailable"
+
+    (quotes, quote_error), (dividend_histories, dividend_error) = await asyncio.gather(
+        load_quotes(), load_dividends(),
+    )
+    quote_received_count = sum(request.symbol in quotes for request in requests)
+    quote_status = (
+        "current" if quote_received_count == len(requests)
+        else "partial" if quote_received_count else "stored"
     )
     items = [
         _position_payload(
@@ -1727,6 +1770,13 @@ async def portfolio_payload(db: Session, mode: PortfolioMode) -> dict[str, objec
             "availableCount": sum(history.available for history in dividend_histories.values()),
             "requestedCount": len(dividend_histories),
             "methodology": "除息日須晚於模擬買進日且不晚於賣出／目前日期；依每股配息乘以實際模擬股數計入，未假設股息再投入。",
+        },
+        "quoteData": {
+            "status": quote_status,
+            "receivedCount": quote_received_count,
+            "requestedCount": len(requests),
+            "fallbackReason": quote_error,
+            "dividendFallbackReason": dividend_error,
         },
         "updatedAt": current.isoformat(),
     }

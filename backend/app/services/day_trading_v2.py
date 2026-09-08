@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 TAIPEI = ZoneInfo("Asia/Taipei")
 ZERO = Decimal("0")
 CENT = Decimal("0.01")
-BACKTEST_ENGINE_VERSION = "3.1.1"
+BACKTEST_ENGINE_VERSION = "3.2.0"
 
 STRATEGIES = (
     ("OPENING_RANGE_BREAKOUT", "開盤15分鐘區間突破", Decimal("750000")),
@@ -225,9 +225,8 @@ def run_backtest(
             trading_days.add(day)
             previous_high = max((bar.high for bar in previous_bars), default=None) if previous_bars else None
             previous_low = min((bar.low for bar in previous_bars), default=None) if previous_bars else None
-            for index in range(15, len(bars) - 1):
+            for index in range(15, len(bars)):
                 signal_time = bars[index].timestamp
-                fill_bar = bars[index + 1]
                 evaluation_filter = None if strategy_id == "ALL" else {strategy_id}
                 for signal in evaluate_strategies(
                     bars[:index + 1], previous_high=previous_high, previous_low=previous_low,
@@ -236,7 +235,7 @@ def run_backtest(
                     if signal.strategy_id in enabled:
                         candidates.append({
                             "signalTime": signal_time, "symbol": symbol, "signal": signal,
-                            "fillBar": fill_bar, "dayBars": bars, "fillIndex": index + 1,
+                            "dayBars": bars, "fillIndex": index + 1,
                         })
             previous_bars = bars
 
@@ -245,45 +244,10 @@ def run_backtest(
         signal_time = row["signalTime"]
         symbol = str(row["symbol"])
         signal = row["signal"]
-        fill_bar = row["fillBar"]
-        day_bars = row["dayBars"]
-        fill_index = int(row["fillIndex"])
         assert isinstance(signal_time, datetime) and isinstance(signal, StrategySignal)
-        assert isinstance(fill_bar, MinuteBar) and isinstance(day_bars, Sequence)
         if signal.confidence < dec(cfg["minimumConfidence"]):
             skip("CONFIDENCE_BELOW_MINIMUM")
             continue
-        if taipei_time(fill_bar.timestamp) >= latest_entry:
-            skip("AFTER_LATEST_ENTRY_TIME")
-            continue
-        entry = fill_bar.open
-        chase_pct = (entry - signal.entry_price) / signal.entry_price * 100 if signal.entry_price else Decimal("999")
-        if chase_pct > dec(cfg["maximumFillChasePct"]):
-            skip("NEXT_BAR_CHASE_TOO_LARGE")
-            continue
-        if entry <= signal.stop_price or signal.target_price <= entry:
-            skip("INVALID_LEVELS_AFTER_FILL")
-            continue
-        actual_rr = (signal.target_price - entry) / (entry - signal.stop_price)
-        required_rr = max(
-            dec(cfg["minimumRiskReward"]),
-            dec(cfg["controllerMinimumRiskReward"]) if apply_controller else ZERO,
-        )
-        if actual_rr < required_rr:
-            skip("RISK_REWARD_BELOW_MINIMUM_AFTER_FILL")
-            continue
-        future = [bar for bar in day_bars[fill_index:] if taipei_time(bar.timestamp) <= force_close]
-        close_candidates = [
-            bar for bar in day_bars[fill_index:]
-            if force_close <= taipei_time(bar.timestamp) <= market_close
-        ]
-        if not future or not close_candidates:
-            skip("FORCED_CLOSE_MINUTE_MISSING")
-            continue
-        row["entry"] = entry
-        row["actualRiskReward"] = actual_rr
-        row["future"] = future
-        row["forceCloseBar"] = close_candidates[0]
         regime = regime_map.get(signal_time, REGIME_MILD if not has_verified_regimes else REGIME_UNKNOWN)
         risk_reward = ((signal.target_price - signal.entry_price) /
                        (signal.entry_price - signal.stop_price))
@@ -335,11 +299,10 @@ def run_backtest(
         signal_time = row["signalTime"]
         symbol = str(row["symbol"])
         signal = row["signal"]
-        fill_bar = row["fillBar"]
         day_bars = row["dayBars"]
         fill_index = int(row["fillIndex"])
         assert isinstance(signal_time, datetime) and isinstance(signal, StrategySignal)
-        assert isinstance(fill_bar, MinuteBar) and isinstance(day_bars, Sequence)
+        assert isinstance(day_bars, Sequence)
         day = taipei_date(signal_time)
 
         still_active: list[dict[str, object]] = []
@@ -376,11 +339,40 @@ def run_backtest(
         if regime_risk <= 0:
             skip("MARKET_REGIME_BLOCKED")
             continue
-        entry = dec(row["entry"])
-        actual_rr = dec(row["actualRiskReward"])
-        future = row["future"]
-        exit_bar = row["forceCloseBar"]
-        assert isinstance(future, Sequence) and isinstance(exit_bar, MinuteBar)
+        # Fix the decision before inspecting any future prices or data coverage.
+        # A failed fill cancels this winner; it cannot promote a lower-ranked row.
+        if fill_index >= len(day_bars):
+            skip("NEXT_BAR_MISSING")
+            continue
+        fill_bar = day_bars[fill_index]
+        if taipei_time(fill_bar.timestamp) >= latest_entry:
+            skip("AFTER_LATEST_ENTRY_TIME")
+            continue
+        entry = fill_bar.open
+        chase_pct = (entry - signal.entry_price) / signal.entry_price * 100 if signal.entry_price else Decimal("999")
+        if chase_pct > dec(cfg["maximumFillChasePct"]):
+            skip("NEXT_BAR_CHASE_TOO_LARGE")
+            continue
+        if entry <= signal.stop_price or signal.target_price <= entry:
+            skip("INVALID_LEVELS_AFTER_FILL")
+            continue
+        actual_rr = (signal.target_price - entry) / (entry - signal.stop_price)
+        required_rr = max(
+            dec(cfg["minimumRiskReward"]),
+            dec(cfg["controllerMinimumRiskReward"]) if apply_controller else ZERO,
+        )
+        if actual_rr < required_rr:
+            skip("RISK_REWARD_BELOW_MINIMUM_AFTER_FILL")
+            continue
+        future = [bar for bar in day_bars[fill_index:] if taipei_time(bar.timestamp) <= force_close]
+        close_candidates = [
+            bar for bar in day_bars[fill_index:]
+            if force_close <= taipei_time(bar.timestamp) <= market_close
+        ]
+        if not future or not close_candidates:
+            skip("FORCED_CLOSE_MINUTE_MISSING")
+            continue
+        exit_bar = close_candidates[0]
         exit_reason = "FORCED_CLOSE"
         for bar in future:
             if bar.low <= signal.stop_price:

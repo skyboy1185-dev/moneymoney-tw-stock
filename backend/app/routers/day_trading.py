@@ -38,6 +38,7 @@ from ..services.chip_flow_alerts import (
 )
 from ..services.chip_flow_repository import ChipFlowRepository
 from ..services.day_trading_cache import day_trading_cache
+from ..services.quote_quality import TRUSTED_SOURCES
 from ..services.day_trading_candidate_snapshots import replay_candidate_snapshots
 from ..services.day_trading_restrictions import day_trading_restrictions
 from ..services.day_trading_strategies import (
@@ -1294,7 +1295,7 @@ async def trigger_scenario(
             item["id"] = f"simulation-friday-{nonce}-{item['symbol']}"
             item["generatedAt"] = (simulated_at - timedelta(seconds=20 + index * 8)).isoformat()
             item["expiresAt"] = (simulated_at + timedelta(minutes=5 + index)).isoformat()
-            if item.get("dataSource") == "TWSE MIS":
+            if item.get("dataSource") in TRUSTED_SOURCES:
                 item["dataMode"] = "official_quote_demo_strategy"
                 item["warnings"] = [
                     "行情為最近有效官方報價；開盤情境與策略條件為模擬",

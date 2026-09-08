@@ -491,8 +491,8 @@ def test_day_trading_quote_warmup_survives_a_process_restart() -> None:
 
     assert restored_count == 12
     assert restored.sample_count == 12
-    assert restored.quote_for("2317") is not None
-    assert restored.quote_for("2317").price == 255.5
+    assert restored.quote_for("2317") == 255.5
+    assert restored.official_quotes_snapshot(["2317"])["2317"].price == 255.5
 
 
 def test_day_trading_long_signal_blocks_chasing_after_seven_percent_gain() -> None:

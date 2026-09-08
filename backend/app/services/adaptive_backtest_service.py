@@ -61,8 +61,9 @@ def run_backtest(request: AdaptiveBacktestRequest) -> dict:
     if len(prices) < 80:
         raise ValueError("回測至少需要 80 個交易日")
     effective_cost = request.commission_rate * request.commission_discount
-    buy_cost = effective_cost + request.slippage_rate
-    sell_cost = effective_cost + request.tax_rate + request.slippage_rate
+    # Entry and exit prices already include slippage on each side.
+    buy_cost = effective_cost
+    sell_cost = effective_cost + request.tax_rate
     trades: list[Trade] = []
     equity = 1.0
     curve = [equity]

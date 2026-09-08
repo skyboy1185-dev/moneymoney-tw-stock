@@ -63,11 +63,11 @@ def test_legacy_portfolio_backtest_gets_five_strategy_summaries():
 
 def test_superseded_engine_result_is_not_presented_as_validated():
     result = _enrich_backtest_result({
-        "engineVersion": "3.0.0", "validationStatus": "VALIDATED",
+        "engineVersion": "3.1.1", "validationStatus": "VALIDATED",
         "summary": {"initialCapital": "3000000"}, "trades": [],
     })
     assert result["validationStatus"] == "SUPERSEDED_UNVERIFIED"
-    assert "3.1.1" in result["validationWarning"]
+    assert "3.2.0" in result["validationWarning"]
 
 
 def test_fugle_minute_client_keeps_timezone_and_converts_equity_lots_to_shares():
@@ -99,6 +99,32 @@ def test_fugle_auth_failure_is_actionable_and_never_falls_back_to_daily_bars():
         asyncio.run(client.fetch("2330", date(2026, 8, 3), date(2026, 8, 3)))
     assert caught.value.code == "FUGLE_AUTH_FAILED"
     assert caught.value.status == "FAILED"
+
+
+def test_fugle_history_and_index_discovery_share_low_priority_budget():
+    events = []
+
+    class Budget:
+        async def acquire(self, *, priority):
+            events.append(("acquire", priority))
+
+        async def observe_response(self, status_code, headers):
+            events.append(("observe", status_code, headers["x-ratelimit-limit"]))
+
+    def handler(request):
+        events.append(("request", request.url.path))
+        return httpx.Response(200, headers={"x-ratelimit-limit": "600"}, json={"data": []})
+
+    client = FugleHistoricalMinuteClient(
+        "test-key", base_url="https://example.test", minimum_interval_seconds=0,
+        transport=httpx.MockTransport(handler), budget=Budget(),
+    )
+    asyncio.run(client.fetch("2330", date(2026, 8, 3), date(2026, 8, 3)))
+    asyncio.run(client.resolve_weighted_index_symbol())
+    assert events == [
+        ("acquire", "metadata"), ("request", "/stock/historical/candles/2330"), ("observe", 200, "600"),
+        ("acquire", "metadata"), ("request", "/stock/intraday/tickers"), ("observe", 200, "600"),
+    ]
 
 
 def _bar(day: date, price: str, volume: int = 1000) -> HistoricalMinuteCandle:
@@ -198,7 +224,7 @@ def test_stale_running_job_reuses_its_persisted_dataset(monkeypatch):
 
     monkeypatch.setattr(backtest_service, "load_dataset", lambda *_args: ({}, {}, {}, {"rowCount": 241}))
     monkeypatch.setattr(backtest_service, "execute_backtest", lambda *_args, **_kwargs: {
-        "engineVersion": "3.1.1", "validationStatus": "VALIDATED", "summary": {}, "trades": [],
+        "engineVersion": "3.2.0", "validationStatus": "VALIDATED", "summary": {}, "trades": [],
     })
 
     async def should_not_download(_request):

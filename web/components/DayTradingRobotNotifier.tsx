@@ -1,15 +1,18 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Bot, CircleDollarSign, ShieldAlert, TrendingDown, TrendingUp, X } from "lucide-react";
 import { usePathname } from "next/navigation";
 import type { DayTradingAlert, DayTradingSignal, TradingAutomationState } from "@/lib/day-trading-types";
 import type { LongTermTradeMessage } from "@/lib/long-term-types";
 import type { RocketNotification } from "@/lib/rocket-radar-types";
+import { getBrowserUserId } from "@/lib/browser-user-id";
+import { selectDayTradingV2Notifications } from "@/lib/day-trading-v2-notifications";
+import { dayTradingV2Client, DayTradingV2RequestError } from "@/services/day-trading-v2-client";
 
 const AUTOMATION_USER_ID = "system-automation";
 const STORAGE_KEY = "day-trading-robot-web-notifications";
-type RobotTarget = "day-trading" | "adaptive-electronic" | "rocket-radar" | "long-term";
+type RobotTarget = "day-trading-v2" | "day-trading" | "adaptive-electronic" | "rocket-radar" | "long-term";
 
 type RobotToastKind = "activation" | "buy" | "short" | "reduce" | "sell" | "cover" | "stop" | "skip";
 
@@ -137,8 +140,23 @@ function ToastIcon({ kind }: { kind: RobotToastKind }) {
 export function DayTradingRobotNotifier({ onOpen }: { onOpen?: (target: RobotTarget) => void }) {
   const pathname = usePathname();
   const [toasts, setToasts] = useState<RobotToast[]>([]);
+  const [loginExpired, setLoginExpired] = useState(false);
   const seenEvents = useRef(new Set<string>());
   const timers = useRef<number[]>([]);
+
+  const show = useCallback((items: RobotToast[]) => {
+    const fresh = items.filter((item) => !seenEvents.current.has(item.id));
+    if (!fresh.length) return;
+    fresh.forEach((item) => seenEvents.current.add(item.id));
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(Array.from(seenEvents.current).slice(-300))); } catch { /* storage is optional */ }
+    setToasts((current) => [...fresh, ...current].slice(0, 8));
+    fresh.forEach((item) => {
+      const duration = item.kind === "activation" ? 8_000 : item.kind === "stop" ? 15_000 : 12_000;
+      timers.current.push(window.setTimeout(() => {
+        setToasts((current) => current.filter((toast) => toast.id !== item.id));
+      }, duration));
+    });
+  }, []);
 
   useEffect(() => {
     if (pathname === "/login") return;
@@ -148,25 +166,6 @@ export function DayTradingRobotNotifier({ onOpen }: { onOpen?: (target: RobotTar
     } catch { /* start with an empty browser-local deduplication set */ }
 
     let stopped = false;
-
-    const remember = (ids: string[]) => {
-      ids.forEach((id) => seenEvents.current.add(id));
-      const recent = Array.from(seenEvents.current).slice(-300);
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(recent)); } catch { /* storage is optional */ }
-    };
-
-    const show = (items: RobotToast[]) => {
-      const fresh = items.filter((item) => !seenEvents.current.has(item.id));
-      if (!fresh.length) return;
-      remember(fresh.map((item) => item.id));
-      setToasts((current) => [...fresh, ...current].slice(0, 8));
-      fresh.forEach((item) => {
-        const duration = item.kind === "activation" ? 8_000 : item.kind === "stop" ? 15_000 : 12_000;
-        timers.current.push(window.setTimeout(() => {
-          setToasts((current) => current.filter((toast) => toast.id !== item.id));
-        }, duration));
-      });
-    };
 
     const load = async () => {
       if (document.visibilityState === "hidden") return;
@@ -371,10 +370,52 @@ export function DayTradingRobotNotifier({ onOpen }: { onOpen?: (target: RobotTar
       timers.current.forEach((toastTimer) => window.clearTimeout(toastTimer));
       timers.current = [];
     };
-  }, [pathname]);
+  }, [pathname, show]);
 
-  if (!toasts.length) return null;
+  useEffect(() => {
+    if (pathname === "/login") return;
+    let stopped = false;
+    let loading = false;
+    const load = async () => {
+      if (loading || document.visibilityState === "hidden") return;
+      loading = true;
+      try {
+        const userId = getBrowserUserId();
+        const payload = await dayTradingV2Client.notifications(userId);
+        if (stopped) return;
+        setLoginExpired(false);
+        if (document.hidden) return;
+        show(selectDayTradingV2Notifications(payload, userId).map((item) => ({
+          id: item.key, kind: item.kind, target: "day-trading-v2",
+          title: item.title, stock: "當沖機器人2｜模擬交易", message: item.message,
+          reason: "", timestamp: item.createdAt,
+        })));
+      } catch (error) {
+        if (!stopped && error instanceof DayTradingV2RequestError && error.status === 401) setLoginExpired(true);
+      } finally {
+        loading = false;
+      }
+    };
+    const resume = () => { if (document.visibilityState === "visible") void load(); };
+    void load();
+    const timer = window.setInterval(() => void load(), 10_000);
+    document.addEventListener("visibilitychange", resume);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", resume);
+    };
+  }, [pathname, show]);
+
+  if (pathname === "/login" || (!toasts.length && !loginExpired)) return null;
   return <div className="day-bot-toast-stack" aria-live="assertive">
+    {loginExpired && <article className="day-bot-toast stop" role="alert">
+      <button className="day-bot-toast-body" type="button" onClick={() => {
+        window.location.assign(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
+      }}>
+        <span><ShieldAlert /></span><div><strong>登入已逾時，畫面通知已暫停</strong><p>請重新登入以恢復當沖機器人2通知。</p><h4>重新登入</h4></div>
+      </button>
+    </article>}
     {toasts.map((item) => <article className={`day-bot-toast ${item.kind} ${item.target}`} key={item.id} role="alert">
       <button className="day-bot-toast-body" type="button" onClick={() => {
         if (onOpen) onOpen(item.target);

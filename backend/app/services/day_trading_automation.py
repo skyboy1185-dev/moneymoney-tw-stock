@@ -1,16 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
 from datetime import UTC, date, datetime, timedelta
 import logging
 from typing import Any, Iterable
 
-from sqlalchemy import func, select, text
-
 from ..config import get_settings
 from ..database import BackgroundSessionLocal as SessionLocal
-from ..models import DayTradingPosition
 from .automated_position_tracker import (
     AUTOMATION_USER_IDS,
     ensure_positions_for_official_recommendations,
@@ -39,7 +35,10 @@ from .day_trading_schedule import (
     trading_session_state,
 )
 from .line_messaging import line_notification_dispatcher
-from .official_market_data import StockQuoteRequest, official_market_data_provider
+from .official_market_data import StockQuoteRequest
+from .day_trading_quote_pump import day_trading_quote_pump
+from .day_trading_quote_targets import QuoteTargetInputs, QuoteTargetSelector, read_quote_target_inputs
+from .day_trading_source_events import observe_quote_source
 from .three_gate_price import official_three_gate_price_provider
 
 
@@ -82,6 +81,10 @@ class DayTradingAutomationSupervisor:
 
     def __init__(self) -> None:
         self._task: asyncio.Task[None] | None = None
+        self._quote_target_task: asyncio.Task[None] | None = None
+        self._quote_target_selector = QuoteTargetSelector()
+        self._quote_inputs = QuoteTargetInputs(frozenset(), ())
+        self._quote_target_state: dict[str, Any] = {"targetRefreshError": None}
         self._started_at: datetime | None = None
         self._last_scan_at: datetime | None = None
         self._last_baseline_quote_refresh_at: datetime | None = None
@@ -97,7 +100,6 @@ class DayTradingAutomationSupervisor:
         self._today_signal_ids: set[str] = set()
         self._quote_coverage_count = 0
         self._warmed_symbol_count = 0
-        self._universe_signature: tuple[str, ...] = ()
         self._baseline_quote_cursor = 0
         self._state: dict[str, Any] = {"status": "stopped"}
 
@@ -142,6 +144,114 @@ class DayTradingAutomationSupervisor:
         self._baseline_quote_cursor = end % len(stocks)
         return tuple(selected)
 
+    @staticmethod
+    def _read_quote_inputs(now: datetime) -> QuoteTargetInputs:
+        with SessionLocal() as db:
+            return read_quote_target_inputs(db, now, AUTOMATION_USER_IDS)
+
+    async def _refresh_quote_targets(self, now: datetime) -> None:
+        # Database and pool discovery do not share the heavy signal/notification loop.
+        universe = _dedupe_stocks_by_symbol(electronic_chip_flow_alert_monitor.stock_universe_snapshot())
+        try:
+            self._quote_inputs = await asyncio.to_thread(self._read_quote_inputs, now)
+            self._quote_target_state["targetRefreshError"] = None
+            self._quote_target_state["targetDatabaseLastSuccessAt"] = now.isoformat()
+        except Exception as exc:
+            logger.exception("Quote priority target refresh failed; retaining previous held subscriptions")
+            self._quote_target_state["targetRefreshError"] = str(exc)
+        electronic_chip_flow_alert_monitor.set_day_trading_priority_symbols({
+            *(str(item.get("symbol")) for item in self._recommendations),
+            *self._quote_inputs.held_symbols,
+        })
+        targets = self._quote_target_selector.select(
+            universe, self._quote_inputs,
+            electronic_chip_flow_alert_monitor.high_frequency_symbols_snapshot(now),
+        )
+        # Retain history before changing the candidate universe, including unresolved holdings.
+        day_trading_engine.set_quote_tracking_symbols(targets.tracking_symbols)
+        day_trading_engine.set_stock_universe(universe)
+        clock = trading_session_state(
+            self._config(), now, data_status="normal",
+            quote_samples=day_trading_engine.sample_count, infrastructure_ok=True,
+        )
+        # Keep overflow demand visible to the pump, whose diagnostics are also
+        # consumed directly by V2. The pump applies the final capacity limit.
+        baseline_requests = {request.symbol: request for request in targets.baseline}
+        requested_priority = (
+            *targets.priority,
+            *(baseline_requests[symbol] for symbol in targets.overflow_symbols if symbol in baseline_requests),
+        )
+        day_trading_quote_pump.update_targets(
+            requested_priority, targets.baseline,
+            mandatory_symbols=targets.mandatory_symbols,
+            enabled=str(clock["phase"]) in ACTIVE_QUOTE_PHASES,
+        )
+        self._quote_target_state.update({
+            "targetRefreshedAt": now.isoformat(),
+            "heldCount": len(self._quote_inputs.held_symbols),
+            "candidateOverflowCount": targets.candidate_overflow_count,
+            "overCapacity": bool(targets.overflow_symbols) or bool(day_trading_quote_pump.state.get("overCapacity")),
+            "priorityOverflowSymbols": list(targets.overflow_symbols),
+            "unresolvedSymbols": list(targets.unresolved_symbols),
+            "unresolvedReason": "無已知交易所資料，保留追蹤但不猜測上市或上櫃" if targets.unresolved_symbols else None,
+        })
+        diagnostics = {**day_trading_quote_pump.diagnostics(), **self._quote_target_state}
+        await asyncio.to_thread(
+            day_trading_cache.put, "day-trading-quote-pump",
+            diagnostics, ttl=600,
+        )
+        try:
+            await asyncio.to_thread(observe_quote_source, diagnostics, now)
+        except Exception:
+            logger.exception("Quote source transition observation failed")
+
+    async def _run_quote_targets(self) -> None:
+        while True:
+            started = asyncio.get_running_loop().time()
+            try:
+                await self._refresh_quote_targets(datetime.now(UTC))
+            except Exception:
+                logger.exception("Quote target scheduler failed")
+            await asyncio.sleep(max(0.1, PRIORITY_QUOTE_REFRESH_SECONDS - (asyncio.get_running_loop().time() - started)))
+
+    def _scan_candidates(self, now: datetime) -> list[dict[str, Any]]:
+        return self._confirm_continuous_large_orders(
+            day_trading_restrictions.enrich_short_eligibility(
+                day_trading_restrictions.filter_candidates(day_trading_engine.signals()),
+            ), now,
+        )
+
+    @staticmethod
+    def _persist_candidate_snapshots(candidates: list[dict[str, Any]], config: TradingScheduleConfig, now: datetime) -> int:
+        with SessionLocal() as db:
+            count = save_candidate_snapshots(db, candidates, config=config, snapshot_at=now)
+            db.commit()
+            return count
+
+    @staticmethod
+    def _persist_recommendations(recommendations: list[dict[str, Any]], config: TradingScheduleConfig, session: dict[str, Any], now: datetime) -> list[str]:
+        with SessionLocal() as db:
+            created = ensure_positions_for_official_recommendations(db, recommendations, config=config, session=session, now=now)
+            record_official_recommendations(db, recommendations, config=config, session=session, now=now)
+            db.commit()
+            return [position.symbol for position in created]
+
+    @staticmethod
+    def _evaluate_position_events(data_status: str, force_close: bool) -> list[dict[str, Any]]:
+        with SessionLocal() as db:
+            events = pending_automatic_position_events(
+                db, day_trading_engine.quote_for, data_status=data_status, force_close=force_close,
+                risk_for=day_trading_engine.position_risk_for,
+            )
+            db.commit()
+            return events
+
+    @staticmethod
+    def _finalize_position_event(event: dict[str, Any]) -> None:
+        with SessionLocal() as db:
+            finalize_automatic_position_event(db, event)
+            db.commit()
+
     async def _send_recommendations_and_track(
         self,
         recommendations: list[dict[str, Any]],
@@ -159,27 +269,12 @@ class DayTradingAutomationSupervisor:
         if not recommendations:
             return 0
         try:
-            with SessionLocal() as db:
-                created = ensure_positions_for_official_recommendations(
-                    db,
-                    recommendations,
-                    config=config,
-                    session=session,
-                    now=now,
-                )
-                record_official_recommendations(
-                    db,
-                    recommendations,
-                    config=config,
-                    session=session,
-                    now=now,
-                )
-                db.commit()
+            created = await asyncio.to_thread(self._persist_recommendations, recommendations, config, session, now)
             if created:
                 logger.info(
                     "Created %s automatic day-trading position(s): %s",
                     len(created),
-                    ", ".join(position.symbol for position in created),
+                    ", ".join(created),
                 )
         except Exception:
             logger.exception("Failed to persist automatic day-trading positions")
@@ -197,15 +292,7 @@ class DayTradingAutomationSupervisor:
     ) -> tuple[int, int]:
         force_close = phase in {"closing", "summary"}
         try:
-            with SessionLocal() as db:
-                events = pending_automatic_position_events(
-                    db,
-                    day_trading_engine.quote_for,
-                    data_status=data_status,
-                    force_close=force_close,
-                    risk_for=day_trading_engine.position_risk_for,
-                )
-                db.commit()
+            events = await asyncio.to_thread(self._evaluate_position_events, data_status, force_close)
         except Exception:
             logger.exception("Automatic day-trading position evaluation failed")
             return 0, 0
@@ -217,9 +304,7 @@ class DayTradingAutomationSupervisor:
                 if not key.startswith("_")
             }
             try:
-                with SessionLocal() as db:
-                    finalize_automatic_position_event(db, event)
-                    db.commit()
+                await asyncio.to_thread(self._finalize_position_event, event)
             except Exception:
                 logger.exception(
                     "Failed to finalize automatic position event for position %s",
@@ -237,6 +322,8 @@ class DayTradingAutomationSupervisor:
     async def start(self) -> None:
         if self._task and not self._task.done():
             return
+        if self._task or self._quote_target_task:
+            await self.stop()
         self._started_at = datetime.now(UTC)
         await day_trading_restrictions.refresh(self._started_at, force=True)
         self._restored_quote_samples = day_trading_engine.restore_official_quote_history(
@@ -264,15 +351,17 @@ class DayTradingAutomationSupervisor:
                 and recommendation_qualification(signal, config, session, self._started_at)[0]
             ]
             self._restored_signal_count = len(self._recommendations)
+        await day_trading_quote_pump.start()
+        self._quote_target_task = asyncio.create_task(self._run_quote_targets(), name="day-trading-quote-targets")
         self._task = asyncio.create_task(self._run(), name="day-trading-automation")
 
     async def stop(self) -> None:
-        if not self._task:
-            return
-        self._task.cancel()
-        with suppress(asyncio.CancelledError):
-            await self._task
-        self._task = None
+        tasks = [task for task in (self._quote_target_task, self._task) if task is not None]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._quote_target_task = self._task = None
+        await day_trading_quote_pump.stop()
 
     async def _run(self) -> None:
         while True:
@@ -281,128 +370,45 @@ class DayTradingAutomationSupervisor:
             momentum_universe = _dedupe_stocks_by_symbol(
                 electronic_chip_flow_alert_monitor.stock_universe_snapshot()
             )
-            day_trading_engine.set_stock_universe(momentum_universe)
-            universe_signature = day_trading_engine.stock_universe_symbols
-            if universe_signature != self._universe_signature:
-                self._universe_signature = universe_signature
-                self._quote_coverage_count = day_trading_engine.quote_coverage_count
-                self._warmed_symbol_count = day_trading_engine.warmed_symbol_count
             await day_trading_restrictions.refresh(now)
-            database_ok = False
-            open_positions = 0
-            automatic_open_positions = 0
-            open_position_symbols: set[str] = set()
-            try:
-                with SessionLocal() as db:
-                    db.execute(text("SELECT 1"))
-                    open_positions = int(db.scalar(select(func.count()).select_from(
-                        DayTradingPosition,
-                    ).where(DayTradingPosition.status == "open")) or 0)
-                    automatic_open_positions = int(db.scalar(
-                        select(func.count())
-                        .select_from(DayTradingPosition)
-                        .where(
-                            DayTradingPosition.status == "open",
-                            DayTradingPosition.user_id.in_(AUTOMATION_USER_IDS),
-                        )
-                    ) or 0)
-                    open_position_symbols = {
-                        str(symbol) for symbol in db.scalars(
-                            select(DayTradingPosition.symbol).where(
-                                DayTradingPosition.status == "open",
-                            )
-                        ).all()
-                        if symbol
-                    }
-                    database_ok = True
-            except Exception:
-                database_ok = False
-
-            electronic_chip_flow_alert_monitor.set_day_trading_priority_symbols({
-                *(str(item.get("symbol")) for item in self._recommendations),
-                *open_position_symbols,
-            })
-            priority_symbols = set(
-                electronic_chip_flow_alert_monitor.high_frequency_symbols_snapshot()
-            )
+            database_ok = self._quote_target_state.get("targetRefreshedAt") is not None and not self._quote_target_state.get("targetRefreshError")
+            open_positions = self._quote_inputs.legacy_open_count
+            automatic_open_positions = self._quote_inputs.automatic_open_count
+            pump_state = day_trading_quote_pump.state
             clock_session = trading_session_state(
-                config,
-                now,
-                data_status="normal",
-                quote_samples=day_trading_engine.sample_count,
-                infrastructure_ok=True,
+                config, now, data_status="normal",
+                quote_samples=day_trading_engine.sample_count, infrastructure_ok=True,
             )
             quote_monitoring_active = str(clock_session["phase"]) in ACTIVE_QUOTE_PHASES
+            quote_refresh_due = quote_monitoring_active and (
+                self._last_priority_quote_refresh_at is None
+                or now - self._last_priority_quote_refresh_at >= timedelta(seconds=PRIORITY_QUOTE_REFRESH_SECONDS)
+            )
+            if quote_refresh_due:
+                self._last_priority_quote_refresh_at = now
             baseline_quote_due = quote_monitoring_active and (
                 self._last_baseline_quote_refresh_at is None
-                or now - self._last_baseline_quote_refresh_at
-                >= timedelta(seconds=BASELINE_QUOTE_REFRESH_SECONDS)
+                or now - self._last_baseline_quote_refresh_at >= timedelta(seconds=BASELINE_QUOTE_REFRESH_SECONDS)
             )
-            priority_quote_due = quote_monitoring_active and (
-                self._last_priority_quote_refresh_at is None
-                or now - self._last_priority_quote_refresh_at
-                >= timedelta(seconds=max(
-                    PRIORITY_QUOTE_REFRESH_SECONDS,
-                    get_settings().quote_refresh_seconds,
-                ))
-            )
-            quote_refresh_due = baseline_quote_due or priority_quote_due
-            if quote_refresh_due:
+            # Slow three-gate enrichment is intentionally outside the independent quote pump.
+            if baseline_quote_due:
+                self._last_baseline_quote_refresh_at = now
+                selected_stocks = self._baseline_quote_slice(momentum_universe)
                 try:
-                    priority_stocks = tuple(
-                        stock for stock in momentum_universe
-                        if stock.symbol in priority_symbols
-                    )
-                    if baseline_quote_due:
-                        baseline_pool = tuple(
-                            stock for stock in momentum_universe
-                            if stock.symbol not in priority_symbols
-                        )
-                        selected_stocks = _dedupe_stocks_by_symbol((
-                            *priority_stocks,
-                            *self._baseline_quote_slice(baseline_pool),
-                        ))
-                    else:
-                        selected_stocks = priority_stocks
-                    quote_requests = _quote_requests_for_stocks(selected_stocks)
-                    quote_requests.append(StockQuoteRequest(
-                        symbol="t00",
-                        name="加權指數",
-                        market="上市",
-                    ))
-                    quotes = await official_market_data_provider.get_quotes(
-                        quote_requests,
-                        force_refresh=True,
-                    )
-                    day_trading_engine.update_official_quotes(quotes)
-                    self._quote_coverage_count = day_trading_engine.quote_coverage_count
-                    if baseline_quote_due:
-                        self._warmed_symbol_count = day_trading_engine.warmed_symbol_count
-                        try:
-                            three_gate_prices = await official_three_gate_price_provider.get_levels(
-                                tuple(stock.symbol for stock in selected_stocks)
-                            )
-                            day_trading_engine.update_three_gate_prices(three_gate_prices)
-                        except Exception:
-                            logger.exception("Official three-gate price refresh failed")
-                    snapshot_due = (
-                        self._last_quote_snapshot_at is None
-                        or now - self._last_quote_snapshot_at >= timedelta(minutes=1)
-                    )
-                    if quotes and snapshot_due:
-                        day_trading_cache.put(
-                            QUOTE_HISTORY_CACHE_KEY,
-                            day_trading_engine.export_official_quote_history(now),
-                            ttl=28_800,
-                        )
-                        self._last_quote_snapshot_at = now
+                    levels = await official_three_gate_price_provider.get_levels(tuple(stock.symbol for stock in selected_stocks))
+                    day_trading_engine.update_three_gate_prices(levels)
                 except Exception:
-                    logger.exception("TWSE MIS quote refresh failed")
-                if baseline_quote_due:
-                    self._last_baseline_quote_refresh_at = now
-                    self._last_priority_quote_refresh_at = now
-                elif priority_quote_due:
-                    self._last_priority_quote_refresh_at = now
+                    logger.exception("Official three-gate price refresh failed")
+            self._quote_coverage_count = day_trading_engine.quote_coverage_count
+            self._warmed_symbol_count = day_trading_engine.warmed_symbol_count
+            if pump_state.get("lastSuccessAt") and (
+                self._last_quote_snapshot_at is None or now - self._last_quote_snapshot_at >= timedelta(minutes=1)
+            ):
+                await asyncio.to_thread(
+                    day_trading_cache.put, QUOTE_HISTORY_CACHE_KEY,
+                    day_trading_engine.export_official_quote_history(now), ttl=28_800,
+                )
+                self._last_quote_snapshot_at = now
 
             regime = day_trading_engine.market_regime()
             recovering = day_trading_engine.sample_count < config.minimum_live_samples
@@ -425,14 +431,7 @@ class DayTradingAutomationSupervisor:
                 or now - self._last_scan_at >= timedelta(seconds=config.recommendation_refresh_seconds)
             )
             if scan_due and session["phase"] in {"warmup", "scanning", "long_only"}:
-                candidates = self._confirm_continuous_large_orders(
-                    day_trading_restrictions.enrich_short_eligibility(
-                        day_trading_restrictions.filter_candidates(
-                            day_trading_engine.signals(),
-                        ),
-                    ),
-                    now,
-                )
+                candidates = await asyncio.to_thread(self._scan_candidates, now)
                 candidates = strategy_eligible_signals(route_signals_to_active_robot(
                     candidates,
                     strategy["activeRobot"],
@@ -473,20 +472,15 @@ class DayTradingAutomationSupervisor:
                 self._last_candidate_snapshot_count = 0
                 if _ranked_candidates:
                     try:
-                        with SessionLocal() as db:
-                            self._last_candidate_snapshot_count = save_candidate_snapshots(
-                                db,
-                                _ranked_candidates,
-                                config=config,
-                                snapshot_at=now,
-                            )
-                            db.commit()
+                        self._last_candidate_snapshot_count = await asyncio.to_thread(
+                            self._persist_candidate_snapshots, _ranked_candidates, config, now,
+                        )
                     except Exception:
                         logger.exception("Failed to persist day-trading candidate snapshots")
                 self._last_scan_at = now
-                day_trading_cache.put("automation-recommendations", self._recommendations, ttl=86_400)
-                day_trading_cache.put(AUTOMATION_SELECTION_CACHE_KEY, selection_cache, ttl=45)
-                day_trading_cache.put(
+                await asyncio.to_thread(day_trading_cache.put, "automation-recommendations", self._recommendations, ttl=86_400)
+                await asyncio.to_thread(day_trading_cache.put, AUTOMATION_SELECTION_CACHE_KEY, selection_cache, ttl=45)
+                await asyncio.to_thread(day_trading_cache.put,
                     AUTOMATION_RANKED_CANDIDATES_CACHE_KEY,
                     {
                         "items": _ranked_candidates,
@@ -523,13 +517,14 @@ class DayTradingAutomationSupervisor:
                 "quoteCoverageCount": self._quote_coverage_count,
                 "threeGateCoverageCount": day_trading_engine.three_gate_coverage_count,
                 "warmedSymbolCount": self._warmed_symbol_count,
-                "highFrequencyTrackingCount": len(priority_symbols),
+                "highFrequencyTrackingCount": pump_state.get("priorityCount", 0),
+                "quotePump": {**pump_state, **self._quote_target_state},
                 "baselineQuoteRefreshSeconds": BASELINE_QUOTE_REFRESH_SECONDS,
                 "priorityQuoteRefreshSeconds": PRIORITY_QUOTE_REFRESH_SECONDS,
                 "disposalRestrictions": day_trading_restrictions.state,
                 "activeRobot": strategy["activeRobot"],
             }
-            day_trading_cache.put("automation-supervisor", self._state, ttl=180)
+            await asyncio.to_thread(day_trading_cache.put, "automation-supervisor", self._state, ttl=180)
             line_tasks: list[Any] = []
             phase = str(session["phase"])
             data_status = str(regime["dataStatus"])
@@ -578,7 +573,7 @@ class DayTradingAutomationSupervisor:
 
     @property
     def state(self) -> dict[str, Any]:
-        return self._state
+        return {**self._state, "quotePump": {**day_trading_quote_pump.state, **self._quote_target_state}}
 
 
 day_trading_automation = DayTradingAutomationSupervisor()

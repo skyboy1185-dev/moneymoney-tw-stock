@@ -345,16 +345,74 @@ def test_backtest_rejects_an_untradeable_next_bar_gap():
     assert all(trade["signalTime"] != bars[15].timestamp for trade in result["trades"])
 
 
-def test_portfolio_ranks_only_candidates_that_can_close_same_day():
+def test_portfolio_does_not_replace_winner_missing_same_day_close():
     complete = _opening_breakout_bars()
     result = run_backtest(
         {"2330": complete[:-1], "2454": complete}, strategy_id="OPENING_RANGE_BREAKOUT",
         config={"minimumConfidence": "0", "allowOddLots": True, "slippageBps": "0"},
         sector_by_symbol={"2330": "A", "2454": "B"},
     )
-    assert result["trades"]
-    assert result["trades"][0]["symbol"] == "2454"
+    assert all(trade["signalTime"] != complete[15].timestamp for trade in result["trades"])
     assert any(row["reason"] == "FORCED_CLOSE_MINUTE_MISSING" for row in result["skipReasons"])
+    assert any(row["reason"] == "LOWER_RANKED_CANDIDATE" for row in result["skipReasons"])
+
+
+def _ranked_decision_bars(monkeypatch):
+    def signals(rows, **_kwargs):
+        if len(rows) != 16:
+            return []
+        score = "95" if rows[0].volume == 2000 else "85"
+        return [StrategySignal("OPENING_RANGE_BREAKOUT", Decimal(score), Decimal("100"),
+                               Decimal("99"), Decimal("103"), ())]
+
+    monkeypatch.setattr(dtv2, "evaluate_strategies", signals)
+    lower = _opening_breakout_bars()
+    lower[16] = MinuteBar(lower[16].timestamp, Decimal("100"), Decimal("101"),
+                         Decimal("99.5"), Decimal("100"), 2500)
+    higher = list(lower)
+    first = higher[0]
+    higher[0] = MinuteBar(first.timestamp, first.open, first.high, first.low, first.close, 2000)
+    return higher, lower
+
+
+@pytest.mark.parametrize("failure, reason", [
+    ("gap", "NEXT_BAR_CHASE_TOO_LARGE"),
+    ("risk_reward", "RISK_REWARD_BELOW_MINIMUM_AFTER_FILL"),
+    ("invalid_levels", "INVALID_LEVELS_AFTER_FILL"),
+    ("missing_close", "FORCED_CLOSE_MINUTE_MISSING"),
+    ("missing_fill", "NEXT_BAR_MISSING"),
+    ("late_fill", "AFTER_LATEST_ENTRY_TIME"),
+])
+def test_portfolio_selects_before_future_fill_validation_without_fallback(monkeypatch, failure, reason):
+    higher, lower = _ranked_decision_bars(monkeypatch)
+    if failure == "missing_close":
+        higher = higher[:-1]
+    elif failure == "missing_fill":
+        higher = higher[:16]
+    elif failure == "late_fill":
+        fill = higher[16]
+        higher = higher[:16] + [MinuteBar(fill.timestamp.replace(hour=5, minute=20),
+                                         fill.open, fill.high, fill.low, fill.close, fill.volume), higher[-1]]
+    else:
+        price = Decimal({"gap": "110", "risk_reward": "100.5", "invalid_levels": "98"}[failure])
+        higher[16] = MinuteBar(higher[16].timestamp, price, price + 1, price - 1, price, 2500)
+    result = run_backtest(
+        {"2330": higher, "2454": lower}, strategy_id="OPENING_RANGE_BREAKOUT",
+        config={"allowOddLots": True}, sector_by_symbol={"2330": "A", "2454": "B"},
+    )
+    assert result["trades"] == []
+    reasons = {row["reason"]: row["count"] for row in result["skipReasons"]}
+    assert reasons == {"LOWER_RANKED_CANDIDATE": 1, reason: 1}
+
+
+def test_lower_ranked_future_data_cannot_change_current_decision(monkeypatch):
+    higher, lower = _ranked_decision_bars(monkeypatch)
+    kwargs = {"strategy_id": "OPENING_RANGE_BREAKOUT", "config": {"allowOddLots": True}}
+    baseline = run_backtest({"2330": higher, "2454": lower}, **kwargs)
+    missing_future = run_backtest({"2454": lower[:16], "2330": higher}, **kwargs)
+    assert [trade["symbol"] for trade in baseline["trades"]] == ["2330"]
+    assert missing_future["trades"] == baseline["trades"]
+    assert missing_future["skipReasons"] == baseline["skipReasons"]
 
 
 def test_forced_close_uses_first_available_trade_after_1325():

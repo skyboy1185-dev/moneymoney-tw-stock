@@ -32,6 +32,7 @@ import {
   type FuturesFlashDirection,
 } from "@/lib/market-snapshot-refresh";
 import type { StockPayload } from "@/lib/types";
+import { getBrowserUserId } from "@/lib/browser-user-id";
 
 type Tab = "analysis" | "screener" | "day-trading-v2" | "day-trading" | "limit-up-ai" | "pattern-robot" | "adaptive-electronic" | "rocket-radar" | "long-term" | "strong-stocks" | "whale-accumulation" | "institutional-investors" | "chip-flow" | "portfolio" | "industries" | "news";
 type Connection = "connecting" | "connected" | "disconnected";
@@ -181,17 +182,13 @@ export default function Home() {
     const requestedView = new URLSearchParams(window.location.search).get("view");
     const initialTab = resolveViewTab(requestedView);
     setQuery(initial);
+    setTab(initialTab);
     tabRef.current = initialTab;
     void loadStock(initial, initialTab);
   }, [loadStock]);
 
   useEffect(() => {
-    let id = localStorage.getItem("moneymoney-user-id");
-    if (!id) {
-      id = globalThis.crypto?.randomUUID?.() ?? `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      localStorage.setItem("moneymoney-user-id", id);
-    }
-    setUserId(id);
+    setUserId(getBrowserUserId());
   }, []);
 
   useEffect(() => {

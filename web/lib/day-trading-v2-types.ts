@@ -168,6 +168,16 @@ export type RuntimeState = {
   scannedStockCount: number; candidateCount: number; signalCount: number; orderCount: number;
   skippedCount: number; completedTradeCount: number; latestError: string;
   heartbeatStale: boolean; quoteStale: boolean;
+  dataStatus?: "current" | "stale" | "unavailable" | "waiting";
+  dataReason?: string; executionError?: string;
+  quoteHealth?: {
+    observedAt: string; lastReceivedAt: string | null; trackedCount: number;
+    freshCount: number; staleCount: number; overCapacity: boolean;
+    activeSource?: string; providerMode?: string; ready?: boolean;
+    entitlementReady?: boolean; entitlementReason?: string | null; lastSourceSwitchAt?: string | null;
+    sourceSwitchCount?: number; subscriptionCount?: number; subscriptionLimit?: number;
+    reconnectAttempts?: number;
+  };
 };
 
 export type CandidateState = {

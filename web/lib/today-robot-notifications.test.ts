@@ -152,6 +152,7 @@ describe("today robot notifications", () => {
     const summary = summarizeTodayRobotNotifications([]);
 
     expect(summary.map((item) => [item.source, item.count, item.unreadCount, item.lastTimestamp])).toEqual([
+      ["day-trading-v2", 0, 0, null],
       ["day-trading", 0, 0, null],
       ["limit-up-ai", 0, 0, null],
       ["adaptive-electronic", 0, 0, null],
@@ -162,5 +163,23 @@ describe("today robot notifications", () => {
 
   it("resolves the current Taipei date explicitly", () => {
     expect(todayTaipeiDate(new Date("2026-08-27T16:30:00.000Z"))).toBe(TODAY);
+  });
+
+  it("includes V2 PAPER messages and risk warnings under their own source", () => {
+    const message = {
+      id: 1, eventId: "ready:today", eventType: "PREOPEN_READY", mode: "PAPER",
+      title: "盤前準備完成", message: "候選池已備妥", read: false, createdAt: todayAt("08:55:00"),
+    };
+    const items = normalizeTodayRobotNotifications({
+      dayTradingV2UserId: "browser-user",
+      dayTradingV2: { items: [message, { ...message, id: 2, eventId: "risk:today", eventType: "DAILY_LOSS_LIMIT", title: "已達每日虧損上限" }, { ...message, mode: "LIVE" }] },
+    }, TODAY);
+    expect(items).toHaveLength(2);
+    expect(items.map((item) => [item.source, item.action])).toEqual([
+      ["day-trading-v2", "system"], ["day-trading-v2", "warning"],
+    ]);
+    expect(items[0].sourceLabel).toBe("當沖機器人2");
+    expect(items[0].isRead).toBe(false);
+    expect(summarizeTodayRobotNotifications(items)[0]).toMatchObject({ count: 2, unreadCount: 2 });
   });
 });

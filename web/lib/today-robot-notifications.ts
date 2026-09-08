@@ -1,4 +1,6 @@
-export type TodayRobotSource = "day-trading" | "limit-up-ai" | "adaptive-electronic" | "pattern-robot" | "rocket-radar";
+import { selectDayTradingV2Notifications } from "@/lib/day-trading-v2-notifications";
+
+export type TodayRobotSource = "day-trading-v2" | "day-trading" | "limit-up-ai" | "adaptive-electronic" | "pattern-robot" | "rocket-radar";
 export type TodayRobotAction = "buy" | "short" | "add" | "reduce" | "take_profit" | "sell" | "cover" | "stop_loss" | "exit" | "scan" | "warning" | "system";
 export type TodayRobotLevel = "info" | "success" | "warning" | "danger";
 
@@ -20,6 +22,8 @@ export interface TodayRobotNotification {
 }
 
 export interface TodayRobotNotificationPayloads {
+  dayTradingV2?: unknown;
+  dayTradingV2UserId?: string;
   dayTradingSignals?: unknown;
   dayTradingAlerts?: unknown;
   limitUp?: unknown;
@@ -37,6 +41,7 @@ export interface TodayRobotSourceSummary {
 }
 
 export const TODAY_ROBOT_SOURCE_LABELS: Record<TodayRobotSource, string> = {
+  "day-trading-v2": "當沖機器人2",
   "day-trading": "當沖機器人",
   "limit-up-ai": "漲停機器人",
   "adaptive-electronic": "超強 AI 當沖",
@@ -44,7 +49,7 @@ export const TODAY_ROBOT_SOURCE_LABELS: Record<TodayRobotSource, string> = {
   "rocket-radar": "飆股雷達",
 };
 
-const SOURCE_ORDER: TodayRobotSource[] = ["day-trading", "limit-up-ai", "adaptive-electronic", "pattern-robot", "rocket-radar"];
+const SOURCE_ORDER: TodayRobotSource[] = ["day-trading-v2", "day-trading", "limit-up-ai", "adaptive-electronic", "pattern-robot", "rocket-radar"];
 
 type LooseRecord = Record<string, unknown>;
 
@@ -267,6 +272,18 @@ export function normalizeTodayRobotNotifications(
   today: string = todayTaipeiDate(),
 ): TodayRobotNotification[] {
   const items = [
+    ...selectDayTradingV2Notifications(payloads.dayTradingV2, payloads.dayTradingV2UserId ?? "", today).map((item) => {
+      const action: TodayRobotAction = item.kind === "buy" ? "buy"
+        : item.kind === "sell" ? (item.title.includes("停損") ? "stop_loss" : item.title.includes("停利") ? "take_profit" : "sell")
+          : item.kind === "stop" ? "warning" : "system";
+      return {
+        ...notification("day-trading-v2", item.eventId, item.eventType, item.createdAt, {
+          action, symbol: null, stockName: null, title: item.title, message: item.message,
+          reason: "模擬交易", isRead: item.read,
+        }),
+        id: item.key,
+      };
+    }),
     ...normalizeDayTradingSignals(payloads.dayTradingSignals, today),
     ...normalizeDayTradingAlerts(payloads.dayTradingAlerts, today),
     ...normalizeLimitUp(payloads.limitUp, today),

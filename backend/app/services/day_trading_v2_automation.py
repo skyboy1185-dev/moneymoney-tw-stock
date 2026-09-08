@@ -12,7 +12,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 
 from ..config import get_settings
 from ..database import SessionLocal
@@ -30,6 +30,7 @@ from .popular_stock_universe import OfficialPopularStockProvider, merge_momentum
 logger = logging.getLogger(__name__)
 TAIPEI = ZoneInfo("Asia/Taipei")
 EMAIL_EVENT_TYPES = {
+    "QUOTE_SOURCE_SWITCHED", "QUOTE_SOURCE_RECOVERED",
     "BUY_FILLED", "SELL_FILLED", "ROBOT_HALTED", "EMERGENCY_STOP",
     "MARKET_DATA_INTERRUPTED", "BROKER_DISCONNECTED", "RISK_REDUCED", "DAILY_LOSS_LIMIT",
     "SYSTEM_HEARTBEAT_INTERRUPTED", "PREOPEN_READY", "OPENING_RANGE_READY", "HOURLY_SUMMARY", "DAILY_REPORT",
@@ -345,32 +346,71 @@ class DayTradingV2Coordinator:
     async def dispatch_pending(self) -> int:
         if not gmail_notification_dispatcher.configured:
             return 0
+        retry_before = datetime.now(UTC) - timedelta(seconds=60)
         with SessionLocal() as db:
             rows = list(db.scalars(select(DayTradeV2Notification).where(
                 DayTradeV2Notification.email_sent.is_(False), DayTradeV2Notification.event_type.in_(EMAIL_EVENT_TYPES),
-            ).order_by(DayTradeV2Notification.created_at).limit(20)).all())
+                or_(
+                    DayTradeV2Notification.email_attempted_at.is_(None),
+                    DayTradeV2Notification.email_attempted_at <= retry_before,
+                ),
+            ).order_by(
+                DayTradeV2Notification.email_attempted_at.asc().nullsfirst(),
+                DayTradeV2Notification.created_at, DayTradeV2Notification.id,
+            ).limit(20)).all())
         delivered = 0
         for row in rows:
+            attempted_at = datetime.now(UTC)
             with SessionLocal() as db:
+                previous_attempt = (
+                    DayTradeV2Notification.email_attempted_at.is_(None)
+                    if row.email_attempted_at is None
+                    else DayTradeV2Notification.email_attempted_at == row.email_attempted_at
+                )
+                claimed = db.execute(update(DayTradeV2Notification).where(
+                    DayTradeV2Notification.id == row.id,
+                    DayTradeV2Notification.email_sent.is_(False), previous_attempt,
+                ).values(email_attempted_at=attempted_at))
+                if claimed.rowcount != 1:
+                    db.rollback()
+                    continue
                 setting = db.get(DayTradeV2Setting, row.user_id)
                 config = merged_config(_json(setting.config_json, {})) if setting else merged_config()
+                db.commit()
             enabled = bool(config["emailHourlySummary"]) if row.event_type == "HOURLY_SUMMARY" else bool(config["emailReady"]) if row.event_type == "PREOPEN_READY" else bool(config["emailOpeningRange"]) if row.event_type == "OPENING_RANGE_READY" else bool(config["emailCloseReport"]) if row.event_type == "DAILY_REPORT" else True
+            values: dict[str, object] = {}
             if not enabled:
-                sent = 1
+                # email_sent historically also marks deliberately suppressed events
+                # as handled; retain that behavior without counting them as delivery.
+                payload = _json(row.payload_json, {})
+                payload["emailDeliveryStatus"] = "SKIPPED_DISABLED"
+                values["payload_json"] = json.dumps(payload, ensure_ascii=False)
+                complete = True
             else:
-                sent = await gmail_notification_dispatcher.dispatch(
-                    event_type=f"day_trading_v2_{row.event_type.lower()}", action=row.event_type,
-                    message=f"{row.title}\n\n{row.message}", dedupe_key=f"dtv2-email:{row.event_id}",
-                    signal_id=row.event_id, channel_name="超強AI當沖系統",
-                )
+                dedupe_key = f"dtv2-email:{row.event_id}"
+                email_event_type = f"day_trading_v2_{row.event_type.lower()}"
+                # GmailDeliveryLog.event_type is VARCHAR(40), including risk alerts.
+                if len(email_event_type) > 40:
+                    email_event_type = f"dtv2_{row.event_type.lower()}"
+                try:
+                    await gmail_notification_dispatcher.dispatch(
+                        event_type=email_event_type, action=row.event_type,
+                        message=f"{row.title}\n\n{row.message}", dedupe_key=dedupe_key,
+                        signal_id=row.event_id, channel_name="超強AI當沖系統",
+                    )
+                    complete = gmail_notification_dispatcher.delivery_complete(dedupe_key)
+                except Exception:
+                    logger.exception("day-trading-v2 email dispatch failed for notification %s", row.id)
+                    complete = False
             with SessionLocal() as db:
-                stored = db.get(DayTradeV2Notification, row.id)
-                if stored:
-                    stored.email_attempted_at = datetime.now(UTC)
-                    if sent:
-                        stored.email_sent = True
-                        delivered += int(enabled)
-                    db.commit()
+                stored = db.execute(update(DayTradeV2Notification).where(
+                    DayTradeV2Notification.id == row.id,
+                    DayTradeV2Notification.email_sent.is_(False),
+                    DayTradeV2Notification.email_attempted_at == attempted_at,
+                ).values(**values, email_attempted_at=datetime.now(UTC), email_sent=complete))
+                if stored.rowcount == 1 and complete and enabled:
+                    delivered += 1
+                db.commit()
         return delivered
 
 

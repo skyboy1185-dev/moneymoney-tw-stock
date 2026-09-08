@@ -380,8 +380,11 @@ def test_new_strategy_runtime_error_stops_version_and_queues_previous_version():
         assert pending is not None and pending.version == "2.0.0"
 
 
-def test_automated_scan_can_only_create_one_order_through_persisted_controller_decision(monkeypatch):
+@pytest.mark.parametrize("scenario", ["fresh", "all_stale", "partial", "expired_at_entry", "stale_book"])
+def test_automated_scan_can_only_create_one_order_through_persisted_controller_decision(monkeypatch, scenario):
     from app.routers import day_trading_v2 as router
+    from app.services.official_market_data import OfficialStockQuote
+    from app.day_trading_v2_models import DayTradeV2CandidateState
 
     current = datetime(2026, 9, 7, 1, 16, tzinfo=UTC)
     start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
@@ -399,13 +402,22 @@ def test_automated_scan_can_only_create_one_order_through_persisted_controller_d
             }
 
         def signals(self):
-            return [{
+            candidate = {
                 "symbol": "2330", "stockName": "台積電", "direction": "long", "themes": ["半導體"],
                 "dataSource": "TWSE MIS", "quoteIsRealtime": True, "quoteTimestamp": current.isoformat(),
                 "volume": 5_000_000, "turnover": 500_000_000, "spreadPercentage": 0.1,
                 "vwapDeviationPercent": 0.1, "tradeRestricted": False,
                 "industryScore": 85, "liquidityScore": 95, "price": 102,
-            }]
+            }
+            return [candidate, {**candidate, "symbol": "2317"}] if scenario == "partial" else [candidate]
+
+        def official_quotes_snapshot(self, symbols=None):
+            result = {}
+            for symbol in (symbols or [item["symbol"] for item in self.signals()]):
+                stamp = current - timedelta(seconds=16) if scenario == "all_stale" or symbol == "2317" else current
+                result[symbol] = OfficialStockQuote(symbol, "測試", 102, 100, 100, 103, 99, 5_000_000, 2, 2, stamp.isoformat(), "TWSE MIS", True, best_bid=101.9, best_ask=102.1,
+                    book_timestamp=(current - timedelta(seconds=16) if scenario == "stale_book" else stamp).isoformat())
+            return result
 
         def minute_bars_for(self, symbol):
             return bars
@@ -417,23 +429,33 @@ def test_automated_scan_can_only_create_one_order_through_persisted_controller_d
     Base.metadata.create_all(engine)
     sessions = sessionmaker(bind=engine, expire_on_commit=False)
     monkeypatch.setattr(router, "day_trading_engine", FakeEngine())
-    monkeypatch.setattr(router, "_now", lambda: current)
+    monkeypatch.setattr(router, "_now", lambda: current + timedelta(seconds=16) if scenario == "expired_at_entry" else current)
     with sessions() as db:
         router._ensure_defaults(db, "controller-user")
         runtime = DayTradeV2RuntimeState(
             user_id="controller-user", mode="PAPER", trading_date=current.astimezone(router.TAIPEI).date(),
             status="RUNNING", initialized=True, receiving_quotes=True, scanning=True, order_allowed=True,
+            heartbeat_at=current,
         )
         db.add(runtime)
         db.commit()
         result = router._scan_now("controller-user", db, current)
-        assert result["executed"] == 1
+        if scenario in {"all_stale", "expired_at_entry", "stale_book"}:
+            assert result["executed"] == 0
+            assert db.scalar(select(DayTradeV2Order)) is None
+            return
+        assert result["executed"] == 1, (router._quote_observation(current, router.merged_config())["fresh"], runtime.status, runtime.order_allowed, runtime.latest_error, [(row.status, row.blocked_reasons_json) for row in db.scalars(select(DayTradeV2ControllerCandidate))])
         order = db.scalar(select(DayTradeV2Order))
         signal = db.scalar(select(DayTradeV2Signal))
         controller_candidate = db.scalar(select(DayTradeV2ControllerCandidate).where(DayTradeV2ControllerCandidate.status == "EXECUTED"))
         assert order is not None and order.controller_decision_id
         assert signal is not None and signal.controller_decision_id == order.controller_decision_id
         assert controller_candidate is not None and controller_candidate.cycle_id == order.controller_decision_id
+        if scenario == "partial":
+            stale_candidates = list(db.scalars(select(DayTradeV2ControllerCandidate).where(DayTradeV2ControllerCandidate.symbol == "2317")).all())
+            assert stale_candidates and all(not row.allowed for row in stale_candidates)
+            own_state = db.scalar(select(DayTradeV2CandidateState).where(DayTradeV2CandidateState.symbol == "2317"))
+            assert own_state.quote_at.replace(tzinfo=UTC) == current - timedelta(seconds=16)
         again = router._scan_now("controller-user", db, current)
         assert again["idempotent"] is True
         assert len(list(db.scalars(select(DayTradeV2Order)).all())) == 1

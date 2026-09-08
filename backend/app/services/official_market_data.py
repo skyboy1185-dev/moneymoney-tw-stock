@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import AsyncExitStack
 import logging
+import math
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -50,6 +52,14 @@ class OfficialStockQuote:
     bid_volumes: tuple[int, ...] = ()
     ask_prices: tuple[float, ...] = ()
     ask_volumes: tuple[int, ...] = ()
+    quote_kind: str = "trade"
+    session: str = "regular"
+    volume_unit: str = "shares"
+    continuity: str | None = None
+    received_at: str | None = None
+    book_timestamp: str | None = None
+    is_trial: bool = False
+    is_halted: bool = False
 
 
 class MarketDataProvider(Protocol):
@@ -66,7 +76,7 @@ def _number(value: Any) -> float | None:
         parsed = float(str(value).replace(",", "").strip())
     except (TypeError, ValueError):
         return None
-    return parsed
+    return parsed if math.isfinite(parsed) else None
 
 
 def _first_order_price(value: Any) -> float | None:
@@ -97,7 +107,7 @@ def _iso_date(value: Any) -> str:
     text = str(value or "")
     if len(text) == 8 and text.isdigit():
         return f"{text[:4]}-{text[4:6]}-{text[6:8]}"
-    return datetime.now(UTC).astimezone(TAIPEI).date().isoformat()
+    return ""
 
 
 def _is_realtime_quote(date_value: str, time_value: str, now: datetime | None = None) -> bool:
@@ -105,7 +115,7 @@ def _is_realtime_quote(date_value: str, time_value: str, now: datetime | None = 
     minutes = local_now.hour * 60 + local_now.minute
     try:
         quote_time = datetime.fromisoformat(f"{date_value}T{time_value}+08:00")
-        delay_seconds = abs((local_now - quote_time).total_seconds())
+        delay_seconds = (local_now - quote_time).total_seconds()
     except ValueError:
         return False
     return (
@@ -113,7 +123,7 @@ def _is_realtime_quote(date_value: str, time_value: str, now: datetime | None = 
         and 540 <= minutes <= 810
         and date_value == local_now.date().isoformat()
         and bool(time_value)
-        and delay_seconds <= 120
+        and 0 <= delay_seconds <= 120
     )
 
 
@@ -127,6 +137,14 @@ def parse_mis_quote(
     previous_close = _number(row.get("y"))
     last_trade = _number(row.get("z"))
     date_value = _iso_date(row.get("d"))
+    try:
+        datetime.fromisoformat(date_value)
+    except ValueError:
+        return None
+    for field in ("o", "h", "l", "v"):
+        raw = row.get(field)
+        if raw not in (None, "", "-") and _number(raw) is None:
+            return None
     has_last_trade = last_trade is not None and last_trade > 0
     best_bid = _first_order_price(row.get("b"))
     best_ask = _first_order_price(row.get("a"))
@@ -196,6 +214,9 @@ def parse_mis_quote(
         bid_volumes=bid_volumes,
         ask_prices=ask_prices,
         ask_volumes=ask_volumes,
+        quote_kind="index" if fallback.symbol == "t00" else "trade" if source == "TWSE MIS" else "reference",
+        book_timestamp=f"{date_value}T{snapshot_time}+08:00" if snapshot_time else None,
+        received_at=(now or datetime.now(UTC)).isoformat(),
     )
 
 
@@ -204,10 +225,72 @@ class TwseMisMarketDataProvider:
         self._cache: dict[str, tuple[OfficialStockQuote, datetime]] = {}
         self._last_trades: dict[str, OfficialStockQuote] = {}
         self._lock = asyncio.Lock()
+        self._intraday_client: httpx.AsyncClient | None = None
+
+    async def open_intraday(self) -> None:
+        """Reuse the dedicated lane's connection without affecting global get_quotes."""
+        if self._intraday_client is None:
+            self._intraday_client = httpx.AsyncClient(
+                timeout=2.0, limits=httpx.Limits(max_connections=1, max_keepalive_connections=1),
+            )
+
+    async def close_intraday(self) -> None:
+        client, self._intraday_client = self._intraday_client, None
+        if client is not None:
+            await client.aclose()
 
     @staticmethod
     def _channel(stock: StockQuoteRequest) -> str:
         return f"{'tse' if stock.market in {'上市', '銝?'} else 'otc'}_{stock.symbol}.tw"
+
+    async def fetch_intraday_batch(
+        self, stocks: list[StockQuoteRequest], *, timeout_seconds: float = 2.0,
+    ) -> dict[str, OfficialStockQuote]:
+        """One bounded request for an exclusively owned intraday provider.
+
+        No shared-refresh lock, cached response, inline retry, or batch splitting.
+        The owner serializes calls and decides when an unsuccessful symbol is due.
+        """
+        if not stocks:
+            return {}
+        if len(stocks) > MIS_BATCH_SIZE:
+            raise ValueError("Intraday quote batches may contain at most 10 symbols")
+        timeout = min(2.0, max(0.001, timeout_seconds))
+        async with AsyncExitStack() as stack:
+            client = self._intraday_client
+            if client is None:
+                client = await stack.enter_async_context(httpx.AsyncClient(timeout=timeout))
+            response = await asyncio.wait_for(client.get(
+                MIS_ENDPOINT,
+                params={"ex_ch": "|".join(self._channel(stock) for stock in stocks),
+                        "json": "1", "delay": "0", "_": str(round(time.time() * 1000))},
+                headers={"Accept": "application/json", "Referer": "https://mis.twse.com.tw/stock/fibest.jsp",
+                         "User-Agent": "Mozilla/5.0 Moneymoney-TWSE-Dashboard", "Cache-Control": "no-cache"},
+            ), timeout=timeout)
+            response.raise_for_status()
+            rows = response.json().get("msgArray", [])
+        if not isinstance(rows, list):
+            raise TypeError("TWSE MIS msgArray is not a list")
+        received_at = datetime.now(UTC)
+        requests = {stock.symbol: stock for stock in stocks}
+        result: dict[str, OfficialStockQuote] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            symbol = str(row.get("c") or "")
+            if symbol not in requests:
+                continue
+            quote = parse_mis_quote(row, requests[symbol], self._last_trades.get(symbol), now=received_at)
+            if quote is None:
+                continue
+            previous = self._cache.get(symbol)
+            if previous and datetime.fromisoformat(quote.quote_timestamp) < datetime.fromisoformat(previous[0].quote_timestamp):
+                continue
+            if (_number(row.get("z")) or 0) > 0:
+                self._last_trades[symbol] = quote
+            self._cache[symbol] = (quote, datetime.fromtimestamp(received_at.timestamp() + LIVE_QUOTE_CACHE_SECONDS, UTC))
+            result[symbol] = quote
+        return result
 
     async def _fetch_batch(
         self,

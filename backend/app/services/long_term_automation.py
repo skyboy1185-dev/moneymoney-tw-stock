@@ -35,6 +35,15 @@ from .official_market_data import official_market_data_provider
 logger = logging.getLogger(__name__)
 TAIPEI = ZoneInfo("Asia/Taipei")
 SELECTION_CLOCK = time.fromisoformat(LONG_TERM_SELECTION_TIME)
+# Same-day fill repairs only matter immediately after the 09:15 selection.
+# Continuing to scan all day turns an unavailable upstream into a misleading
+# health warning after a successful portfolio run.
+MAINTENANCE_WINDOW_END = time(10, 0)
+BENCHMARK_QUOTE_TIMEOUT_SECONDS = 3.0
+
+
+def _within_maintenance_window(local: datetime) -> bool:
+    return SELECTION_CLOCK <= local.time() < MAINTENANCE_WINDOW_END
 
 
 class LongTermSelectionAutomation:
@@ -96,7 +105,10 @@ class LongTermSelectionAutomation:
                 active_benchmarks = benchmark_definitions(db)
                 quote_requests = benchmark_quote_requests(db)
             try:
-                benchmark_quotes = await official_market_data_provider.get_quotes(quote_requests)
+                benchmark_quotes = await asyncio.wait_for(
+                    official_market_data_provider.get_quotes(quote_requests),
+                    timeout=BENCHMARK_QUOTE_TIMEOUT_SECONDS,
+                )
                 benchmark_prices = {
                     symbol: quote.price for symbol, quote in benchmark_quotes.items()
                 }
@@ -108,23 +120,26 @@ class LongTermSelectionAutomation:
                 repaired = {"long_only": 0, "focused_long": 0}
                 replenished = {"long_only": 0, "focused_long": 0}
                 maintenance_error = None
-                try:
-                    payload = await fetch_adaptive_scan_payload()
-                    if payload.market.trade_date == local.date():
-                        execution_at = datetime.now(UTC)
-                        with SessionLocal() as db:
-                            repaired = repair_long_term_unfilled_entries(db, payload, execution_at)
-                            db.commit()
-                        with SessionLocal() as db:
-                            has_vacancies = long_term_portfolio_has_vacancies(db)
-                        if has_vacancies:
+                maintenance_status = "outside_window"
+                if _within_maintenance_window(local):
+                    maintenance_status = "checked"
+                    try:
+                        payload = await fetch_adaptive_scan_payload()
+                        if payload.market.trade_date == local.date():
+                            execution_at = datetime.now(UTC)
                             with SessionLocal() as db:
-                                replenished = replenish_long_term_vacancies(
-                                    db, payload, datetime.now(UTC),
-                                )
-                except Exception as error:
-                    logger.warning("Long-term already-ran maintenance unavailable", exc_info=True)
-                    maintenance_error = str(error)
+                                repaired = repair_long_term_unfilled_entries(db, payload, execution_at)
+                                db.commit()
+                            with SessionLocal() as db:
+                                has_vacancies = long_term_portfolio_has_vacancies(db)
+                            if has_vacancies:
+                                with SessionLocal() as db:
+                                    replenished = replenish_long_term_vacancies(
+                                        db, payload, datetime.now(UTC),
+                                    )
+                    except Exception as error:
+                        logger.warning("Long-term already-ran maintenance unavailable", exc_info=True)
+                        maintenance_error = str(error)
                 with SessionLocal() as db:
                     update_benchmarks(
                         db, local.date(), current, benchmark_prices, active_benchmarks,
@@ -136,6 +151,7 @@ class LongTermSelectionAutomation:
                     "benchmarkCount": len(active_benchmarks),
                     "repairedUnfilled": repaired,
                     "replenished": replenished,
+                    "maintenanceStatus": maintenance_status,
                     "maintenanceError": maintenance_error,
                 }
                 self._state["lastSuccessAt"] = datetime.now(UTC).isoformat()

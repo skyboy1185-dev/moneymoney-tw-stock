@@ -1,5 +1,6 @@
 import asyncio
 from datetime import UTC, date, datetime
+from time import monotonic
 from types import SimpleNamespace
 
 from sqlalchemy import create_engine, select
@@ -338,7 +339,7 @@ def test_same_day_unfilled_open_entry_is_repaired_and_vacancy_is_refilled() -> N
     Base.metadata.create_all(engine)
     at = datetime(2026, 8, 10, 1, 15, tzinfo=UTC)
     repair_at = datetime(2026, 8, 10, 2, 0, tzinfo=UTC)
-    with Session(engine) as db:
+    with Session(engine, expire_on_commit=False) as db:
         run_long_term_selection(db, payload(), at)
         old_positions = list(db.scalars(select(LongTermPosition).where(
             LongTermPosition.stock_code == "2000",
@@ -485,6 +486,46 @@ def test_portfolio_performance_includes_cash_dividend_income(monkeypatch) -> Non
     assert response["capitalAllocation"]["dividendIncome"] == expected_income
     assert response["capitalAllocation"]["totalProfit"] == expected_income
     assert response["capitalAllocation"]["estimatedEquity"] == SIMULATION_CAPITAL + expected_income
+
+
+def test_portfolio_returns_stored_prices_when_quote_refresh_times_out(monkeypatch) -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    at = datetime(2026, 8, 10, 1, 15, tzinfo=UTC)
+
+    async def slow_live_quotes(_requests):
+        await asyncio.sleep(0.2)
+        return {}
+
+    async def no_cash_dividends(_requests):
+        return {}
+
+    monkeypatch.setattr(official_market_data_provider, "get_quotes", slow_live_quotes)
+    monkeypatch.setattr(long_term_dividend_provider, "get_histories", no_cash_dividends)
+    monkeypatch.setattr(
+        "app.services.long_term_selection.PORTFOLIO_QUOTE_TIMEOUT_SECONDS", 0.01,
+    )
+    with Session(engine) as db:
+        run_long_term_selection(
+            db, payload(), at, {"0050": 60, "00881": 25, "00631L": 210},
+        )
+        started = monotonic()
+        response = asyncio.run(portfolio_payload(db, "long_only"))
+        elapsed = monotonic() - started
+
+    assert elapsed < 0.15
+    assert response["quoteData"] == {
+        "status": "stored",
+        "receivedCount": 0,
+        "requestedCount": 13,
+        "fallbackReason": "timeout",
+        "dividendFallbackReason": None,
+    }
+    assert response["items"][0]["currentPrice"] == response["items"][0]["entryPrice"]
 
 
 def test_sync_overflow_is_quarantined_without_creating_sell_performance() -> None:
@@ -640,10 +681,22 @@ def test_daily_equal_weight_nav_keeps_rotation_performance_history() -> None:
             LongTermPortfolioRun.portfolio_mode == "focused_long",
             LongTermPortfolioRun.trade_date == date(2026, 8, 11),
         ))
+        focused_positions = list(db.scalars(select(LongTermPosition).where(
+            LongTermPosition.portfolio_mode == "focused_long",
+            LongTermPosition.status == "open",
+        )).all())
+        focused_snapshots = list(db.scalars(select(LongTermPositionSnapshot).where(
+            LongTermPositionSnapshot.position_id.in_([item.id for item in focused_positions]),
+            LongTermPositionSnapshot.trade_date == date(2026, 8, 11),
+        )).all())
         benchmark_0050 = db.get(LongTermBenchmark, "0050")
 
     assert long_only_run is not None and float(long_only_run.portfolio_nav) == 110
     assert focused_long_run is not None and float(focused_long_run.portfolio_nav) == 110
+    assert len(focused_positions) == 3
+    assert all(float(item.actual_return_pct) == 10 for item in focused_positions)
+    assert len(focused_snapshots) == 3
+    assert all(float(item.actual_return_pct) == 10 for item in focused_snapshots)
     assert benchmark_0050 is not None
     assert float(benchmark_0050.entry_price) == 60
     assert float(benchmark_0050.last_price) == 61.2

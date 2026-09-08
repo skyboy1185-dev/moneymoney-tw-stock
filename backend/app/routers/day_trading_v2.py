@@ -34,6 +34,9 @@ from ..services.day_trading_v2 import (
     run_backtest,
 )
 from ..services.day_trading import day_trading_engine
+from ..services.day_trading_v2_quotes import QUOTE_NOTICES, fresh_quote, quote_health, quote_time, update_quote_notice
+from ..services.quote_quality import trusted_quote
+from ..services.day_trading_quote_pump import day_trading_quote_pump
 from ..services.day_trading_v2_controller import (
     ControllerCandidateInput, MarketInputs, REGIME_LABELS, REGIME_UNKNOWN,
     apply_regime_hysteresis, classify_market, rank_candidates, risk_multiplier_for_regime, score_candidate,
@@ -193,12 +196,20 @@ def _runtime_dict(runtime: DayTradeV2RuntimeState | None, config: dict[str, obje
     now = _now()
     heartbeat_at = _aware(runtime.heartbeat_at) if runtime else None
     quote_at = _aware(runtime.last_quote_at) if runtime else None
-    heartbeat_stale = bool(heartbeat_at and (now - heartbeat_at).total_seconds() > int(config["heartbeatTimeoutSeconds"]))
-    quote_stale = bool(runtime and runtime.scanning and (quote_at is None or (now - quote_at).total_seconds() > int(config["quoteTimeoutSeconds"])))
-    status = "ALERT" if heartbeat_stale or quote_stale else runtime.status if runtime else "WAITING"
+    local = now.astimezone(TAIPEI)
+    active = local.weekday() < 5 and str(config["marketOpenTime"]) <= local.strftime("%H:%M:%S") < str(config["marketCloseTime"]) and (not runtime or runtime.phase != "NON_TRADING_DAY")
+    heartbeat_stale = bool(runtime and runtime.status == "RUNNING" and active and (heartbeat_at is None or (now - heartbeat_at).total_seconds() > int(config["heartbeatTimeoutSeconds"])))
+    quote_stale = bool(runtime and active and (not runtime.receiving_quotes or quote_at is None or not 0 <= (now - quote_at).total_seconds() <= int(config["quoteTimeoutSeconds"])))
+    status = "ALERT" if heartbeat_stale else runtime.status if runtime else "WAITING"
+    data_status = "waiting" if not active else "unavailable" if quote_at is None else "stale" if quote_stale else "current"
+    data_reason = runtime.latest_error if runtime and runtime.latest_error in QUOTE_NOTICES else "行情逾時或尚未收到可靠行情" if quote_stale else ""
+    quotes = day_trading_engine.official_quotes_snapshot()
     return {
         "running": bool(runtime and runtime.status == "RUNNING" and not heartbeat_stale),
         "status": status, "phase": runtime.phase if runtime else "BEFORE_INITIALIZATION",
+        "dataStatus": data_status, "dataReason": data_reason,
+        "executionError": runtime.latest_error if runtime and runtime.latest_error not in QUOTE_NOTICES else "",
+        "quoteHealth": quote_health(quotes, now, int(config["quoteTimeoutSeconds"]), day_trading_quote_pump.diagnostics()),
         "autoStart": runtime.auto_start if runtime else bool(config["autoStart"]),
         "initialized": bool(runtime and runtime.initialized),
         "receivingQuotes": bool(runtime and runtime.receiving_quotes and not quote_stale),
@@ -496,7 +507,7 @@ def _dashboard(db: Session, user_id: str) -> dict[str, object]:
         "systemName": "超強AI當沖系統", "mode": mode, "systemStatus": system_status,
         "liveTrading": {"available": False, "enabled": False, "broker": None, "reason": "尚未設定並驗證券商API"},
         "marketData": {
-            "realtime": "TWSE MIS", "historicalMinute": history_source,
+            "realtime": "TWSE MIS／Fugle（依已啟用來源）", "historicalMinute": history_source,
             "backtestReady": automatic_history_ready or latest_dataset is not None, "message": history_message,
         },
         "config": config, "today": today_perf, "month": month_perf, "all": all_perf,
@@ -518,8 +529,8 @@ def dashboard(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -
     return _dashboard(db, user_id)
 
 
-def _today_runtime(db: Session, user_id: str, mode: str, config: dict[str, object]) -> DayTradeV2RuntimeState:
-    trading_date = datetime.now(TAIPEI).date()
+def _today_runtime(db: Session, user_id: str, mode: str, config: dict[str, object], trading_date: date | None = None) -> DayTradeV2RuntimeState:
+    trading_date = trading_date or _now().astimezone(TAIPEI).date()
     runtime = db.scalar(select(DayTradeV2RuntimeState).where(
         DayTradeV2RuntimeState.user_id == user_id, DayTradeV2RuntimeState.mode == mode,
         DayTradeV2RuntimeState.trading_date == trading_date,
@@ -538,14 +549,15 @@ def _set_runtime_status(db: Session, user_id: str, action: str, status: str) -> 
     setting, robots = _ensure_defaults(db, user_id)
     config = merged_config(_json(setting.config_json, {}))
     runtime = _today_runtime(db, user_id, setting.trade_mode, config)
+    if action == "RESUME_TRADING" and (runtime.status in {"STOPPED", "EMERGENCY_STOP", "RISK_HALTED"} or any(robot.status in {"EMERGENCY_STOP", "HALTED_TODAY"} for robot in robots)):
+        raise HTTPException(409, "停止或風控鎖定狀態不能由恢復交易解除")
     runtime.status = status
     runtime.initialized = runtime.initialized or status == "RUNNING"
     runtime.initialized_at = runtime.initialized_at or (_now() if runtime.initialized else None)
     runtime.started_at = runtime.started_at or (_now() if status == "RUNNING" else None)
     runtime.scanning = status == "RUNNING"
     runtime.order_allowed = False
-    runtime.latest_error = "" if status == "RUNNING" else runtime.latest_error
-    if status == "RUNNING":
+    if status == "RUNNING" and action != "RESUME_TRADING":
         for robot in robots:
             if robot.enabled and robot.status in {"EMERGENCY_STOP", "DISABLED"}:
                 robot.status = "READY"
@@ -714,7 +726,7 @@ def paper_entry(body: PaperEntryBody, user_id: str = Depends(_user_id), db: Sess
     if body.controller_decision_id:
         cycle = db.get(DayTradeV2ControllerCycle, body.controller_decision_id)
         controller_candidate = db.get(DayTradeV2ControllerCandidate, body.controller_candidate_id)
-        if not cycle or not controller_candidate or controller_candidate.cycle_id != cycle.id or cycle.selected_candidate_id != controller_candidate.id:
+        if not cycle or not controller_candidate or cycle.user_id != user_id or controller_candidate.user_id != user_id or cycle.mode != "PAPER" or controller_candidate.mode != "PAPER" or controller_candidate.cycle_id != cycle.id or cycle.selected_candidate_id != controller_candidate.id:
             raise HTTPException(409, "自動策略委託缺少有效的總控決策")
         if controller_candidate.status not in {"SELECTED", "ORDER_FAILED"} or controller_candidate.strategy_id != body.strategy_id or controller_candidate.symbol != body.symbol:
             raise HTTPException(409, "總控候選狀態或內容不符")
@@ -756,6 +768,8 @@ def paper_entry(body: PaperEntryBody, user_id: str = Depends(_user_id), db: Sess
     if quantity <= 0:
         raise HTTPException(409, "資金不足或停損距離無效")
     now = _now()
+    if body.controller_decision_id:
+        _verify_automatic_entry_quote(db, user_id, body.symbol, config, now)
     signal_id, order_id, position_id = body.signal_id or str(uuid4()), str(uuid4()), str(uuid4())
     risk_reward = (body.target_price - body.fill_price) / (body.fill_price - body.stop_price)
     version = active_version(db, user_id, body.strategy_id)
@@ -791,7 +805,29 @@ def paper_entry(body: PaperEntryBody, user_id: str = Depends(_user_id), db: Sess
     return _position_dict(position)
 
 
-def _legacy_scan_now(user_id: str, db: Session, coordinator_now: datetime | None = None, *, entries_enabled: bool = True) -> dict[str, object]:
+def _verify_automatic_entry_quote(db: Session, user_id: str, symbol: str, config: dict, now: datetime) -> None:
+    from ..services.day_trading_schedule import is_twse_trading_day
+    from ..services.day_trading_v2_automation import _configured_holidays
+
+    local = now.astimezone(TAIPEI)
+    if not is_twse_trading_day(local.date(), _configured_holidays(db)) or not str(config["marketOpenTime"]) <= local.strftime("%H:%M:%S") < str(config["latestEntryTime"]):
+        raise HTTPException(409, "非交易時段，禁止建立新部位")
+    runtime = db.scalar(select(DayTradeV2RuntimeState).where(
+        DayTradeV2RuntimeState.user_id == user_id, DayTradeV2RuntimeState.mode == "PAPER",
+        DayTradeV2RuntimeState.trading_date == local.date(),
+    ).execution_options(populate_existing=True))
+    if runtime is None or runtime.status != "RUNNING" or not runtime.order_allowed:
+        raise HTTPException(409, "背景系統目前禁止新委託")
+    if runtime.heartbeat_at is None or not 0 <= (now - _aware(runtime.heartbeat_at)).total_seconds() <= int(config["heartbeatTimeoutSeconds"]):
+        raise HTTPException(409, "執行心跳逾時，禁止建立新部位")
+    quote = day_trading_engine.official_quotes_snapshot([symbol]).get(symbol)
+    if not fresh_quote(quote, now, int(config["quoteTimeoutSeconds"])):
+        raise HTTPException(409, "該股票即時行情逾時或未驗證，禁止建立新部位")
+    if not trusted_quote(quote, now, int(config["quoteTimeoutSeconds"]), require_book=True):
+        raise HTTPException(409, "該股票五檔行情逾時或未驗證，禁止建立新部位")
+
+
+def _legacy_scan_now(user_id: str, db: Session, coordinator_now: datetime | None = None, *, entries_enabled: bool = True, observation: dict | None = None) -> dict[str, object]:
     """Evaluate verified MIS bars. The coordinator calls this every five seconds."""
     setting, _ = _ensure_defaults(db, user_id)
     config = merged_config(_json(setting.config_json, {}))
@@ -800,40 +836,32 @@ def _legacy_scan_now(user_id: str, db: Session, coordinator_now: datetime | None
     current = coordinator_now or _now()
     local_now = current.astimezone(TAIPEI)
     trading_date = local_now.date()
-    runtime = _today_runtime(db, user_id, "PAPER", config)
-    regime = day_trading_engine.market_regime()
-    candidates = day_trading_engine.signals()
-    realtime_quote_times: list[datetime] = []
-    for candidate in candidates:
-        if candidate.get("dataSource") != "TWSE MIS" or not candidate.get("quoteIsRealtime"):
-            continue
-        try:
-            quote_time = datetime.fromisoformat(str(candidate.get("quoteTimestamp")))
-            realtime_quote_times.append(quote_time if quote_time.tzinfo else quote_time.replace(tzinfo=UTC))
-        except (TypeError, ValueError):
-            continue
-    latest_quote = max(realtime_quote_times, default=None)
+    runtime = _today_runtime(db, user_id, "PAPER", config, trading_date)
+    observation = observation or _quote_observation(current, config)
+    regime = observation["regime"]
+    candidates = observation["candidates"]
+    latest_quote = observation["latestQuote"]
     if latest_quote:
         runtime.last_quote_at = latest_quote
     entry_cutoff = datetime.strptime(str(config["latestEntryTime"]), "%H:%M:%S").time()
     market_open = datetime.strptime(str(config["marketOpenTime"]), "%H:%M:%S").time()
     market_close = datetime.strptime(str(config["marketCloseTime"]), "%H:%M:%S").time()
     in_market_hours = market_open <= local_now.time() < market_close
-    quote_fresh = bool(latest_quote and abs((current - latest_quote).total_seconds()) <= int(config["quoteTimeoutSeconds"]))
+    quote_fresh = observation["fresh"]
     runtime.receiving_quotes = quote_fresh
     runtime.order_allowed = bool(
         runtime.status == "RUNNING" and in_market_hours and local_now.time() < entry_cutoff
         and quote_fresh and regime.get("dataStatus") == "normal"
     )
     if in_market_hours and not quote_fresh:
-        runtime.latest_error = "行情中斷或延遲，已禁止建立新部位"
+        update_quote_notice(runtime, healthy=False, active=True)
         _notification(
             db, user_id=user_id, mode="PAPER", event_id=f"market-data-interrupted:{user_id}:{trading_date}",
             event_type="MARKET_DATA_INTERRUPTED", title="行情中斷警報",
             message="超過行情逾時門檻仍未收到可靠即時行情，系統已停止建立新部位。",
         )
-    elif quote_fresh and runtime.latest_error.startswith("行情中斷"):
-        runtime.latest_error = ""
+    elif quote_fresh and regime.get("dataStatus") == "normal":
+        update_quote_notice(runtime, healthy=True, active=in_market_hours)
     existing_positions = list(db.scalars(select(DayTradeV2Position).where(
         DayTradeV2Position.user_id == user_id, DayTradeV2Position.mode == "PAPER", DayTradeV2Position.status == "OPEN",
     )).all())
@@ -950,7 +978,7 @@ def _legacy_scan_now(user_id: str, db: Session, coordinator_now: datetime | None
         previous_candidate.signal_level = signal_level(score, config)
         previous_candidate.primary_reason = primary_reason
         previous_candidate.reasons_json = json.dumps(candidate_reasons or list(winner.reasons if winner else []), ensure_ascii=False)
-        previous_candidate.quote_at = latest_quote if candidate.get("quoteIsRealtime") else None
+        previous_candidate.quote_at = quote_time(candidate)
         previous_candidate.bar_at = bars[-1].timestamp if bars else None
         previous_candidate.scanned_at = current
         if primary_reason and primary_reason != previous_reason:
@@ -962,7 +990,7 @@ def _legacy_scan_now(user_id: str, db: Session, coordinator_now: datetime | None
             continue
         reasons = market_gate_reasons(
             now=current, market_crashing=dec(regime.get("score", 0)) <= -60,
-            quote_reliable=quote_fresh and candidate.get("dataSource") == "TWSE MIS" and bool(candidate.get("quoteIsRealtime")),
+            quote_reliable=fresh_quote(candidate, current, int(config["quoteTimeoutSeconds"])),
             volume=int(candidate.get("volume") or 0), turnover=candidate.get("turnover") or 0,
             spread_pct=candidate.get("spreadPercentage") or 999,
             vwap_deviation_pct=candidate.get("vwapDeviationPercent") or 0,
@@ -1059,6 +1087,26 @@ def _legacy_scan_now(user_id: str, db: Session, coordinator_now: datetime | None
     return {"evaluated": evaluated, "executed": executed, "skipped": skipped, "exits": exits, "items": items}
 
 
+def _quote_observation(current: datetime, config: dict) -> dict:
+    regime = day_trading_engine.market_regime()
+    candidates = day_trading_engine.signals()
+    quotes = day_trading_engine.official_quotes_snapshot()
+    observed = []
+    for candidate in candidates:
+        quote = quotes.get(str(candidate.get("symbol") or ""))
+        observed.append({**candidate, "quoteTimestamp": quote.quote_timestamp if quote else None,
+                         "dataSource": quote.source if quote else None, "quoteIsRealtime": trusted_quote(quote, current),
+                         "quoteKind": quote.quote_kind if quote else "reference",
+                         "session": quote.session if quote else None,
+                         "isTrial": quote.is_trial if quote else False,
+                         "isHalted": quote.is_halted if quote else False})
+    valid = [quote for quote in quotes.values() if fresh_quote(quote, current, int(config["quoteTimeoutSeconds"]))]
+    stamps = [quote_time(quote) for quote in quotes.values() if trusted_quote(quote, current)]
+    return {"regime": regime, "candidates": observed, "quotes": quotes,
+            "latestQuote": max((stamp for stamp in stamps if stamp and stamp <= current and stamp.astimezone(TAIPEI).date() == current.astimezone(TAIPEI).date()), default=None),
+            "fresh": bool(valid)}
+
+
 def _scan_now(user_id: str, db: Session, coordinator_now: datetime | None = None) -> dict[str, object]:
     """Run exits first, then send every strategy candidate through the sole controller gateway."""
     setting, robots = _ensure_defaults(db, user_id)
@@ -1068,10 +1116,11 @@ def _scan_now(user_id: str, db: Session, coordinator_now: datetime | None = None
     current = coordinator_now or _now()
     local_now = current.astimezone(TAIPEI)
     trading_date = local_now.date()
-    monitor = _legacy_scan_now(user_id, db, current, entries_enabled=False)
-    runtime = _today_runtime(db, user_id, "PAPER", config)
-    legacy_regime = day_trading_engine.market_regime()
-    live_candidates = [item for item in day_trading_engine.signals() if item.get("direction") == "long"]
+    observation = _quote_observation(current, config)
+    monitor = _legacy_scan_now(user_id, db, current, entries_enabled=False, observation=observation)
+    runtime = _today_runtime(db, user_id, "PAPER", config, trading_date)
+    legacy_regime = observation["regime"]
+    live_candidates = [item for item in observation["candidates"] if item.get("direction") == "long"]
     snapshot = _regime_snapshot(db, user_id, "PAPER", current, legacy_regime, live_candidates, config)
     interval = max(1, int(config["scanIntervalSeconds"]))
     cycle_epoch = int(current.timestamp()) // interval * interval
@@ -1121,22 +1170,16 @@ def _scan_now(user_id: str, db: Session, coordinator_now: datetime | None = None
         oos_result = _json(version_row.oos_result_json, {}) if version_row else {}
         oos_profit_factors[strategy_id] = dec(oos_result.get("profitFactor") or 0)
 
-    quote_times: list[datetime] = []
-    for item in live_candidates:
-        if item.get("dataSource") == "TWSE MIS" and item.get("quoteIsRealtime"):
-            try:
-                parsed = datetime.fromisoformat(str(item.get("quoteTimestamp")))
-                quote_times.append(parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC))
-            except ValueError:
-                pass
-    latest_quote = max(quote_times, default=None)
-    quote_fresh = bool(latest_quote and abs((current - latest_quote).total_seconds()) <= int(config["quoteTimeoutSeconds"]))
+    latest_quote = observation["latestQuote"]
+    quote_fresh = observation["fresh"]
     runtime.last_quote_at = latest_quote or runtime.last_quote_at
     runtime.receiving_quotes = quote_fresh
     runtime.order_allowed = bool(
         runtime.status == "RUNNING" and quote_fresh and not snapshot.data_blocked
         and local_now.time() < datetime.strptime(str(config["latestEntryTime"]), "%H:%M:%S").time()
     )
+    update_quote_notice(runtime, healthy=quote_fresh and legacy_regime.get("dataStatus") == "normal",
+                        active=str(config["marketOpenTime"]) <= local_now.strftime("%H:%M:%S") < str(config["marketCloseTime"]))
     day_start, day_end = _today_bounds()
     daily_pnl = sum(db.scalars(select(DayTradeV2Trade.net_pnl).where(
         DayTradeV2Trade.user_id == user_id, DayTradeV2Trade.mode == "PAPER",
@@ -1191,7 +1234,7 @@ def _scan_now(user_id: str, db: Session, coordinator_now: datetime | None = None
             )
             common = market_gate_reasons(
                 now=current, market_crashing=snapshot.effective_regime == "E_CRASH",
-                quote_reliable=quote_fresh and source.get("dataSource") == "TWSE MIS" and bool(source.get("quoteIsRealtime")),
+                quote_reliable=fresh_quote(source, current, int(config["quoteTimeoutSeconds"])),
                 volume=int(source.get("volume") or 0), turnover=source.get("turnover") or 0,
                 spread_pct=source.get("spreadPercentage") or 999,
                 vwap_deviation_pct=source.get("vwapDeviationPercent") or 0,
@@ -1357,7 +1400,7 @@ def _scan_now(user_id: str, db: Session, coordinator_now: datetime | None = None
         existing_state.signal_level = signal_level(ranked_row.final_score, config)
         existing_state.primary_reason = ranked_row.blocked_reasons[0] if ranked_row.blocked_reasons else "通過總控候選評分"
         existing_state.reasons_json = json.dumps(ranked_row.candidate.reasons, ensure_ascii=False)
-        existing_state.quote_at = latest_quote
+        existing_state.quote_at = quote_time(observation["quotes"].get(ranked_row.candidate.symbol))
         existing_state.bar_at = ranked_row.candidate.signal_time
         existing_state.scanned_at = current
     db.commit()

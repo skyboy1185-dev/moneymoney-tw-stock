@@ -37,6 +37,7 @@ from .day_trading_v2_datasets import (
 )
 from .popular_stock_universe import OfficialPopularStockProvider
 from .theme_stock_universe import ELECTRONIC_ALERT_STOCKS
+from .fugle_request_budget import FugleBudgetUnavailable, FugleRequestBudget, get_fugle_request_budget
 
 
 TAIPEI = ZoneInfo("Asia/Taipei")
@@ -82,15 +83,21 @@ class FugleHistoricalMinuteClient:
         timeout_seconds: float = 30,
         minimum_interval_seconds: float = 1.05,
         transport: httpx.AsyncBaseTransport | None = None,
+        budget: FugleRequestBudget | None = None,
     ) -> None:
         self.api_key = api_key.strip()
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.minimum_interval_seconds = max(0, minimum_interval_seconds)
         self.transport = transport
+        self._budget = budget or (FugleRequestBudget(self.api_key) if transport is not None else get_fugle_request_budget(self.api_key))
         self._last_request_at = 0.0
 
     async def _wait_for_slot(self) -> None:
+        try:
+            await self._budget.acquire(priority="metadata")
+        except FugleBudgetUnavailable as exc:
+            raise BacktestPreparationError("FUGLE_BUDGET_UNAVAILABLE", "行情共用額度服務暫時無法使用，請稍後重試", status="FAILED") from exc
         elapsed = monotonic_time.monotonic() - self._last_request_at
         if elapsed < self.minimum_interval_seconds:
             await asyncio.sleep(self.minimum_interval_seconds - elapsed)
@@ -121,6 +128,7 @@ class FugleHistoricalMinuteClient:
                         },
                     )
                     response = current_response
+                    await self._budget.observe_response(current_response.status_code, current_response.headers)
                     if current_response.status_code != 429:
                         break
                     retry_after = current_response.headers.get("retry-after", "")
@@ -185,6 +193,7 @@ class FugleHistoricalMinuteClient:
                 f"{self.base_url}/stock/intraday/tickers",
                 params={"type": "INDEX", "exchange": "TWSE"},
             )
+            await self._budget.observe_response(response.status_code, response.headers)
         if response.status_code in {401, 403}:
             raise BacktestPreparationError(
                 "FUGLE_AUTH_FAILED", "Fugle金鑰無效或目前方案不支援指數行情。", status="FAILED",

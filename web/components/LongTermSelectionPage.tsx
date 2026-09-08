@@ -186,11 +186,14 @@ export function LongTermSelectionPage({ onSelectStock }: { onSelectStock: (symbo
     </div>
 
     {error && <div className="error-banner">{error}</div>}
+    {data?.quoteData && data.quoteData.status !== "current" && <div className="long-term-quote-notice" role="status">
+      即時行情暫時無法完整更新，現正顯示最後保存的價格（{data.quoteData.receivedCount}/{data.quoteData.requestedCount} 檔已取得）。
+    </div>}
     {loading && !data ? <div className="table-loading"><span className="spinner" /><span>正在載入長線模型組合…</span></div> : data && <>
       <section className="long-term-summary">
         <article><span>本組模擬本金</span><strong>{money(data.capitalAllocation.totalCapital)}</strong><small>兩個組合各自獨立計算</small></article>
         <article><span>目前持倉</span><strong>{data.summary.openCount} / {data.targetCount}</strong><small>多 {data.summary.longCount}・空 {data.summary.shortCount}</small></article>
-        <article><span>累計含息損益</span><strong className={returnClass(data.capitalAllocation.totalProfit)}>{money(data.capitalAllocation.totalProfit)}</strong><small>股息 {money(data.capitalAllocation.dividendIncome)}・淨值 {money(data.capitalAllocation.estimatedEquity)}</small></article>
+        <article><span>累計含息損益</span><strong className={returnClass(data.capitalAllocation.totalProfit)}>{money(data.capitalAllocation.totalProfit)}</strong><small>浮動 {money(data.capitalAllocation.unrealizedProfit)}・已實現 {money(data.capitalAllocation.realizedProfit)}</small></article>
         <article><span>預估一個月報酬</span><strong className="forecast">{percent(data.summary.predictedMonthReturnPercent)}</strong><small>模型估計，非保證報酬</small></article>
         <article><span>已實現平均損益</span><strong className={returnClass(data.summary.realizedReturnPercent)}>{percent(data.summary.realizedReturnPercent)}</strong><small>已完成 {data.summary.completedTradeCount} 筆</small></article>
         <article><span>最近選股</span><strong>{data.lastSelectionDate ?? "明日開始"}</strong><small>每日 {data.selectionTime} 執行一次</small></article>
@@ -303,7 +306,7 @@ export function LongTermSelectionPage({ onSelectStock }: { onSelectStock: (symbo
         {!data.items.length ? <div className="long-term-waiting">
           <CalendarClock size={30} /><h3>首批選股將於 2026/8/10 09:15 建立</h3><p>系統會自動選出 {data.targetCount} 檔多方標的，並開始記錄每日實際損益與買賣訊息。</p>
         </div> : <div className="long-term-table-wrap"><table>
-          <thead><tr><th>#</th><th>股票</th><th>方向／模型</th><th>買進比重</th><th>分配資金／股數</th><th>進場資料</th><th>目前價格</th><th>含息總損益</th><th>預估一個月</th><th>模型分數</th><th>持有進度</th><th>動作</th></tr></thead>
+          <thead><tr><th>#</th><th>股票</th><th>方向／模型</th><th>買進比重</th><th>分配資金／股數</th><th>進場資料</th><th>目前價格</th><th>浮動損益（含息）</th><th>預估一個月</th><th>模型分數</th><th>持有進度</th><th>動作</th></tr></thead>
           <tbody>{data.items.map((item, index) => <tr key={item.id}>
             <td>{index + 1}</td>
             <td><button className="long-term-stock" onClick={() => onSelectStock(item.symbol)}><strong>{item.name}</strong><span>{item.symbol}・{item.industry}</span></button></td>
@@ -312,7 +315,7 @@ export function LongTermSelectionPage({ onSelectStock }: { onSelectStock: (symbo
             <td><strong>{money(item.allocatedCapital)}</strong><small>{item.quantity.toLocaleString("zh-TW")} 股・成交 {money(item.investedCapital)}</small></td>
             <td><strong>行情模擬成交價 {price(item.entryPrice)}</strong><small>同筆行情時間 {dateTime(item.entryTime)}</small></td>
             <td><strong>{price(item.currentPrice)}</strong></td>
-            <td><strong className={returnClass(item.actualReturnPercent)}>{percent(item.actualReturnPercent)}</strong><small className={returnClass(item.unrealizedProfit)}>{money(item.unrealizedProfit)}</small><small>價差 {percent(item.priceReturnPercent)}・股息 {item.dividendDataAvailable ? `${percent(item.dividendReturnPercent)}／${money(item.dividendIncome)}` : "資料待補"}</small></td>
+            <td className={returnClass(item.unrealizedProfit)}><strong>{money(item.unrealizedProfit)}</strong><small>{percent(item.actualReturnPercent)}</small><small>價差 {percent(item.priceReturnPercent)}・股息 {item.dividendDataAvailable ? `${percent(item.dividendReturnPercent)}／${money(item.dividendIncome)}` : "資料待補"}</small></td>
             <td><strong className="forecast">{percent(item.predictedMonthReturnPercent)}</strong></td>
             <td><strong>{item.currentScore.toFixed(1)}</strong><small>入選 {item.selectionScore.toFixed(1)}</small></td>
             <td><div className="holding-progress"><i><b style={{ width: `${Math.min(100, item.holdingTradingDays / item.minimumHoldingDays * 100)}%` }} /></i><span>{item.holdingTradingDays} / {item.minimumHoldingDays} 天</span></div></td>

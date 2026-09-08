@@ -233,6 +233,13 @@ export interface LongTermPortfolioResponse {
     requestedCount: number;
     methodology: string;
   };
+  quoteData?: {
+    status: "current" | "partial" | "stored";
+    receivedCount: number;
+    requestedCount: number;
+    fallbackReason: "timeout" | "unavailable" | null;
+    dividendFallbackReason: "timeout" | "unavailable" | null;
+  };
   tradeMessages: LongTermTradeMessage[];
   unreadTradeMessageCount: number;
   lastSelectionDate: string | null;

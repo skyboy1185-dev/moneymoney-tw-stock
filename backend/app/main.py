@@ -22,6 +22,7 @@ from .routers import (
     chip_flow,
     day_trading,
     day_trading_v2,
+    robot_health,
     line_integration,
     large_holders,
     limit_up_ai,
@@ -112,6 +113,7 @@ app.include_router(chip_flow.router, prefix=settings.api_prefix)
 app.include_router(portfolio.router, prefix=settings.api_prefix)
 app.include_router(day_trading.router, prefix=settings.api_prefix)
 app.include_router(day_trading_v2.router, prefix=settings.api_prefix)
+app.include_router(robot_health.router, prefix=settings.api_prefix)
 app.include_router(pattern_robot.router, prefix=settings.api_prefix)
 app.include_router(line_integration.router, prefix=settings.api_prefix)
 app.include_router(ai_stock_line_integration.router, prefix=settings.api_prefix)

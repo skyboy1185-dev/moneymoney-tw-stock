@@ -9,6 +9,7 @@ import smtplib
 import ssl
 
 import httpx
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
 from ..config import get_settings
@@ -60,6 +61,19 @@ class GmailNotificationDispatcher:
             visible = local[:2] if len(local) > 2 else local[:1]
             values.append(f"{visible}***@{domain}")
         return values
+
+    def delivery_complete(self, dedupe_key: str) -> bool:
+        """Include prior successful attempts when checking a multi-recipient event."""
+        recipients = set(get_settings().gmail_recipient_list)
+        if not recipients:
+            return False
+        with SessionLocal() as db:
+            delivered = set(db.scalars(select(GmailDeliveryLog.recipient).where(
+                GmailDeliveryLog.dedupe_key == dedupe_key,
+                GmailDeliveryLog.recipient.in_(recipients),
+                GmailDeliveryLog.status == "sent",
+            )))
+        return recipients <= delivered
 
     @staticmethod
     def _send_sync(recipient: str, subject: str, body: str) -> None:
@@ -171,7 +185,22 @@ class GmailNotificationDispatcher:
                     db.refresh(log)
                 except IntegrityError:
                     db.rollback()
-                    continue
+                    # Only one worker may reclaim a failed delivery. Successful
+                    # and currently pending deliveries keep their dedupe lock.
+                    claimed = db.execute(update(GmailDeliveryLog).where(
+                        GmailDeliveryLog.recipient == recipient,
+                        GmailDeliveryLog.dedupe_key == dedupe_key,
+                        GmailDeliveryLog.status == "failed",
+                    ).values(status="pending", error_message=None))
+                    db.commit()
+                    if not claimed.rowcount:
+                        continue
+                    log = db.scalar(select(GmailDeliveryLog).where(
+                        GmailDeliveryLog.recipient == recipient,
+                        GmailDeliveryLog.dedupe_key == dedupe_key,
+                    ))
+                    if log is None:
+                        continue
 
             attempts = 0
             error_message: str | None = None
@@ -199,7 +228,7 @@ class GmailNotificationDispatcher:
                 stored = db.get(GmailDeliveryLog, log.id)
                 if stored is None:
                     continue
-                stored.attempts = attempts
+                stored.attempts += attempts
                 stored.error_message = error_message
                 stored.status = "sent" if error_message is None else "failed"
                 if error_message is None:

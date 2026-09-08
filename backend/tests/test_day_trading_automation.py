@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from types import SimpleNamespace
 from typing import Any
 
@@ -169,3 +170,144 @@ def test_baseline_quote_slice_rotates_without_refreshing_full_universe() -> None
     assert len(second) == automation_module.BASELINE_QUOTE_BATCH_SIZE
     assert first[0].symbol == "1000"
     assert second[0].symbol == str(1000 + automation_module.BASELINE_QUOTE_BATCH_SIZE)
+
+
+def test_quote_target_refresh_uses_threads_and_preserves_last_inputs_on_database_failure(monkeypatch: Any) -> None:
+    from app.services.day_trading_quote_targets import PriorityCandidate, QuoteTargetInputs
+    from app.services.theme_stock_universe import ThemeStock
+    from decimal import Decimal
+
+    supervisor = automation_module.DayTradingAutomationSupervisor()
+    main_thread = threading.get_ident()
+    threads = []
+    updates = []
+    retained = []
+    original = QuoteTargetInputs(frozenset({"9901"}), (PriorityCandidate("9902", Decimal(90)),), 1, 1)
+
+    def load(_now):
+        threads.append(threading.get_ident())
+        return original
+
+    def cache(*_args, **_kwargs):
+        threads.append(threading.get_ident())
+
+    monkeypatch.setattr(supervisor, "_read_quote_inputs", load)
+    monkeypatch.setattr(automation_module.day_trading_cache, "put", cache)
+    monkeypatch.setattr(automation_module, "day_trading_quote_pump", SimpleNamespace(
+        state={"overCapacity": False}, diagnostics=lambda: {},
+        update_targets=lambda *args, **kwargs: updates.append((args, kwargs)),
+    ))
+    monkeypatch.setattr(automation_module.electronic_chip_flow_alert_monitor, "stock_universe_snapshot", lambda: (
+        ThemeStock("9901", "held", "上櫃", "", ()), ThemeStock("9902", "candidate", "上市", "", ()),
+    ))
+    monkeypatch.setattr(automation_module.electronic_chip_flow_alert_monitor, "high_frequency_symbols_snapshot", lambda _now: ())
+    monkeypatch.setattr(automation_module.electronic_chip_flow_alert_monitor, "set_day_trading_priority_symbols", lambda _symbols: None)
+    monkeypatch.setattr(automation_module.day_trading_engine, "set_quote_tracking_symbols", lambda symbols: retained.append(set(symbols)))
+    monkeypatch.setattr(automation_module.day_trading_engine, "set_stock_universe", lambda _stocks: None)
+    now = automation_module.datetime(2026, 9, 8, 2, tzinfo=automation_module.UTC)
+    asyncio.run(supervisor._refresh_quote_targets(now))
+    assert threads and all(thread != main_thread for thread in threads)
+    assert retained[-1] == {"9901", "9902"}
+
+    def failed(_now):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(supervisor, "_read_quote_inputs", failed)
+    monkeypatch.setattr(automation_module.electronic_chip_flow_alert_monitor, "stock_universe_snapshot", lambda: ())
+    asyncio.run(supervisor._refresh_quote_targets(now))
+    assert supervisor._quote_inputs is original
+    assert [item.symbol for item in updates[-1][0][0]] == ["t00", "9901", "9902"]
+    assert updates[-1][0][0][1].market == "上櫃"
+    assert supervisor._quote_target_state["targetRefreshError"] == "database unavailable"
+
+
+def test_priority_scheduler_continues_during_a_slow_signal_scan(monkeypatch: Any) -> None:
+    supervisor = automation_module.DayTradingAutomationSupervisor()
+    release = threading.Event()
+
+    async def exercise():
+        ticks = 0
+        refreshed = asyncio.Event()
+
+        async def refresh(_now):
+            nonlocal ticks
+            ticks += 1
+            if ticks >= 2:
+                refreshed.set()
+
+        monkeypatch.setattr(supervisor, "_refresh_quote_targets", refresh)
+        monkeypatch.setattr(automation_module, "PRIORITY_QUOTE_REFRESH_SECONDS", 0.01)
+        scan = asyncio.create_task(asyncio.to_thread(release.wait, 2))
+        target_task = asyncio.create_task(supervisor._run_quote_targets())
+        try:
+            await asyncio.wait_for(refreshed.wait(), timeout=1)
+            assert not scan.done()
+        finally:
+            release.set()
+            target_task.cancel()
+            await asyncio.gather(target_task, scan, return_exceptions=True)
+
+    asyncio.run(exercise())
+
+
+def test_stop_cleans_up_target_scheduler_and_pump_after_supervisor_failure(monkeypatch: Any) -> None:
+    supervisor = automation_module.DayTradingAutomationSupervisor()
+    calls = []
+
+    async def stop_pump():
+        calls.append("pump-stopped")
+
+    monkeypatch.setattr(automation_module, "day_trading_quote_pump", SimpleNamespace(stop=stop_pump))
+
+    async def exercise():
+        async def failed():
+            raise RuntimeError("scanner failed")
+
+        supervisor._task = asyncio.create_task(failed())
+        target = supervisor._quote_target_task = asyncio.create_task(asyncio.sleep(100))
+        await asyncio.sleep(0)
+        await supervisor.stop()
+        assert target.cancelled()
+        assert supervisor._task is supervisor._quote_target_task is None
+
+    asyncio.run(exercise())
+    assert calls == ["pump-stopped"]
+
+
+def test_target_overflow_reaches_real_pump_and_v2_runtime_quote_health(monkeypatch: Any) -> None:
+    from decimal import Decimal
+    from app.services.day_trading_quote_pump import DayTradingQuotePump
+    from app.services.day_trading_quote_targets import PriorityCandidate, QuoteTargetInputs
+    from app.services.day_trading_v2_quotes import quote_health
+    from app.services.theme_stock_universe import ThemeStock
+
+    supervisor = automation_module.DayTradingAutomationSupervisor()
+    pump = DayTradingQuotePump()
+    existing = tuple(str(9000 + index) for index in range(28))
+    inputs = QuoteTargetInputs(frozenset({"9900"}), (
+        PriorityCandidate("9901", Decimal(90)), PriorityCandidate("9902", Decimal(80)),
+    ))
+    universe = tuple(ThemeStock(symbol, "test", "上市", "", ()) for symbol in (*existing, "9900", "9901", "9902"))
+    monkeypatch.setattr(automation_module, "day_trading_quote_pump", pump)
+    monkeypatch.setattr(supervisor, "_read_quote_inputs", lambda _now: inputs)
+    monkeypatch.setattr(automation_module.day_trading_cache, "put", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(automation_module.electronic_chip_flow_alert_monitor, "stock_universe_snapshot", lambda: universe)
+    monkeypatch.setattr(automation_module.electronic_chip_flow_alert_monitor, "high_frequency_symbols_snapshot", lambda _now: existing)
+    monkeypatch.setattr(automation_module.electronic_chip_flow_alert_monitor, "set_day_trading_priority_symbols", lambda _symbols: None)
+    monkeypatch.setattr(automation_module.day_trading_engine, "set_quote_tracking_symbols", lambda _symbols: None)
+    monkeypatch.setattr(automation_module.day_trading_engine, "set_stock_universe", lambda _stocks: None)
+    now = automation_module.datetime(2026, 9, 8, 2, tzinfo=automation_module.UTC)
+
+    asyncio.run(supervisor._refresh_quote_targets(now))
+    diagnostics = pump.diagnostics()
+    assert diagnostics["prioritySymbols"] == ["t00", "9900", *existing]
+    assert diagnostics["priorityCount"] == 30
+    assert diagnostics["baselineCount"] == 2
+    assert diagnostics["priorityOverflowCount"] == 2
+    assert diagnostics["overCapacity"] is True
+    assert quote_health({}, now, 15, diagnostics)["overCapacity"] is True
+
+    inputs = QuoteTargetInputs(frozenset({"9900"}), ())
+    asyncio.run(supervisor._refresh_quote_targets(now))
+    assert pump.diagnostics()["overCapacity"] is False
+    assert quote_health({}, now, 15, pump.diagnostics())["overCapacity"] is False

@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from .chip_flow_types import NormalizedTradeTick, TradeSession
+from .fugle_request_budget import FugleRequestBudget, get_fugle_request_budget
 
 
 TAIPEI = ZoneInfo("Asia/Taipei")
@@ -123,6 +124,7 @@ class FugleRealtimeTradeProvider:
         timeout_seconds: float = 15.0,
         min_request_interval_seconds: float = 0.0,
         transport: httpx.AsyncBaseTransport | None = None,
+        budget: FugleRequestBudget | None = None,
     ):
         self._api_key = api_key.strip()
         self._base_url = base_url.rstrip("/")
@@ -131,6 +133,7 @@ class FugleRealtimeTradeProvider:
         self._include_odd_lot = include_odd_lot
         self._timeout_seconds = timeout_seconds
         self._transport = transport
+        self._budget = budget or (FugleRequestBudget(self._api_key) if transport is not None else get_fugle_request_budget(self._api_key))
         self._min_request_interval_seconds = max(0.0, min_request_interval_seconds)
         self._request_lock = asyncio.Lock()
         self._next_request_at = 0.0
@@ -157,7 +160,9 @@ class FugleRealtimeTradeProvider:
             delay = self._next_request_at - monotonic()
             if delay > 0:
                 await asyncio.sleep(delay)
+            await self._budget.acquire(priority="normal")
             response = await client.get(path, params=params)
+            await self._budget.observe_response(response.status_code, response.headers)
             self._next_request_at = monotonic() + self._min_request_interval_seconds
             return response
 

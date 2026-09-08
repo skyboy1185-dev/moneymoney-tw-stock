@@ -79,8 +79,19 @@ class Settings(BaseSettings):
     chip_flow_alert_min_momentum_change_lots: float = 2.0
     chip_flow_alert_min_sudden_drop_lots: float = 5.0
     chip_flow_electronic_scan_interval_seconds: float = 2.0
+    # Default to exchange-operated free feeds.  Paid adapters stay available
+    # for an explicitly opted-in deployment, but must never be contacted while
+    # this setting is enabled.
+    free_quote_only: bool = True
+    strong_stock_quote_poll_seconds: float = 5.0
     fugle_marketdata_api_key: str = ""
     fugle_marketdata_base_url: str = "https://api.fugle.tw/marketdata/v1.0"
+    fugle_live_enabled: bool = False
+    fugle_live_publish_enabled: bool = False
+    fugle_live_subscription_limit: int = 300
+    fugle_rest_requests_per_minute: int = 600
+    fugle_failover_after_seconds: float = 10.0
+    fugle_recovery_hold_seconds: float = 30.0
     fugle_chip_flow_page_size: int = 500
     fugle_chip_flow_max_pages: int = 100
     fugle_chip_flow_include_odd_lot: bool = False
