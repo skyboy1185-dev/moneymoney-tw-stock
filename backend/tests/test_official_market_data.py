@@ -95,6 +95,29 @@ def test_locked_refresh_returns_verified_cache_without_waiting() -> None:
     assert result == {"2330": quote}
 
 
+def test_quote_refresh_lock_is_recreated_for_a_new_event_loop() -> None:
+    provider = TwseMisMarketDataProvider()
+
+    async def bind_first_loop() -> asyncio.Lock:
+        lock = provider._refresh_lock()
+        await lock.acquire()
+        waiting = asyncio.create_task(lock.acquire())
+        await asyncio.sleep(0)
+        lock.release()
+        await waiting
+        lock.release()
+        return lock
+
+    first_lock = asyncio.run(bind_first_loop())
+
+    async def lock_for_second_loop() -> asyncio.Lock:
+        return provider._refresh_lock()
+
+    second_lock = asyncio.run(lock_for_second_loop())
+
+    assert second_lock is not first_lock
+
+
 def test_quote_history_for_returns_only_today_and_respects_limit() -> None:
     engine = MockDayTradingEngine()
     now = engine._now().astimezone(official_market_data.TAIPEI)

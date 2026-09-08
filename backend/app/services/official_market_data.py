@@ -225,7 +225,25 @@ class TwseMisMarketDataProvider:
         self._cache: dict[str, tuple[OfficialStockQuote, datetime]] = {}
         self._last_trades: dict[str, OfficialStockQuote] = {}
         self._lock = asyncio.Lock()
+        self._lock_loop: asyncio.AbstractEventLoop | None = None
         self._intraday_client: httpx.AsyncClient | None = None
+
+    def _refresh_lock(self) -> asyncio.Lock:
+        """Return a refresh lock owned by the active asyncio event loop.
+
+        Some scheduled, synchronous entry points use ``asyncio.run`` while the
+        API and background tasks run on the ASGI loop. An asyncio lock that has
+        waited once is bound to its original loop and cannot be reused by the
+        other one. Cache data is safe to share, but the in-flight refresh lock
+        must be local to its loop.
+        """
+        loop = asyncio.get_running_loop()
+        if self._lock_loop is None:
+            self._lock_loop = loop
+        elif self._lock_loop is not loop:
+            self._lock = asyncio.Lock()
+            self._lock_loop = loop
+        return self._lock
 
     async def open_intraday(self) -> None:
         """Reuse the dedicated lane's connection without affecting global get_quotes."""
@@ -419,9 +437,10 @@ class TwseMisMarketDataProvider:
         missing = [stock for stock in stocks if stock.symbol not in cached]
         if not missing:
             return cached
-        if self._lock.locked() and verified_cache:
+        refresh_lock = self._refresh_lock()
+        if refresh_lock.locked() and verified_cache:
             return {**verified_cache, **cached}
-        async with self._lock:
+        async with refresh_lock:
             now = datetime.now(UTC)
             for stock in missing:
                 entry = self._cache.get(stock.symbol)
