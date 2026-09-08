@@ -318,7 +318,26 @@ def create_backtest(body: BacktestBody, background_tasks: BackgroundTasks, uid: 
         background_tasks.add_task(run_backtest, job.id, symbols, body.start_date, end)
         return {'id': job.id, 'status': job.status, 'result': {}}
     from ..services.strong_stock_history import history_coverage
+    if body.symbols:
+        raise HTTPException(422, '正式策略使用當時保存的完整股票池，不使用自訂價量名單')
     coverage = history_coverage(db, body.start_date, body.end_date)
+    if coverage['ready']:
+        from ..services.strong_stock_replay import run_job
+        active = db.scalar(select(StrongStockBacktestJob.id).where(
+            StrongStockBacktestJob.user_id == uid, StrongStockBacktestJob.status == 'RUNNING',
+            StrongStockBacktestJob.created_at >= datetime.now(UTC) - timedelta(minutes=5)))
+        if active:
+            raise HTTPException(409, '已有回測執行中，請等待完成')
+        setting = db.get(StrongStockSetting, uid)
+        parameters = merged_config(parse_json(setting.config_json, {}) if setting else {})
+        job = StrongStockBacktestJob(id=str(uuid4()), user_id=uid, start_date=body.start_date,
+                                    end_date=body.end_date, status='RUNNING',
+                                    request_json=json.dumps({**body.model_dump(mode='json'), 'parameters': parameters}),
+                                    data_status_json=json.dumps(coverage, ensure_ascii=False))
+        db.add(job)
+        db.commit()
+        background_tasks.add_task(run_job, job.id)
+        return {'id': job.id, 'status': job.status, 'result': {}}
     job = StrongStockBacktestJob(
         id=str(uuid4()), user_id=uid, start_date=body.start_date, end_date=body.end_date,
         status="DATA_INSUFFICIENT", data_status_json=json.dumps(coverage, ensure_ascii=False),
@@ -331,7 +350,7 @@ def create_backtest(body: BacktestBody, background_tasks: BackgroundTasks, uid: 
 @router.get("/backtests")
 def backtests(uid: str = Depends(user_id), db: Session = Depends(get_db)) -> dict[str, object]:
     rows = list(db.scalars(select(StrongStockBacktestJob).where(StrongStockBacktestJob.user_id == uid).order_by(StrongStockBacktestJob.created_at.desc()).limit(100)).all())
-    return {"items": [{"id": row.id, "startDate": row.start_date, "endDate": row.end_date, "status": row.status, "dataStatus": parse_json(row.data_status_json, {}), "result": parse_json(row.result_json, {}), "createdAt": row.created_at, "completedAt": row.completed_at} for row in rows]}
+    return {"items": [{"id": row.id, "mode": parse_json(row.request_json, {}).get('mode', 'FULL'), "startDate": row.start_date, "endDate": row.end_date, "status": row.status, "dataStatus": {k: v for k, v in parse_json(row.data_status_json, {}).items() if k != 'minutePrices'}, "result": parse_json(row.result_json, {}), "createdAt": row.created_at, "completedAt": row.completed_at} for row in rows]}
 
 
 @router.get('/backtests/{job_id}')

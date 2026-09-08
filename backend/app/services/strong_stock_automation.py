@@ -15,6 +15,7 @@ from ..database import BackgroundSessionLocal as SessionLocal
 from ..strong_stock_models import (
     StrongStockDataRun, StrongStockNotification, StrongStockOrder, StrongStockPosition,
     StrongStockRanking, StrongStockSetting,
+    StrongStockScanArchive,
 )
 from .adaptive_electronic_automation import fetch_adaptive_scan_payload
 from .day_trading_schedule import is_twse_trading_day
@@ -88,6 +89,13 @@ class StrongStockAutomation:
                         StrongStockDataRun.trade_date == local.date(),
                         StrongStockDataRun.status == "COMPLETED",
                     ).limit(1))
+                    archived = db.scalar(select(StrongStockScanArchive.id).where(
+                        StrongStockScanArchive.trade_date == local.date(),
+                        StrongStockScanArchive.observed_at >= datetime.combine(local.date(), time(13, 30), TAIPEI),
+                    ).limit(1))
+                    # A pre-close/legacy ranking is not a frozen close input. Let the
+                    # normal scheduled scan capture it once before skipping this day.
+                    completed = completed if archived else None
                     if completed:
                         users = list(db.scalars(select(StrongStockSetting.user_id).where(StrongStockSetting.paper_enabled.is_(True))).all())
                         queued = {uid: queue_paper_orders(db, uid, local.date()) for uid in users}

@@ -1,7 +1,8 @@
 # 免費價量回測
 
 此模式僅為另一套價量策略研究，已移出正式策略回測的預設畫面。
-正式回測使用 `/backtest-coverage` 顯示實際保存與缺漏的日期；目前尚無完整損益重播流程。
+正式回測使用 `/backtest-coverage` 檢查實際資料，`mode: FULL` 執行共用規則重播。
+正式模式詳見 [strong-stock-replay.md](strong-stock-replay.md)。
 每次正式掃描會附加寫入 `strong_stock_scan_archives`，保留原始輸入、參數、策略版本與觀察時間。
 這不會把既有每日排行榜倒填成當時的完整輸入，也不代表盤中行情及帳戶初始狀態已齊全。
 

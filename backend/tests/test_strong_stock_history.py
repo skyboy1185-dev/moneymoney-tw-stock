@@ -27,7 +27,7 @@ def test_scan_inputs_are_appended_with_original_timestamp_and_config():
         assert rows[0].observed_at.replace(tzinfo=UTC) == at
         coverage = history_coverage(db, date(2026, 9, 1), date(2026, 9, 7))
         assert coverage['ready'] is False
-        assert coverage['missingArchivedInputDates'] == ['2026-09-01', '2026-09-02', '2026-09-03', '2026-09-04']
+        assert coverage['missingArchivedInputDates'] == ['2026-08-31', '2026-09-01', '2026-09-02', '2026-09-03', '2026-09-04']
         # Empty scans preserve evidence but must not manufacture stock coverage.
         assert coverage['firstSnapshotDate'] is None
         assert '2026-09-07' in coverage['missingSnapshotDates']
