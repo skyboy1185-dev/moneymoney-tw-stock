@@ -1359,17 +1359,19 @@ async def _yahoo_portfolio_quotes(requests: list[StockQuoteRequest]) -> dict[str
         },
     ) as client:
         async def fetch(request: StockQuoteRequest) -> tuple[str, _PortfolioQuote | None]:
-            ticker = f"{request.symbol}{'.TWO' if request.market in {'上櫃', 'TPEX', 'OTC'} else '.TW'}"
-            for url in YAHOO_QUOTE_URLS:
-                try:
-                    response = await client.get(url.format(ticker=ticker), params={"range": "1d", "interval": "1m"})
-                    response.raise_for_status()
-                    meta = response.json()["chart"]["result"][0]["meta"]
-                    price = float(meta.get("regularMarketPrice") or meta.get("previousClose") or 0)
-                    if price > 0:
-                        return request.symbol, _PortfolioQuote(price)
-                except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError):
-                    continue
+            suffixes = (".TWO", ".TW") if request.market in {'上櫃', 'TPEX', 'OTC'} else (".TW", ".TWO")
+            for suffix in suffixes:
+                ticker = f"{request.symbol}{suffix}"
+                for url in YAHOO_QUOTE_URLS:
+                    try:
+                        response = await client.get(url.format(ticker=ticker), params={"range": "1d", "interval": "1m"})
+                        response.raise_for_status()
+                        meta = response.json()["chart"]["result"][0]["meta"]
+                        price = float(meta.get("regularMarketPrice") or meta.get("previousClose") or 0)
+                        if price > 0:
+                            return request.symbol, _PortfolioQuote(price)
+                    except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError):
+                        continue
             return request.symbol, None
         rows = await asyncio.gather(*(fetch(request) for request in requests))
     return {symbol: quote for symbol, quote in rows if quote is not None}
