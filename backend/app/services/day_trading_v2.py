@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, time
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
-from typing import Iterable, Mapping, Protocol, Sequence
+from typing import Callable, Iterable, Mapping, Protocol, Sequence
 from zoneinfo import ZoneInfo
 
 
@@ -181,6 +181,8 @@ def run_backtest(
     market_regime_by_time: Mapping[datetime, str] | None = None,
     sector_by_symbol: Mapping[str, str] | None = None,
     controller_filter: bool | None = None,
+    strategy_policy: Mapping[str, Mapping[str, Mapping[str, object]]] | None = None,
+    signal_evaluator: Callable[..., list[StrategySignal]] | None = None,
 ) -> dict[str, object]:
     """Run a causal intraday backtest using the same controller and risk gates.
 
@@ -233,14 +235,22 @@ def run_backtest(
             for index in range(15, len(bars)):
                 signal_time = bars[index].timestamp
                 evaluation_filter = None if strategy_id == "ALL" else {strategy_id}
-                for signal in evaluate_strategies(
+                parameters = strategy_parameters
+                if strategy_policy is not None:
+                    selected = strategy_policy.get(regime_map.get(signal_time, "UNKNOWN"), {})
+                    evaluation_filter = set(selected) & enabled
+                    if not evaluation_filter:
+                        continue
+                    parameters = selected
+                for signal in (signal_evaluator or evaluate_strategies)(
                     bars[:index + 1], previous_high=previous_high, previous_low=previous_low,
-                    strategy_parameters=strategy_parameters, enabled_strategies=evaluation_filter,
+                    strategy_parameters=parameters, enabled_strategies=evaluation_filter,
                 ):
                     if signal.strategy_id in enabled:
                         candidates.append({
                             "signalTime": signal_time, "symbol": symbol, "signal": signal,
                             "dayBars": bars, "fillIndex": index + 1,
+                            "minimumNetRiskReward": (parameters or {}).get(signal.strategy_id, {}).get("minimumNetRiskReward", 0),
                         })
             previous_bars = bars
 
@@ -422,6 +432,10 @@ def run_backtest(
         planned_target = calculate_trade_result(
             entry_price=entry, exit_price=signal.target_price, quantity=quantity, **cost_options,
         )
+        net_rr = planned_target["netPnl"] / -planned_stop["netPnl"]
+        if dec(row.get("minimumNetRiskReward", 0)) > 0 and net_rr < dec(row["minimumNetRiskReward"]):
+            skip("NET_RISK_REWARD_BELOW_MINIMUM_AFTER_COSTS")
+            continue
         entry_capital = entry_cash_required(entry, quantity, cost_options)
         if entry_capital > available:
             skip("CAPITAL_RESERVATION_EXCEEDED")
@@ -443,7 +457,7 @@ def run_backtest(
             "actualRiskReward": str(actual_rr.quantize(Decimal("0.0001"))),
             "plannedNetRisk": str(-planned_stop["netPnl"]),
             "riskBudget": str(money(risk_budget)),
-            "plannedNetRiskReward": str((planned_target["netPnl"] / -planned_stop["netPnl"]).quantize(Decimal("0.0001"))),
+            "plannedNetRiskReward": str(net_rr.quantize(Decimal("0.0001"))),
             "exitTime": exit_bar.timestamp, "exitPrice": str(money(exit_price)), "exitReason": exit_reason,
             "grossPnl": str(trade_result["grossPnl"]), "cost": str(trade_result["total"]),
             "netPnl": str(trade_result["netPnl"]), "buyTurnover": str(trade_result["buyTurnover"]),
@@ -474,6 +488,7 @@ def run_backtest(
             "sameDayForcedExit": True, "capitalReservedUntilExit": True,
             "controllerApplied": apply_controller,
             "positionRiskIncludesCosts": True, "stopGapUsesOpen": True,
+            "strategyPolicyApplied": strategy_policy is not None,
         },
         "tradingDayCount": len(trading_days),
         "skipReasons": [
@@ -818,6 +833,7 @@ def evaluate_strategies(
     previous_low: object | None = None,
     strategy_parameters: Mapping[str, Mapping[str, object]] | None = None,
     enabled_strategies: set[str] | None = None,
+    _indicators: tuple[Decimal, Decimal, Sequence[MinuteBar]] | None = None,
 ) -> list[StrategySignal]:
     """Evaluate completed bars only. The last bar is the decision bar."""
     if len(bars) < 16:
@@ -825,8 +841,8 @@ def evaluate_strategies(
     current = bars[-1]
     local_time = current.timestamp.astimezone(TAIPEI).time() if current.timestamp.tzinfo else current.timestamp.time()
     history = bars[:-1]
-    current_vwap = _vwap(bars)
-    previous_vwap = _vwap(history)
+    current_vwap = _indicators[0] if _indicators else _vwap(bars)
+    previous_vwap = _indicators[1] if _indicators else _vwap(history)
     avg_volume = Decimal(sum(bar.volume for bar in history[-15:])) / min(15, len(history))
     volume_ratio = Decimal(current.volume) / avg_volume if avg_volume else ZERO
     signals: list[StrategySignal] = []
@@ -848,7 +864,7 @@ def evaluate_strategies(
         signals.append(StrategySignal(strategy_id, confidence.quantize(Decimal("0.1")), entry, stop, target, reasons))
 
     enabled = enabled_strategies or set(parameters)
-    opening = [bar for bar in bars if time(9, 0) <= (bar.timestamp.astimezone(TAIPEI).time() if bar.timestamp.tzinfo else bar.timestamp.time()) < time(9, 15)]
+    opening = _indicators[2] if _indicators else [bar for bar in bars if time(9, 0) <= (bar.timestamp.astimezone(TAIPEI).time() if bar.timestamp.tzinfo else bar.timestamp.time()) < time(9, 15)]
     if "OPENING_RANGE_BREAKOUT" in enabled and opening and time(9, 15) <= local_time <= time(11, 0):
         opening_high = max(bar.high for bar in opening)
         if current.close > opening_high and current.close > current_vwap and volume_ratio >= dec(param("OPENING_RANGE_BREAKOUT", "volumeMultiplier")):

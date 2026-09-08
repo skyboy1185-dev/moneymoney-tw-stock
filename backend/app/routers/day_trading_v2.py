@@ -1617,6 +1617,7 @@ def performance_by_market_regime(
         )) if source_id else db.scalar(select(DayTradeV2BacktestJob).where(
             DayTradeV2BacktestJob.user_id == user_id,
             DayTradeV2BacktestJob.status == "COMPLETED",
+            DayTradeV2BacktestJob.backtest_mode != "RESEARCH",
         ).order_by(DayTradeV2BacktestJob.created_at.desc()))
         if not job:
             raise HTTPException(404, "找不到已完成的回測任務")

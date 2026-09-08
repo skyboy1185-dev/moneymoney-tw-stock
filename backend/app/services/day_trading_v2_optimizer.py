@@ -18,6 +18,7 @@ from .day_trading_v2 import DEFAULT_STRATEGY_PARAMETERS, dec, performance, run_b
 from .day_trading_v2_datasets import DatasetValidationError, load_dataset
 from .day_trading_v2_optimization import (
     bounded_parameter_candidates, candidate_passes, parameter_checksum, walk_forward_splits,
+    frozen_validation_ranges,
 )
 
 
@@ -141,7 +142,9 @@ def execute_optimization_job(job_id: str) -> None:
         if not splits:
             raise DatasetValidationError("至少需要160個交易日才能執行Walk-Forward")
         candidates = bounded_parameter_candidates(champion_parameters, PARAMETER_BOUNDS[job.strategy_id])
-        validation_ranges = [fold["validation"] for fold in splits]
+        # Later rolling validation windows overlap earlier OOS windows. Pooling
+        # them would let future outcomes choose the one version we promote.
+        validation_ranges = frozen_validation_ranges(splits)
         scored = []
         for index, parameters in enumerate(candidates):
             trades = _run_ranges(datasets, validation_ranges, job.strategy_id, parameters, config, sectors, regimes)
@@ -160,6 +163,10 @@ def execute_optimization_job(job_id: str) -> None:
         champion_trades = _run_ranges(datasets, oos_ranges, job.strategy_id, champion_parameters, config, sectors, regimes)
         candidate_summary = _summary(candidate_trades, sectors, datasets)
         champion_summary = _summary(champion_trades, sectors, datasets)
+        champion_validation = _summary(
+            _run_ranges(datasets, validation_ranges, job.strategy_id, champion_parameters, config, sectors, regimes),
+            sectors, datasets,
+        )
         neighbor_stable = True
         for key, value in selected.items():
             if not isinstance(value, (int, float, Decimal, str)):
@@ -168,8 +175,8 @@ def execute_optimization_job(job_id: str) -> None:
                 neighbor = dict(selected)
                 low, high = map(dec, PARAMETER_BOUNDS[job.strategy_id][key])
                 neighbor[key] = max(low, min(high, dec(value) * factor))
-                neighbor_summary = _summary(_run_ranges(datasets, oos_ranges, job.strategy_id, neighbor, config, sectors, regimes), sectors, datasets)
-                if dec(neighbor_summary["netPnl"]) <= 0 or dec(neighbor_summary.get("profitFactor") or 0) < Decimal("1.1") or dec(neighbor_summary["maxDrawdown"]) > dec(champion_summary["maxDrawdown"]) * Decimal("1.1"):
+                neighbor_summary = _summary(_run_ranges(datasets, validation_ranges, job.strategy_id, neighbor, config, sectors, regimes), sectors, datasets)
+                if dec(neighbor_summary["netPnl"]) <= 0 or dec(neighbor_summary.get("profitFactor") or 0) < Decimal("1.1") or dec(neighbor_summary["maxDrawdown"]) > dec(champion_validation["maxDrawdown"]) * Decimal("1.1"):
                     neighbor_stable = False
                     break
             if not neighbor_stable:
@@ -185,6 +192,8 @@ def execute_optimization_job(job_id: str) -> None:
                 "validation": validation_summary, "outOfSample": candidate_summary,
                 "championOutOfSample": champion_summary, "walkForwardFolds": splits,
                 "quality": quality, "passed": passed, "failures": failures,
+                "selectionMode": "FROZEN_BEFORE_FIRST_OOS", "selectionRanges": validation_ranges,
+                "neighborStabilitySource": "VALIDATION_ONLY",
             }
             job.result_json = json.dumps(result, default=str, ensure_ascii=False)
             job.progress_pct = Decimal("100")

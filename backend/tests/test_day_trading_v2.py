@@ -179,6 +179,15 @@ def test_backtest_stop_gap_uses_open_and_sizing_does_not_anticipate_gap(monkeypa
     assert -Decimal(trade["netPnl"]) > Decimal(trade["riskBudget"])
 
 
+def test_research_net_reward_filter_uses_filled_price_and_costs(monkeypatch):
+    _, bars = _ranked_decision_bars(monkeypatch)
+    result = run_backtest({"2330": bars}, strategy_id="OPENING_RANGE_BREAKOUT",
+                         portfolio=False, controller_filter=False,
+                         strategy_parameters={"OPENING_RANGE_BREAKOUT": {"minimumNetRiskReward": "10"}})
+    assert not result["trades"]
+    assert any(row["reason"] == "NET_RISK_REWARD_BELOW_MINIMUM_AFTER_COSTS" for row in result["skipReasons"])
+
+
 def test_duplicate_signal_selects_highest_confidence():
     low = StrategySignal("A", Decimal("81"), Decimal("10"), Decimal("9"), Decimal("12"), ())
     high = StrategySignal("B", Decimal("92"), Decimal("10"), Decimal("9"), Decimal("12"), ())

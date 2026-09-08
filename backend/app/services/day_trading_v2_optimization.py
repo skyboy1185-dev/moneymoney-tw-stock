@@ -174,6 +174,14 @@ def walk_forward_splits(
     return result
 
 
+def frozen_validation_ranges(folds):
+    """One frozen candidate may only be selected before its earliest OOS date."""
+    if not folds:
+        return []
+    first_test = min(fold["oos"][0] for fold in folds)
+    return sorted({fold["validation"] for fold in folds if fold["validation"][1] < first_test})
+
+
 def candidate_passes(
     result: Mapping[str, object], champion: Mapping[str, object], *, config: Mapping[str, object] | None = None,
 ) -> tuple[bool, tuple[str, ...]]:
