@@ -68,7 +68,7 @@ def test_superseded_engine_result_is_not_presented_as_validated():
         "summary": {"initialCapital": "3000000"}, "trades": [],
     })
     assert result["validationStatus"] == "SUPERSEDED_UNVERIFIED"
-    assert "3.2.0" in result["validationWarning"]
+    assert backtest_service.BACKTEST_ENGINE_VERSION in result["validationWarning"]
 
 
 def test_fugle_minute_client_keeps_timezone_and_converts_equity_lots_to_shares():

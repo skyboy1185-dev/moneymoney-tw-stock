@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 TAIPEI = ZoneInfo("Asia/Taipei")
 ZERO = Decimal("0")
 CENT = Decimal("0.01")
-BACKTEST_ENGINE_VERSION = "3.2.0"
+BACKTEST_ENGINE_VERSION = "3.3.0"
 
 STRATEGIES = (
     ("OPENING_RANGE_BREAKOUT", "開盤15分鐘區間突破", Decimal("750000")),
@@ -195,6 +195,11 @@ def run_backtest(
 
     cfg = merged_config(config)
     initial = dec(cfg["initialCapital"])
+    cost_options = dict(
+        commission_rate=cfg["commissionRate"], commission_discount=cfg["commissionDiscount"],
+        minimum_commission=cfg["minimumCommission"], tax_rate=cfg["dayTradeTaxRate"],
+        slippage_bps=cfg["slippageBps"], other_cost=cfg["otherCost"],
+    )
     enabled = {item[0] for item in STRATEGIES} if strategy_id == "ALL" else {strategy_id}
     regime_map = market_regime_by_time or {}
     has_verified_regimes = market_regime_by_time is not None
@@ -382,7 +387,7 @@ def run_backtest(
                 exit_bar, exit_reason = bar, "PROFIT_TARGET"
                 break
         raw_exit = (
-            signal.stop_price if exit_reason == "STOP_LOSS"
+            min(signal.stop_price, exit_bar.open) if exit_reason == "STOP_LOSS"
             else signal.target_price if exit_reason == "PROFIT_TARGET"
             else exit_bar.close
         )
@@ -406,11 +411,18 @@ def run_backtest(
             price=entry, stop_price=signal.stop_price, risk_budget=risk_budget,
             capital_limit=capital_limit, lot_size=int(cfg["boardLotSize"]),
             allow_odd_lots=bool(cfg["allowOddLots"]),
+            cost_options=cost_options,
         )
         if quantity <= 0:
             skip("INSUFFICIENT_CAPITAL_OR_RISK_BUDGET")
             continue
-        entry_capital = money(entry * quantity)
+        planned_stop = calculate_trade_result(
+            entry_price=entry, exit_price=signal.stop_price, quantity=quantity, **cost_options,
+        )
+        planned_target = calculate_trade_result(
+            entry_price=entry, exit_price=signal.target_price, quantity=quantity, **cost_options,
+        )
+        entry_capital = entry_cash_required(entry, quantity, cost_options)
         if entry_capital > available:
             skip("CAPITAL_RESERVATION_EXCEEDED")
             continue
@@ -429,6 +441,9 @@ def run_backtest(
             "entryTime": fill_bar.timestamp, "entryPrice": str(money(entry)), "quantity": quantity,
             "stopPrice": str(money(signal.stop_price)), "targetPrice": str(money(signal.target_price)),
             "actualRiskReward": str(actual_rr.quantize(Decimal("0.0001"))),
+            "plannedNetRisk": str(-planned_stop["netPnl"]),
+            "riskBudget": str(money(risk_budget)),
+            "plannedNetRiskReward": str((planned_target["netPnl"] / -planned_stop["netPnl"]).quantize(Decimal("0.0001"))),
             "exitTime": exit_bar.timestamp, "exitPrice": str(money(exit_price)), "exitReason": exit_reason,
             "grossPnl": str(trade_result["grossPnl"]), "cost": str(trade_result["total"]),
             "netPnl": str(trade_result["netPnl"]), "buyTurnover": str(trade_result["buyTurnover"]),
@@ -458,6 +473,7 @@ def run_backtest(
             "dailyIndicatorReset": True, "nextBarFillRevalidated": True,
             "sameDayForcedExit": True, "capitalReservedUntilExit": True,
             "controllerApplied": apply_controller,
+            "positionRiskIncludesCosts": True, "stopGapUsesOpen": True,
         },
         "tradingDayCount": len(trading_days),
         "skipReasons": [
@@ -476,6 +492,7 @@ def run_backtest(
 def calculate_position_size(
     *, price: object, stop_price: object, risk_budget: object, capital_limit: object,
     lot_size: int = 1000, allow_odd_lots: bool = False,
+    cost_options: Mapping[str, object] | None = None,
 ) -> int:
     entry = dec(price)
     risk_per_share = entry - dec(stop_price)
@@ -486,7 +503,30 @@ def calculate_position_size(
     quantity = min(by_risk, by_capital)
     if not allow_odd_lots:
         quantity = (quantity // lot_size) * lot_size
+    if cost_options is not None:
+        # Search whole lots using the same rounded fees as realized P&L.
+        # Only entry/stop information is used; future gap losses are unknowable.
+        step = 1 if allow_odd_lots else lot_size
+        low, high = 0, quantity // step
+        while low < high:
+            middle = (low + high + 1) // 2
+            shares = middle * step
+            planned = calculate_trade_result(
+                entry_price=entry, exit_price=stop_price, quantity=shares, **cost_options,
+            )
+            if (-planned["netPnl"] <= dec(risk_budget)
+                    and entry_cash_required(entry, shares, cost_options) <= dec(capital_limit)):
+                low = middle
+            else:
+                high = middle - 1
+        quantity = low * step
     return max(quantity, 0)
+
+
+def entry_cash_required(entry: Decimal, quantity: int, cost_options: Mapping[str, object]) -> Decimal:
+    costs = calculate_costs(entry_price=entry, exit_price=entry, quantity=quantity, **cost_options)
+    entry_slippage = money(entry * quantity * dec(cost_options.get("slippage_bps", "5")) / Decimal("10000"))
+    return money(entry * quantity + costs.buy_fee + entry_slippage)
 
 
 @dataclass(frozen=True)

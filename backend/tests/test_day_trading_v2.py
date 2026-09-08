@@ -148,6 +148,37 @@ def test_invalid_stop_or_insufficient_funds_produces_zero_quantity():
     assert calculate_position_size(price=100, stop_price=98, risk_budget=6000, capital_limit=0) == 0
 
 
+def test_cost_inclusive_size_limits_planned_loss_and_reserves_entry_costs():
+    quantity = calculate_position_size(price="193.5", stop_price=193, risk_budget=6000,
+                                      capital_limit=3000000, cost_options={})
+    assert quantity == 5000
+    loss = calculate_trade_result(entry_price="193.5", exit_price=193, quantity=quantity)
+    assert -loss["netPnl"] <= 6000
+    assert -calculate_trade_result(entry_price="193.5", exit_price=193, quantity=quantity+1000)["netPnl"] > 6000
+    assert calculate_position_size(price=100, stop_price=99, risk_budget=6000,
+                                   capital_limit=100000, cost_options={}) == 0
+    assert calculate_position_size(price=100, stop_price=99, risk_budget=20,
+                                   capital_limit=100000, allow_odd_lots=True, cost_options={}) == 0
+
+
+def test_backtest_stop_gap_uses_open_and_sizing_does_not_anticipate_gap(monkeypatch):
+    _, bars = _ranked_decision_bars(monkeypatch)
+    baseline = run_backtest({"2330": bars}, strategy_id="OPENING_RANGE_BREAKOUT",
+                            portfolio=False, controller_filter=False)
+    assert baseline["trades"]
+    gap = list(bars)
+    gap[17] = MinuteBar(gap[17].timestamp, Decimal("95"), Decimal("96"),
+                        Decimal("94"), Decimal("95"), 2500)
+    changed = run_backtest({"2330": gap}, strategy_id="OPENING_RANGE_BREAKOUT",
+                          portfolio=False, controller_filter=False)
+    trade = changed["trades"][0]
+    assert trade["exitReason"] == "STOP_LOSS"
+    assert trade["exitPrice"] == "95.00"
+    assert trade["quantity"] == baseline["trades"][0]["quantity"]
+    assert Decimal(trade["plannedNetRisk"]) <= Decimal(trade["riskBudget"])
+    assert -Decimal(trade["netPnl"]) > Decimal(trade["riskBudget"])
+
+
 def test_duplicate_signal_selects_highest_confidence():
     low = StrategySignal("A", Decimal("81"), Decimal("10"), Decimal("9"), Decimal("12"), ())
     high = StrategySignal("B", Decimal("92"), Decimal("10"), Decimal("9"), Decimal("12"), ())

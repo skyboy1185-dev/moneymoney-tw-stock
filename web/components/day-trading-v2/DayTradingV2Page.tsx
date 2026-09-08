@@ -88,7 +88,10 @@ function BacktestPerformance({ job, robotById }: { job: Record<string, unknown>;
   const settingsNotice = <p className="dt2-data-warning">{snapshot?.source === "CURRENT_SETTINGS"
     ? `使用建立任務時的設定與啟用策略參數（${dateTime(String(snapshot.capturedAt))}）。`
     : "舊任務使用系統預設參數，未保存當時的使用者設定；請重跑以套用目前設定。"}
-    每筆風險上限與進場風險報酬比目前按價差計算，尚未含成本，因此停損淨虧可能超過設定上限。資料驗證通過不代表策略獲利。</p>;
+    {result.engineVersion === "3.3.0"
+      ? "部位大小已按含成本的預估停損虧損計算；跳空可能超過風險預算，跌破停損價時按較低開盤價模擬成交。進場風險報酬門檻仍按價差計算。"
+      : "此舊版每筆風險上限與進場風險報酬比按價差計算，未含成本，因此停損淨虧可能超過設定上限。"}
+    資料驗證通過不代表策略獲利。</p>;
   const robotResults = individual ? Object.entries(individual).flatMap(([strategyId, value]) => {
     const run = record(value);
     const performance = performanceFrom(run?.summary);
