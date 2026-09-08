@@ -163,8 +163,10 @@ function RegimeResearchResult({ data, robotById }: { data: Record<string, unknow
   };
   return <div className="dt2-backtest-performance">
     <h3>盤勢策略研究（尚未啟用）</h3>
-    <p className="dt2-data-warning">比較 {String(data.candidateCount)} 個候選；依時間分開訓練、驗證與測試。各窗口獨立本金 {number(String(data.capitalPerFold))} 元，績效不能直接當作同一帳戶加總。空手為零交易，不代表已找到獲利策略。</p>
+    <p className="dt2-data-warning">使用 {String(data.availableDays)} 個交易日，比較 {String(data.candidateCount)} 個候選；依時間分開訓練、驗證與測試。各窗口獨立本金 {number(String(data.capitalPerFold))} 元，績效不能直接當作同一帳戶加總。空手為零交易，不代表已找到獲利策略。</p>
     <p className="dt2-data-warning">使用目前股票池回看歷史，仍有選股偏差；研究結果不會自動切換盤中策略，也不能保證各種行情都獲利。</p>
+    <p className="dt2-data-warning">此研究採分鐘成交與整筆出場，尚未涵蓋分批停利、月回撤停機及連敗停機，不能直接視為盤中機器人的績效。</p>
+    <p>門檻：訓練至少 30 筆、分布於 10 天；驗證至少 10 筆、分布於 5 天。兩階段都須淨獲利，且獲利因子至少 1.2。</p>
     {list(data.folds).map((fold, index) => {
       const ranges = record(fold.ranges) ?? {};
       const frozen = record(fold.frozenRoutes) ?? {};
@@ -173,11 +175,14 @@ function RegimeResearchResult({ data, robotById }: { data: Record<string, unknow
       const baseline = performanceFrom(record(fold.baselineOutOfSample)?.summary);
       const summary = performanceFrom(record(fold.outOfSample)?.summary);
       const stressed = performanceFrom(record(fold.stressedOutOfSample)?.summary);
+      const tail = record(fold.recentTail);
+      const tailSummary = performanceFrom(tail?.summary);
       return <section key={index}>
         <h3>窗口 {index + 1}：測試 {Array.isArray(ranges.oos) ? ranges.oos.join(" ～ ") : "—"}</h3>
         <p>訓練：{Array.isArray(ranges.train) ? ranges.train.join(" ～ ") : "—"}；驗證：{Array.isArray(ranges.validation) ? ranges.validation.join(" ～ ") : "—"}</p>
         <p>測試淨損益：{summary ? signedMoney(summary.netPnl) : "—"}（{summary?.tradeCount ?? 0} 筆）；原五策略組合：{baseline ? signedMoney(baseline.netPnl) : "—"}。</p>
         {stressed && <p>滑價加倍的壓力測試：{signedMoney(stressed.netPnl)}（{stressed.tradeCount} 筆）。此結果未用來重新挑選候選。</p>}
+        {tail && <p>測試期之後的短期追蹤：{tailSummary ? `${signedMoney(tailSummary.netPnl)}（${tailSummary.tradeCount} 筆）` : "維持空手，沒有交易"}。沿用原先固定的選擇，短期樣本不足以證明穩定獲利。</p>}
         <div className="dt2-table"><table><thead><tr><th>盤勢</th><th>測試前凍結的選擇</th><th>驗證淨損益／筆數</th><th>測試淨損益／筆數</th></tr></thead><tbody>
           {Object.entries(names).map(([id, name]) => {
             const val = performanceFrom(validation[id]);

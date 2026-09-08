@@ -131,6 +131,8 @@ def run_regime_research(datasets, sectors, regimes, *, config=None,
               "minimumValidationTrades": 10, "automaticallyActivated": False,
               "capitalPerFold": str(cfg["initialCapital"]),
               "regimeMinutes": dict(Counter(regimes.values())),
+              "executionLimitations": ["MINUTE_BAR_FILLS", "NO_PARTIAL_PROFIT_TAKING",
+                                      "NO_MONTHLY_DRAWDOWN_HALT", "NO_CONSECUTIVE_LOSS_HALT"],
               "unusedTailDays": [str(day) for day in days if day > folds[-1]["oos"][1]]}
 
     def run(bounds, *, execution_config=None, **kwargs):
