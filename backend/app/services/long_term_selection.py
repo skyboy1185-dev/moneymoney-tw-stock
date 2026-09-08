@@ -51,7 +51,10 @@ SYNC_DUPLICATE_STATUS = "cancelled_duplicate"
 SKIPPED_UNFILLED_STATUS = "skipped_unfilled"
 TAIPEI = ZoneInfo("Asia/Taipei")
 logger = logging.getLogger(__name__)
-YAHOO_QUOTE_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+YAHOO_QUOTE_URLS = (
+    "https://query1.finance.yahoo.com/v8/finance/chart/{ticker}",
+    "https://query2.finance.yahoo.com/v8/finance/chart/{ticker}",
+)
 BENCHMARK_DEFINITIONS = (
     {"symbol": "0050", "name": "元大台灣50", "market": "上市"},
     {"symbol": "00881", "name": "國泰台灣科技龍頭", "market": "上市"},
@@ -1350,14 +1353,17 @@ async def _yahoo_portfolio_quotes(requests: list[StockQuoteRequest]) -> dict[str
     async with httpx.AsyncClient(timeout=3.0) as client:
         async def fetch(request: StockQuoteRequest) -> tuple[str, _PortfolioQuote | None]:
             ticker = f"{request.symbol}{'.TWO' if request.market in {'上櫃', 'TPEX', 'OTC'} else '.TW'}"
-            try:
-                response = await client.get(YAHOO_QUOTE_URL.format(ticker=ticker), params={"range": "1d", "interval": "1m"})
-                response.raise_for_status()
-                meta = response.json()["chart"]["result"][0]["meta"]
-                price = float(meta.get("regularMarketPrice") or meta.get("previousClose") or 0)
-                return request.symbol, _PortfolioQuote(price) if price > 0 else None
-            except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError):
-                return request.symbol, None
+            for url in YAHOO_QUOTE_URLS:
+                try:
+                    response = await client.get(url.format(ticker=ticker), params={"range": "1d", "interval": "1m"})
+                    response.raise_for_status()
+                    meta = response.json()["chart"]["result"][0]["meta"]
+                    price = float(meta.get("regularMarketPrice") or meta.get("previousClose") or 0)
+                    if price > 0:
+                        return request.symbol, _PortfolioQuote(price)
+                except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError):
+                    continue
+            return request.symbol, None
         rows = await asyncio.gather(*(fetch(request) for request in requests))
     return {symbol: quote for symbol, quote in rows if quote is not None}
 
