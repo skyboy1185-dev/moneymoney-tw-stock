@@ -351,25 +351,33 @@ def build_market_context_rows(
 
 def execute_backtest(
     datasets: Mapping[str, Sequence[MinuteBar]], sectors: Mapping[str, str], regimes: Mapping[datetime, str],
-    *, backtest_mode: str, strategy_id: str,
+    *, backtest_mode: str, strategy_id: str, execution_snapshot: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
+    snapshot = dict(execution_snapshot or {"source": "LEGACY_DEFAULTS"})
+    options = {
+        "config": snapshot.get("config"),
+        "strategy_parameters": snapshot.get("strategyParameters"),
+    }
     if backtest_mode == "INDIVIDUAL" and strategy_id == "ALL":
         return {
+            "executionSnapshot": snapshot,
             "engineVersion": BACKTEST_ENGINE_VERSION,
             "validationStatus": "VALIDATED",
             "individual": {
                 strategy: run_backtest(
                     datasets, strategy_id=strategy, portfolio=False, sector_by_symbol=sectors,
-                    market_regime_by_time=regimes,
+                    market_regime_by_time=regimes, **options,
                 )
                 for strategy, _, _ in STRATEGIES
             },
-            "message": "各機器人分別使用獨立3,000,000元；結果不可直接加總。",
+            "message": "各機器人分別使用設定本金；結果不可直接加總。",
         }
-    return run_backtest(
+    result = run_backtest(
         datasets, strategy_id=strategy_id, portfolio=backtest_mode == "PORTFOLIO",
-        sector_by_symbol=sectors, market_regime_by_time=regimes,
+        sector_by_symbol=sectors, market_regime_by_time=regimes, **options,
     )
+    result["executionSnapshot"] = snapshot
+    return result
 
 
 def _progress(job_id: str, status: str, percent: Decimal, details: Mapping[str, object]) -> None:
@@ -472,6 +480,7 @@ async def _prepare_and_run(job_id: str) -> None:
             datasets, sectors, regimes,
             backtest_mode=str(request.get("backtest_mode") or "PORTFOLIO"),
             strategy_id=str(request.get("strategy_id") or "ALL"),
+            execution_snapshot=request.get("executionSnapshot"),
         )
         result["dataQuality"] = quality
         result["universeNotice"] = f"回測使用任務建立時凍結的 {len(stored_universe)} 檔股票池。"
@@ -589,6 +598,7 @@ async def _prepare_and_run(job_id: str) -> None:
         datasets, parsed_sectors, regimes,
         backtest_mode=str(request.get("backtest_mode") or "PORTFOLIO"),
         strategy_id=str(request.get("strategy_id") or "ALL"),
+        execution_snapshot=request.get("executionSnapshot"),
     )
     result["dataQuality"] = quality
     result["universeNotice"] = (

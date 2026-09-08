@@ -2073,6 +2073,29 @@ def create_backtest(body: BacktestBody, user_id: str = Depends(_user_id), db: Se
     if body.strategy_id != "ALL" and body.strategy_id not in {item[0] for item in STRATEGIES}:
         raise HTTPException(422, "未知的回測策略")
     job_id = str(uuid4())
+    setting, _robots = _ensure_defaults(db, user_id)
+    parameters = {}
+    versions = {}
+    for strategy, _, _ in STRATEGIES:
+        version = active_version(db, user_id, strategy)
+        row = db.scalar(select(DayTradeV2StrategyVersion).where(
+            DayTradeV2StrategyVersion.strategy_id == strategy,
+            DayTradeV2StrategyVersion.version == version,
+        ))
+        parameters[strategy] = {
+            **DEFAULT_STRATEGY_PARAMETERS[strategy],
+            **(_json(row.parameters_json, {}) if row else {}),
+        }
+        versions[strategy] = version
+    execution_snapshot = {
+        "source": "CURRENT_SETTINGS", "capturedAt": _now().isoformat(),
+        "config": merged_config(_json(setting.config_json, {})),
+        "strategyParameters": parameters, "strategyVersions": versions,
+    }
+    frozen_request = json.dumps({
+        **body.model_dump(mode="json", exclude={"datasets"}),
+        "executionSnapshot": execution_snapshot,
+    }, default=str, ensure_ascii=False)
     if not body.dataset_id and not body.datasets and body.data_source == "AUTO_FUGLE":
         if body.start_date < MINUTE_DATA_START:
             raise HTTPException(422, f"Fugle 1分鐘歷史行情從{MINUTE_DATA_START.isoformat()}開始提供，請調整開始日期。")
@@ -2084,7 +2107,7 @@ def create_backtest(body: BacktestBody, user_id: str = Depends(_user_id), db: Se
             start_date=body.start_date, end_date=body.end_date, status="QUEUED", data_source="FUGLE_AUTO",
             data_precision="1_MINUTE", dataset_id="", progress_pct=Decimal(0),
             progress_json=json.dumps({"stage": "QUEUED", "message": "等待準備Fugle 1分鐘行情"}, ensure_ascii=False),
-            universe_json="[]", request_json=body.model_dump_json(exclude={"datasets"}), result_json="{}",
+            universe_json="[]", request_json=frozen_request, result_json="{}",
         )
         db.add(job)
         _audit(db, user_id, "BACKTEST_QUEUED", "BACKTEST", {
@@ -2139,6 +2162,7 @@ def create_backtest(body: BacktestBody, user_id: str = Depends(_user_id), db: Se
         result = execute_backtest(
             parsed, sectors, loaded_regimes,
             backtest_mode=body.backtest_mode, strategy_id=body.strategy_id,
+            execution_snapshot=execution_snapshot,
         )
         if not loaded_regimes:
             result["marketRegimeNotice"] = "此直接請求未提供大盤分鐘脈絡；正式CSV／Parquet資料集必須包含大盤欄位。"
@@ -2146,7 +2170,7 @@ def create_backtest(body: BacktestBody, user_id: str = Depends(_user_id), db: Se
     job = DayTradeV2BacktestJob(
         id=job_id, user_id=user_id, backtest_mode=body.backtest_mode, strategy_id=body.strategy_id,
         start_date=body.start_date, end_date=body.end_date, status=status, data_source=source,
-        data_precision=precision, request_json=body.model_dump_json(exclude={"datasets"}),
+        data_precision=precision, request_json=frozen_request,
         result_json=json.dumps(result, default=str, ensure_ascii=False), completed_at=_now(),
         dataset_id=body.dataset_id or "", progress_pct=Decimal(100),
         progress_json=json.dumps({"stage": status, "message": result.get("message", "回測完成")}, ensure_ascii=False),

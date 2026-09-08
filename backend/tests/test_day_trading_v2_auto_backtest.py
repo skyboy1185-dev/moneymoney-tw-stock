@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -253,3 +254,41 @@ def test_backtest_api_queues_auto_minute_data_without_requiring_dataset():
         assert payload["dataSource"] == "FUGLE_AUTO"
         assert payload["dataPrecision"] == "1_MINUTE"
         assert db.get(DayTradeV2BacktestJob, payload["id"]).dataset_id == ""
+
+
+@pytest.mark.parametrize("mode,strategy", [("INDIVIDUAL", "ALL"), ("PORTFOLIO", "ALL"), ("INDIVIDUAL", "OPENING_RANGE_BREAKOUT")])
+def test_execution_uses_frozen_capital_and_strategy_parameters(monkeypatch, mode, strategy):
+    calls = []
+    def run(_datasets, **kwargs):
+        calls.append(kwargs)
+        return {"summary": {"initialCapital": kwargs["config"]["initialCapital"]}}
+    monkeypatch.setattr(backtest_service, "run_backtest", run)
+    snapshot = {"source": "CURRENT_SETTINGS", "config": {"initialCapital": 123456},
+                "strategyParameters": {"OPENING_RANGE_BREAKOUT": {"targetRiskReward": "3.7"}}}
+    result = backtest_service.execute_backtest({}, {}, {}, backtest_mode=mode,
+                                              strategy_id=strategy, execution_snapshot=snapshot)
+    assert len(calls) == (5 if mode == "INDIVIDUAL" and strategy == "ALL" else 1)
+    assert all(call["config"] == snapshot["config"] for call in calls)
+    assert all(call["strategy_parameters"] == snapshot["strategyParameters"] for call in calls)
+    assert result["executionSnapshot"] == snapshot
+
+
+def test_queued_settings_do_not_change_when_user_edits_settings():
+    from app.routers.day_trading_v2 import BacktestBody, create_backtest, _ensure_defaults
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with sessionmaker(bind=engine)() as db:
+        setting, _ = _ensure_defaults(db, "snapshot-user")
+        setting.config_json = json.dumps({"initialCapital": 123456, "slippageBps": 7})
+        db.commit()
+        payload = create_backtest(BacktestBody(start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 4), backtest_mode="INDIVIDUAL", strategy_id="ALL"),
+            user_id="snapshot-user", db=db)
+        setting.config_json = json.dumps({"initialCapital": 999999})
+        db.commit()
+        request = json.loads(db.get(DayTradeV2BacktestJob, payload["id"]).request_json)
+        snapshot = request["executionSnapshot"]
+        assert snapshot["config"]["initialCapital"] == 123456
+        assert snapshot["config"]["slippageBps"] == 7
+        assert len(snapshot["strategyParameters"]) == 5
+        assert len(snapshot["strategyVersions"]) == 5

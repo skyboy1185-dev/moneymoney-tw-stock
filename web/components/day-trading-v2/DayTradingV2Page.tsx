@@ -84,6 +84,11 @@ function BacktestPerformance({ job, robotById }: { job: Record<string, unknown>;
     return performance ? [{ strategyId, performance }] : [];
   }) : [];
   const individual = record(result.individual);
+  const snapshot = record(result.executionSnapshot);
+  const settingsNotice = <p className="dt2-data-warning">{snapshot?.source === "CURRENT_SETTINGS"
+    ? `使用建立任務時的設定與啟用策略參數（${dateTime(String(snapshot.capturedAt))}）。`
+    : "舊任務使用系統預設參數，未保存當時的使用者設定；請重跑以套用目前設定。"}
+    每筆風險上限與進場風險報酬比目前按價差計算，尚未含成本，因此停損淨虧可能超過設定上限。資料驗證通過不代表策略獲利。</p>;
   const robotResults = individual ? Object.entries(individual).flatMap(([strategyId, value]) => {
     const run = record(value);
     const performance = performanceFrom(run?.summary);
@@ -91,9 +96,10 @@ function BacktestPerformance({ job, robotById }: { job: Record<string, unknown>;
   }) : [];
 
   if (summary) return <div className="dt2-backtest-performance">
+    {settingsNotice}
     {strategyResults.length > 0 && <>
       <h3>五策略分項績效</h3>
-      <p className="dt2-data-warning">每列只統計該策略在共用300萬元組合中實際成交的交易；退水已反映在實付手續費與淨損益，不會再次加回獲利。</p>
+      <p className="dt2-data-warning">每列只統計該策略在共用{number(summary.initialCapital)}元組合中實際成交的交易；退水已反映在實付手續費與淨損益，不會再次加回獲利。</p>
       <div className="dt2-table backtest-performance"><table><thead><tr><th>機器人</th><th>勝率</th><th>勝／敗／平</th><th>獲利交易合計</th><th>虧損交易合計</th><th>總交易成本</th><th>總交易額度</th><th>手續費退水</th><th>未扣成本損益</th><th>淨損益</th><th>平均獲利</th><th>平均虧損</th><th>獲利因子</th></tr></thead><tbody>
         {strategyResults.map(({ strategyId, performance }) => <tr key={strategyId}>
           <td><b>{robotById.get(strategyId) ?? strategyId}</b><small>{strategyId}</small></td>
@@ -117,9 +123,10 @@ function BacktestPerformance({ job, robotById }: { job: Record<string, unknown>;
   </div>;
 
   if (robotResults.length) return <div className="dt2-backtest-performance">
+    {settingsNotice}
     <h3>五台機器人獨立績效</h3>
-    <p className="dt2-data-warning">每台機器人各自使用3,000,000元初始資金，績效不可直接加總；退水已反映在實付手續費與淨損益。</p>
-    <div className="dt2-table backtest-performance"><table><thead><tr><th>機器人</th><th>勝率</th><th>勝／敗／平</th><th>獲利交易合計</th><th>虧損交易合計</th><th>總交易成本</th><th>總交易額度</th><th>手續費退水</th><th>淨損益</th><th>淨報酬率</th><th>期末資金</th></tr></thead><tbody>
+    <p className="dt2-data-warning">每台機器人各自使用{number(robotResults[0].performance.initialCapital)}元初始資金，績效不可直接加總；退水已反映在實付手續費與淨損益。</p>
+    <div className="dt2-table backtest-performance"><table><thead><tr><th>機器人</th><th>勝率</th><th>勝／敗／平</th><th>獲利交易合計</th><th>虧損交易合計</th><th>總交易成本</th><th>總交易額度</th><th>手續費退水</th><th>未扣成本損益</th><th>淨損益</th><th>淨報酬率</th><th>期末資金</th></tr></thead><tbody>
       {robotResults.map(({ strategyId, performance }) => <tr key={strategyId}>
         <td><b>{robotById.get(strategyId) ?? strategyId}</b><small>{strategyId}</small></td>
         <td>{performance.tradeCount ? `${number(performance.winRate, 1)}%` : "—"}<small>{performance.tradeCount === 0 ? "無已完成交易" : performance.sampleSufficient ? "" : "樣本不足"}</small></td>
@@ -129,6 +136,7 @@ function BacktestPerformance({ job, robotById }: { job: Record<string, unknown>;
         <td>{number(performance.totalCost)}元</td>
         <td>{transactionAmount(performance, "totalTurnover")}</td>
         <td className="gain">{transactionAmount(performance, "commissionRebate")}<small>{performance.transactionMetricsAvailable ? performance.commissionDiscountLabel : "資料不足"}</small></td>
+        <td className={tone(performance.grossPnl)}>{signedMoney(performance.grossPnl)}</td>
         <td className={tone(performance.netPnl)}>{signedMoney(performance.netPnl)}</td>
         <td className={tone(performance.netReturnPct)}>{Number(performance.netReturnPct) > 0 ? "+" : ""}{number(performance.netReturnPct, 2)}%</td>
         <td>{number(performance.endingCapital)}元</td>
