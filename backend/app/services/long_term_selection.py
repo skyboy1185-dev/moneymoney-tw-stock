@@ -9,6 +9,7 @@ import logging
 from typing import Literal
 from zoneinfo import ZoneInfo
 
+import httpx
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -50,6 +51,7 @@ SYNC_DUPLICATE_STATUS = "cancelled_duplicate"
 SKIPPED_UNFILLED_STATUS = "skipped_unfilled"
 TAIPEI = ZoneInfo("Asia/Taipei")
 logger = logging.getLogger(__name__)
+YAHOO_QUOTE_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
 BENCHMARK_DEFINITIONS = (
     {"symbol": "0050", "name": "元大台灣50", "market": "上市"},
     {"symbol": "00881", "name": "國泰台灣科技龍頭", "market": "上市"},
@@ -1338,6 +1340,28 @@ def _closed_position_payload(
     }
 
 
+@dataclass(frozen=True)
+class _PortfolioQuote:
+    price: float
+
+
+async def _yahoo_portfolio_quotes(requests: list[StockQuoteRequest]) -> dict[str, _PortfolioQuote]:
+    """Free backup for held-position valuation when the MIS refresh is unavailable."""
+    async with httpx.AsyncClient(timeout=3.0) as client:
+        async def fetch(request: StockQuoteRequest) -> tuple[str, _PortfolioQuote | None]:
+            ticker = f"{request.symbol}{'.TWO' if request.market in {'上櫃', 'TPEX', 'OTC'} else '.TW'}"
+            try:
+                response = await client.get(YAHOO_QUOTE_URL.format(ticker=ticker), params={"range": "1d", "interval": "1m"})
+                response.raise_for_status()
+                meta = response.json()["chart"]["result"][0]["meta"]
+                price = float(meta.get("regularMarketPrice") or meta.get("previousClose") or 0)
+                return request.symbol, _PortfolioQuote(price) if price > 0 else None
+            except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError):
+                return request.symbol, None
+        rows = await asyncio.gather(*(fetch(request) for request in requests))
+    return {symbol: quote for symbol, quote in rows if quote is not None}
+
+
 async def portfolio_payload(db: Session, mode: PortfolioMode) -> dict[str, object]:
     current = datetime.now(UTC)
     current_date = current.astimezone(TAIPEI).date()
@@ -1399,6 +1423,11 @@ async def portfolio_payload(db: Session, mode: PortfolioMode) -> dict[str, objec
     (quotes, quote_error), (dividend_histories, dividend_error) = await asyncio.gather(
         load_quotes(), load_dividends(),
     )
+    if quote_error is not None:
+        yahoo_quotes = await _yahoo_portfolio_quotes(requests[:len(open_positions)])
+        if yahoo_quotes:
+            quotes = {**quotes, **yahoo_quotes}
+            quote_error = f"{quote_error}_yahoo_fallback"
     quote_received_count = sum(request.symbol in quotes for request in requests)
     quote_status = (
         "current" if quote_received_count == len(requests)
