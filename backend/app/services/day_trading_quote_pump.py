@@ -144,6 +144,20 @@ class DayTradingQuotePump:
     def diagnostics(self) -> dict[str, object]:
         return self.state
 
+    def relay_targets(self) -> list[StockQuoteRequest]:
+        with self._lock:
+            return _dedupe([*self._priority, *self._baseline]) if self._enabled else []
+
+    def ingest_mis_relay(self, quotes: dict[str, OfficialStockQuote]) -> int:
+        """Authenticated transport only; exchange timestamps still gate publication."""
+        with self._lock:
+            allowed = {r.symbol for r in self.relay_targets()}
+            accepted = self._cache_source("TWSE_MIS", {s: q for s, q in quotes.items() if s in allowed})
+            self._state["relayLastReceivedAt"] = self._utcnow().isoformat()
+            self._state["relayReceivedCount"] = len(accepted)
+        self._publish_selected()
+        return len(accepted)
+
     def update_targets(self, priority_requests: Iterable[StockQuoteRequest],
                        baseline_requests: Iterable[StockQuoteRequest], *,
                        mandatory_symbols: Iterable[str] = (), enabled: bool = True) -> None:

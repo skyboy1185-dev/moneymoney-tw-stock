@@ -1,6 +1,10 @@
 from typing import Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Header, HTTPException
+from datetime import UTC, datetime
+import hashlib
+import hmac
+from pathlib import Path
 from pydantic import BaseModel, Field
 
 from ..services.official_market_data import (
@@ -12,6 +16,49 @@ from ..services.day_trading import day_trading_engine
 
 
 router = APIRouter(prefix="/market-data", tags=["market-data"])
+
+RELAY_DIGEST_PATH = Path("/app/data/quote-relay.sha256")
+
+
+def relay_authorized(authorization: str = Header(default="")) -> None:
+    try:
+        expected = RELAY_DIGEST_PATH.read_text().strip()
+    except OSError:
+        raise HTTPException(status_code=503, detail="Quote relay is not configured")
+    token = authorization.removeprefix("Bearer ") if authorization.startswith("Bearer ") else ""
+    if not token or not hmac.compare_digest(hashlib.sha256(token.encode()).hexdigest(), expected):
+        raise HTTPException(status_code=401, detail="Invalid relay credential")
+
+
+class RelayBatch(BaseModel):
+    rows: list[dict[str, str]] = Field(min_length=1, max_length=60)
+
+
+@router.get("/relay/targets", dependencies=[Depends(relay_authorized)])
+def relay_targets():
+    from ..services.day_trading_quote_pump import day_trading_quote_pump
+    return {"items": [{"symbol": r.symbol, "name": r.name, "market": r.market}
+                      for r in day_trading_quote_pump.relay_targets()]}
+
+
+@router.post("/relay/quotes", dependencies=[Depends(relay_authorized)])
+def relay_quotes(body: RelayBatch):
+    from ..services.day_trading_quote_pump import day_trading_quote_pump
+    from ..services.official_market_data import parse_mis_quote
+    from ..services.quote_quality import trusted_quote
+    targets = {r.symbol: r for r in day_trading_quote_pump.relay_targets()}
+    previous = day_trading_engine.official_quotes_snapshot()
+    now = datetime.now(UTC)
+    quotes = {}
+    for raw in body.rows:
+        symbol = raw.get("c", "")
+        if symbol not in targets:
+            continue
+        quote = parse_mis_quote(raw, targets[symbol], previous.get(symbol), now=now)
+        if trusted_quote(quote, now=now, max_age_seconds=15):
+            quotes[symbol] = quote
+    accepted = day_trading_quote_pump.ingest_mis_relay(quotes)
+    return {"accepted": accepted, "rejected": len(body.rows) - accepted, "receivedAt": now.isoformat()}
 
 
 class OfficialQuoteRequestItem(BaseModel):
