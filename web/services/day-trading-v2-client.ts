@@ -45,6 +45,7 @@ export const dayTradingV2Client = {
   controller: (userId: string) => request<Dashboard["controller"]>("controller", userId),
   controllerDecisions: (userId: string, date?: string) => request<{ items: Array<Record<string, unknown>> }>(`controller/decisions${date ? `?trading_date=${date}` : ""}`, userId),
   optimization: (userId: string) => request<Dashboard["optimization"]>("optimization", userId),
+  controlLearning: (userId: string, action: "start" | "pause") => request<Dashboard["learning"]>(`learning/${action}`, userId, { method: "POST" }),
   diagnoseStrategies: (userId: string) => request<Dashboard["optimization"]>("optimization/diagnose", userId, { method: "POST" }),
   optimizationHealthHistory: (userId: string, strategyId: string) => request<Record<string, unknown>>(`optimization/health-history?strategy_id=${encodeURIComponent(strategyId)}`, userId),
   createOptimizationJob: (userId: string, strategyId: string, datasetId?: string) => request<Record<string, unknown>>("optimization/jobs", userId, { method: "POST", body: JSON.stringify({ strategy_id: strategyId, dataset_id: datasetId }) }),

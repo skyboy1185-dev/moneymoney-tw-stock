@@ -520,6 +520,27 @@ class DayTradeV2OptimizationTrial(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
+class DayTradeV2LearningRun(Base):
+    __tablename__ = "day_trade_v2_learning_runs"
+
+    user_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    state_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class DayTradeV2LearningDay(Base):
+    __tablename__ = "day_trade_v2_learning_days"
+    __table_args__ = (UniqueConstraint("user_id", "trading_date", name="uq_dtv2_learning_day"),)
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    trading_date: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="COLLECTING")
+    data_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    result_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
+
 class DayTradeV2ChallengerRun(Base):
     __tablename__ = "day_trade_v2_challenger_runs"
 

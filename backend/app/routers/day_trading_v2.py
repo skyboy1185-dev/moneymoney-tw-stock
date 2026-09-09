@@ -436,6 +436,7 @@ def _optimization_dashboard(db: Session, user_id: str, mode: str) -> dict[str, o
 
 
 def _dashboard(db: Session, user_id: str) -> dict[str, object]:
+    from ..services.day_trading_v2_learning import learning_dashboard
     setting, robots = _ensure_defaults(db, user_id)
     mode = setting.trade_mode if setting.trade_mode in MODE_VALUES else "PAPER"
     config = merged_config(_json(setting.config_json, {}))
@@ -521,12 +522,34 @@ def _dashboard(db: Session, user_id: str) -> dict[str, object]:
         "skipReasons": [{"reason": row.reason, "count": row.occurrence_count} for row in skip_stats],
         "controller": _controller_dashboard(db, user_id, mode),
         "optimization": _optimization_dashboard(db, user_id, mode),
+        "learning": learning_dashboard(db, user_id),
     }
 
 
 @router.get("/dashboard")
 def dashboard(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -> dict[str, object]:
     return _dashboard(db, user_id)
+
+
+@router.post("/learning/{action}")
+def control_learning(action: str, user_id: str = Depends(_user_id), db: Session = Depends(get_db)):
+    from ..services.day_trading_v2_learning import set_enabled, learning_dashboard
+    if action not in {"start", "pause"}:
+        raise HTTPException(status_code=400, detail="只支援 start 或 pause")
+    _ensure_defaults(db, user_id)
+    set_enabled(db, user_id, action == "start", _now())
+    db.commit()
+    return learning_dashboard(db, user_id)
+
+
+@router.get("/learning/days/{trading_date}")
+def learning_day_detail(trading_date: date, user_id: str = Depends(_user_id), db: Session = Depends(get_db)):
+    from ..day_trading_v2_models import DayTradeV2LearningDay
+    row = db.scalar(select(DayTradeV2LearningDay).where(
+        DayTradeV2LearningDay.user_id == user_id, DayTradeV2LearningDay.trading_date == trading_date))
+    if row is None:
+        raise HTTPException(status_code=404, detail="找不到模擬學習紀錄")
+    return {"date": row.trading_date, "status": row.status, "result": json.loads(row.result_json)}
 
 
 def _today_runtime(db: Session, user_id: str, mode: str, config: dict[str, object], trading_date: date | None = None) -> DayTradeV2RuntimeState:

@@ -147,6 +147,13 @@ export type Dashboard = {
   skipReasons: Array<{ reason: string; count: number }>;
   controller: ControllerDashboard;
   optimization: OptimizationDashboard;
+  learning?: {
+    enabled: boolean; message: string; phase?: string; days?: number; targetDays?: number;
+    cycle?: number; updatedAt?: string; startedAt?: string;
+    lastEvaluation?: { cycle: number; qualifiedRoutes: Record<string, unknown>; summary: { netPnl: string; tradeCount: number }; stressSummary: { netPnl: string } };
+    matrix?: Array<{ candidate: { id: string; strategyId: string }; regimes: Record<string, { netPnl: string; tradeCount: number; activeDays: number; profitFactor: string | null }> }>;
+    recentDays?: Array<{ date: string; status: string; reason?: string; minutes?: number; phase?: string; summary?: { netPnl: string; tradeCount: number }; stressSummary?: { netPnl: string } }>;
+  };
 };
 
 export type NotificationItem = {

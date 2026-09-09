@@ -551,6 +551,18 @@ export function DayTradingV2Page({ userId }: { userId: string }) {
     {notice && <div className="dt2-notice">{notice}</div>}
     {notificationError && <div className="error-banner">{notificationError}</div>}
 
+    {(section === "overview" || section === "optimization") && <article className="dt2-panel">
+      <header><Activity size={17} /><strong>前瞻模擬學習</strong><small>{data.learning?.enabled ? "已啟用" : "已暫停"}</small></header>
+      <p>{data.learning?.message ?? "尚未啟用"}</p>
+      <p>盤中自動留存免費行情，13:40 後以固定的 15 組策略模擬計算。累積 20 個完整交易日後，依序使用後續 10 天驗證、10 天獨立測試；下一輪繼續累積。</p>
+      {data.learning?.phase && <p>第 {data.learning.cycle} 輪 · {({ TRAINING: "策略累積", VALIDATION: "後續驗證", OOS: "獨立測試" } as Record<string, string>)[data.learning.phase]} {data.learning.days}/{data.learning.targetDays} 天 · 最近更新 {dateTime(data.learning.updatedAt ?? "")}</p>}
+      <button disabled={busy} onClick={() => void run(() => dayTradingV2Client.controlLearning(userId, data.learning?.enabled ? "pause" : "start"), "模擬學習設定已更新")}>{data.learning?.enabled ? "暫停收集" : "啟用模擬學習"}</button>
+      {data.learning?.lastEvaluation && <p>上輪獨立測試：{signedMoney(data.learning.lastEvaluation.summary.netPnl)}／{data.learning.lastEvaluation.summary.tradeCount} 筆；加倍滑價 {signedMoney(data.learning.lastEvaluation.stressSummary.netPnl)}；{Object.keys(data.learning.lastEvaluation.qualifiedRoutes).length} 種盤勢通過驗證。結果僅供研究。</p>}
+      <p className="dt2-data-warning">這是免費報價取樣的分鐘模擬，非券商實際成交；成本含手續費、稅與滑價。沿用研究回測引擎，尚未模擬分批停利、月回撤停機及連虧停機。沒有合格策略就空手，不會自動切換正式策略，也不保證獲利。</p>
+      {!!data.learning?.recentDays?.length && <div className="dt2-table"><table><thead><tr><th>日期</th><th>資料狀態</th><th>有效分鐘</th><th>驗證／測試淨損益</th><th>加倍滑價</th></tr></thead><tbody>{data.learning.recentDays.map(day => <tr key={day.date}><td>{day.date}</td><td>{({ COLLECTING: "收集中", COMPLETED: "已完成", INCOMPLETE: "資料不足" } as Record<string, string>)[day.status]}<small>{day.reason}</small></td><td>{day.minutes ?? "—"}</td><td>{day.summary ? `${signedMoney(day.summary.netPnl)}（${day.summary.tradeCount} 筆）` : "—"}</td><td>{day.stressSummary ? signedMoney(day.stressSummary.netPnl) : "—"}</td></tr>)}</tbody></table></div>}
+      {!!data.learning?.matrix?.length && <details><summary>查看各策略／盤勢累積績效（未經獨立驗證）</summary><div className="dt2-table"><table><thead><tr><th>策略變體</th><th>盤勢</th><th>筆數</th><th>有交易天數</th><th>扣成本損益</th><th>獲利因子</th></tr></thead><tbody>{data.learning.matrix.flatMap(trial => Object.entries(trial.regimes).map(([regime, metric]) => <tr key={`${trial.candidate.id}:${regime}`}><td>{trial.candidate.id}</td><td>{regime}</td><td>{metric.tradeCount}</td><td>{metric.activeDays}</td><td className={tone(metric.netPnl)}>{signedMoney(metric.netPnl)}</td><td>{metric.profitFactor ?? "—"}</td></tr>))}</tbody></table></div></details>}
+    </article>}
+
     {section === "overview" && <>
       <div className="dt2-metric-grid">
         <article><span>今日已實現損益</span><strong className={tone(data.realizedPnl)}>{signedMoney(data.realizedPnl)}</strong><small>{data.today.winCount}勝 {data.today.lossCount}敗</small></article>

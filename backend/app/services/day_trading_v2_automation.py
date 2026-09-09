@@ -78,6 +78,7 @@ class DayTradingV2Coordinator:
         self._task: asyncio.Task | None = None
         self._optimization_task: asyncio.Task | None = None
         self._backtest_task: asyncio.Task | None = None
+        self._learning_task: asyncio.Task | None = None
         self._stop = asyncio.Event()
         self._worker_id = f"{os.getenv('RAILWAY_REPLICA_ID', 'local')}:{uuid4()}"
 
@@ -86,6 +87,7 @@ class DayTradingV2Coordinator:
             return
         self._stop.clear()
         self._task = asyncio.create_task(self._run(), name="day-trading-v2-coordinator")
+        self._learning_task = asyncio.create_task(self._run_learning(), name="day-trading-v2-learning")
 
     async def stop(self) -> None:
         self._stop.set()
@@ -95,9 +97,25 @@ class DayTradingV2Coordinator:
             await self._optimization_task
         if self._backtest_task:
             await self._backtest_task
+        if self._learning_task:
+            await self._learning_task
         self._task = None
         self._optimization_task = None
         self._backtest_task = None
+
+    async def _run_learning(self) -> None:
+        from .day_trading_v2_learning import process_learning_cycle
+        while not self._stop.is_set():
+            try:
+                await asyncio.to_thread(process_learning_cycle)
+            except Exception:
+                logger.exception("day-trading-v2 learning worker failed")
+            # Align to the next minute, leaving time for quotes to settle.
+            delay = 62 - datetime.now(UTC).second
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=max(2, delay))
+            except TimeoutError:
+                pass
 
     async def _run(self) -> None:
         while not self._stop.is_set():
