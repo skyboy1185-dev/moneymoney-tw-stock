@@ -334,6 +334,8 @@ export default function Home() {
         <button className={tab === "analysis" ? "active" : ""} onClick={() => switchTab("analysis")}><Activity size={17} />個股分析</button>
         <button className={tab === "screener" ? "active" : ""} onClick={() => switchTab("screener")}><SlidersHorizontal size={17} />AI 選股</button>
         <button className={tab === "day-trading-v2" ? "active ai-nav" : "ai-nav"} onClick={() => switchTab("day-trading-v2")}><Bot size={17} />當沖機器人2<span>AI</span></button>
+        <button className={tab === "day-trading" ? "active ai-nav" : "ai-nav"} onClick={() => switchTab("day-trading")}><Bot size={17} />AI 當沖機器人<span>原版</span></button>
+        <button className={tab === "adaptive-electronic" ? "active ai-nav" : "ai-nav"} onClick={() => switchTab("adaptive-electronic")}><TrendingUp size={17} />超強 AI 機器人</button>
         <button className={tab === "limit-up-ai" ? "active rocket-nav limit-up-nav" : "rocket-nav limit-up-nav"} onClick={() => switchTab("limit-up-ai")} aria-label="開啟專抓漲停飆股AI"><Zap size={17} />漲停機器人{limitUpUnread > 0 && <span className="rocket-unread-badge">{limitUpUnread > 99 ? "99+" : limitUpUnread}</span>}</button>
         <button className={tab === "pattern-robot" ? "active pattern-nav" : "pattern-nav"} onClick={() => switchTab("pattern-robot")}><ScanSearch size={17} />型態選股機器人</button>
         <button className={tab === "rocket-radar" ? "active rocket-nav" : "rocket-nav"} onClick={() => switchTab("rocket-radar")}><Rocket size={17} />飆股雷達{rocketUnread > 0 && <span className="rocket-unread-badge">{rocketUnread > 99 ? "99+" : rocketUnread}</span>}</button>
