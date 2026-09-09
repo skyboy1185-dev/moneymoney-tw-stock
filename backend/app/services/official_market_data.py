@@ -221,6 +221,22 @@ def parse_mis_quote(
 
 
 class TwseMisMarketDataProvider:
+    def cached_quotes(self, requests: list[StockQuoteRequest]) -> dict[str, OfficialStockQuote]:
+        return {r.symbol: self._cache[r.symbol][0] for r in requests if r.symbol in self._cache}
+
+    def ingest_verified_quotes(self, quotes: dict[str, OfficialStockQuote]) -> None:
+        """Share relay observations without changing their exchange timestamps."""
+        from .quote_quality import quote_time, trusted_quote
+        now = datetime.now(UTC)
+        for symbol, quote in quotes.items():
+            if not trusted_quote(quote, now=now, max_age_seconds=15):
+                continue
+            old = self._cache.get(symbol)
+            if old and (quote_time(old[0]) or now) > quote_time(quote):
+                continue
+            self._cache[symbol] = (quote, datetime.fromtimestamp(now.timestamp() + LIVE_QUOTE_CACHE_SECONDS, UTC))
+            self._last_trades[symbol] = quote
+
     def __init__(self) -> None:
         self._cache: dict[str, tuple[OfficialStockQuote, datetime]] = {}
         self._last_trades: dict[str, OfficialStockQuote] = {}

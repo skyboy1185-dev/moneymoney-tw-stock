@@ -34,11 +34,22 @@ class RelayBatch(BaseModel):
     rows: list[dict[str, str]] = Field(min_length=1, max_length=60)
 
 
+def _relay_requests():
+    from sqlalchemy import select
+    from ..database import SessionLocal
+    from ..models import LongTermPosition
+    from ..services.day_trading_quote_pump import day_trading_quote_pump
+    with SessionLocal() as db:
+        positions = list(db.scalars(select(LongTermPosition).where(LongTermPosition.status == "open")))
+        held = [StockQuoteRequest(p.stock_code, p.stock_name, p.market_type) for p in positions]
+    return list({r.symbol: r for r in [*held, *day_trading_quote_pump.relay_targets()]}.values())
+
+
 @router.get("/relay/targets", dependencies=[Depends(relay_authorized)])
 def relay_targets():
     from ..services.day_trading_quote_pump import day_trading_quote_pump
     return {"items": [{"symbol": r.symbol, "name": r.name, "market": r.market}
-                      for r in day_trading_quote_pump.relay_targets()]}
+                      for r in _relay_requests()]}
 
 
 @router.post("/relay/quotes", dependencies=[Depends(relay_authorized)])
@@ -46,7 +57,7 @@ def relay_quotes(body: RelayBatch):
     from ..services.day_trading_quote_pump import day_trading_quote_pump
     from ..services.official_market_data import parse_mis_quote
     from ..services.quote_quality import trusted_quote
-    targets = {r.symbol: r for r in day_trading_quote_pump.relay_targets()}
+    targets = {r.symbol: r for r in _relay_requests()}
     previous = day_trading_engine.official_quotes_snapshot()
     now = datetime.now(UTC)
     quotes = {}
@@ -57,7 +68,9 @@ def relay_quotes(body: RelayBatch):
         quote = parse_mis_quote(raw, targets[symbol], previous.get(symbol), now=now)
         if trusted_quote(quote, now=now, max_age_seconds=15):
             quotes[symbol] = quote
-    accepted = day_trading_quote_pump.ingest_mis_relay(quotes)
+    official_market_data_provider.ingest_verified_quotes(quotes)
+    day_trading_quote_pump.ingest_mis_relay(quotes)
+    accepted = len(quotes)
     return {"accepted": accepted, "rejected": len(body.rows) - accepted, "receivedAt": now.isoformat()}
 
 

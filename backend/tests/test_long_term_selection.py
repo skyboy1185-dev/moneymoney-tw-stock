@@ -1,4 +1,5 @@
 import asyncio
+import pytest
 from datetime import UTC, date, datetime
 from time import monotonic
 from types import SimpleNamespace
@@ -6,6 +7,15 @@ from types import SimpleNamespace
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
+
+
+@pytest.fixture(autouse=True)
+def isolate_quote_backups(monkeypatch):
+    async def empty(requests):
+        return {}
+    monkeypatch.setattr("app.services.long_term_selection._yahoo_portfolio_quotes", empty)
+    monkeypatch.setattr("app.services.long_term_selection._twse_daily_portfolio_quotes", empty)
+    monkeypatch.setattr("app.services.long_term_selection.official_market_data_provider.cached_quotes", lambda requests: {})
 
 from app.database import Base
 from app.models import (

@@ -32,6 +32,7 @@ def test_relay_uses_exchange_time_and_rejects_unknown_stale_future(monkeypatch):
     pump = SimpleNamespace(relay_targets=lambda: [StockQuoteRequest("2330", "test", "上市")],
                            ingest_mis_relay=lambda quotes: received.append(quotes) or len(quotes))
     monkeypatch.setattr(module, "day_trading_quote_pump", pump)
+    monkeypatch.setattr(router, "_relay_requests", pump.relay_targets)
     raw = {"c": "2330", "d": "20260909", "t": "09:09:55", "z": "100", "y": "99", "v": "100"}
     for changes in ({}, {"t": "09:09:00"}, {"t": "09:10:01"}, {"c": "9999"}):
         router.relay_quotes(router.RelayBatch(rows=[{**raw, **changes}]))

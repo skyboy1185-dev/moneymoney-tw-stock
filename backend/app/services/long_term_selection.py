@@ -1347,6 +1347,20 @@ def _closed_position_payload(
 @dataclass(frozen=True)
 class _PortfolioQuote:
     price: float
+    source: str = "備援報價"
+    quote_timestamp: str | None = None
+    is_realtime: bool = False
+
+
+def _valuation_metadata(quote, now):
+    from .quote_quality import quote_time, trusted_quote
+    stamp = quote_time(quote) if quote is not None else None
+    source = getattr(quote, "source", "留存估值") if quote is not None else "留存估值"
+    age = max(0, int((now-stamp).total_seconds())) if stamp and stamp <= now else None
+    live = bool(quote and trusted_quote(quote, now=now, max_age_seconds=15))
+    status = "live" if live else "close" if source == "TWSE 日收盤價" else "delayed" if stamp else "unknown" if quote else "stored"
+    return {"quoteTimestamp": stamp.isoformat() if stamp else None, "quoteSource": source,
+            "quoteAgeSeconds": age, "quoteStatus": status, "valuationIsRealtime": live}
 
 
 async def _yahoo_portfolio_quotes(requests: list[StockQuoteRequest]) -> dict[str, _PortfolioQuote]:
@@ -1367,9 +1381,11 @@ async def _yahoo_portfolio_quotes(requests: list[StockQuoteRequest]) -> dict[str
                         response = await client.get(url.format(ticker=ticker), params={"range": "1d", "interval": "1m"})
                         response.raise_for_status()
                         meta = response.json()["chart"]["result"][0]["meta"]
-                        price = float(meta.get("regularMarketPrice") or meta.get("previousClose") or 0)
+                        price = float(meta.get("regularMarketPrice") or 0)
                         if price > 0:
-                            return request.symbol, _PortfolioQuote(price)
+                            stamp = meta.get("regularMarketTime")
+                            return request.symbol, _PortfolioQuote(price, "Yahoo Finance 備援",
+                                datetime.fromtimestamp(float(stamp), UTC).isoformat() if stamp else None)
                     except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError):
                         continue
             return request.symbol, None
@@ -1385,7 +1401,7 @@ async def _twse_daily_portfolio_quotes(requests: list[StockQuoteRequest]) -> dic
             response.raise_for_status()
             rows = response.json()
         return {
-            str(row["Code"]): _PortfolioQuote(float(str(row["ClosingPrice"]).replace(",", "")))
+            str(row["Code"]): _PortfolioQuote(float(str(row["ClosingPrice"]).replace(",", "")), "TWSE 日收盤價")
             for row in rows if str(row.get("Code")) in wanted
             and str(row.get("ClosingPrice")) not in {"", "--", "-"}
         }
@@ -1433,10 +1449,10 @@ async def portfolio_payload(db: Session, mode: PortfolioMode) -> dict[str, objec
             ), None
         except asyncio.TimeoutError:
             logger.warning("Long-term portfolio quote refresh timed out after %ss", PORTFOLIO_QUOTE_TIMEOUT_SECONDS)
-            return {}, "timeout"
+            return official_market_data_provider.cached_quotes(requests), "timeout"
         except Exception:
             logger.exception("Long-term portfolio quote refresh failed")
-            return {}, "unavailable"
+            return official_market_data_provider.cached_quotes(requests), "unavailable"
 
     async def load_dividends() -> tuple[dict[str, DividendHistory], str | None]:
         try:
@@ -1454,25 +1470,37 @@ async def portfolio_payload(db: Session, mode: PortfolioMode) -> dict[str, objec
     (quotes, quote_error), (dividend_histories, dividend_error) = await asyncio.gather(
         load_quotes(), load_dividends(),
     )
-    if quote_error is not None and PORTFOLIO_QUOTE_TIMEOUT_SECONDS >= 1:
-        yahoo_quotes = await _yahoo_portfolio_quotes(requests[:len(open_positions)])
-        if not yahoo_quotes:
-            yahoo_quotes = await _twse_daily_portfolio_quotes(requests[:len(open_positions)])
-        if yahoo_quotes:
-            quotes = {**quotes, **yahoo_quotes}
-            quote_error = f"{quote_error}_yahoo_fallback"
+    from .quote_quality import trusted_quote, trusted_snapshot, quote_time
+    current = datetime.now(UTC)
+    # Five-level order-book references are not last-trade valuations.
+    quotes = {s: q for s, q in quotes.items() if trusted_snapshot(q)}
+    # A cached return is not necessarily fresh. Fetch backup only for stale holdings.
+    missing = [r for r in requests[:len(open_positions)]
+               if not trusted_quote(quotes.get(r.symbol), now=current, max_age_seconds=15)]
+    if missing and PORTFOLIO_QUOTE_TIMEOUT_SECONDS >= 1:
+        backups = await _yahoo_portfolio_quotes(missing)
+        still_missing = [r for r in missing if r.symbol not in backups and r.symbol not in quotes]
+        daily = await _twse_daily_portfolio_quotes(still_missing) if still_missing else {}
+        for symbol, quote in {**daily, **backups}.items():
+            prior = quotes.get(symbol)
+            prior_time, new_time = quote_time(prior), quote_time(quote)
+            if prior is None or (new_time is not None and (prior_time is None or new_time > prior_time)):
+                quotes[symbol] = quote
+        if backups or daily:
+            quote_error = "backup_valuation"
     quote_received_count = sum(request.symbol in quotes for request in requests)
+    current = datetime.now(UTC)
     quote_status = (
-        "current" if quote_received_count == len(requests)
+        "current" if requests and all(trusted_quote(quotes.get(r.symbol), now=current, max_age_seconds=15) for r in requests)
         else "partial" if quote_received_count else "stored"
     )
     items = [
-        _position_payload(
+        {**_position_payload(
             position,
             quotes[position.stock_code].price if position.stock_code in quotes else float(position.last_price),
             current_date,
             dividend_histories.get(position.stock_code),
-        )
+        ), **_valuation_metadata(quotes.get(position.stock_code), datetime.now(UTC))}
         for position in open_positions
     ]
     realized_profit_value = 0.0

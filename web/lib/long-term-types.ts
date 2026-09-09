@@ -20,6 +20,10 @@ export interface LongTermPositionItem {
   entryTime: string;
   entryPrice: number;
   currentPrice: number;
+  quoteTimestamp?: string | null;
+  quoteSource?: string;
+  quoteStatus?: "live" | "delayed" | "close" | "stored" | "unknown";
+  valuationIsRealtime?: boolean;
   actualReturnPercent: number;
   priceReturnPercent: number;
   dividendReturnPercent: number;

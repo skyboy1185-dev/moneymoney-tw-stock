@@ -187,7 +187,7 @@ export function LongTermSelectionPage({ onSelectStock }: { onSelectStock: (symbo
 
     {error && <div className="error-banner">{error}</div>}
     {data?.quoteData && data.quoteData.status !== "current" && <div className="long-term-quote-notice" role="status">
-      即時行情暫時無法完整更新，現正顯示最後保存的價格（{data.quoteData.receivedCount}/{data.quoteData.requestedCount} 檔已取得）。
+      即時行情尚未完整更新，目前可能包含延遲報價、收盤價或留存估值。請查看各檔價格下方的來源與報價時間。
     </div>}
     {loading && !data ? <div className="table-loading"><span className="spinner" /><span>正在載入長線模型組合…</span></div> : data && <>
       <section className="long-term-summary">
@@ -314,8 +314,8 @@ export function LongTermSelectionPage({ onSelectStock }: { onSelectStock: (symbo
             <td><strong className="allocation-weight">{item.allocationWeightPercent.toFixed(2)}%</strong></td>
             <td><strong>{money(item.allocatedCapital)}</strong><small>{item.quantity.toLocaleString("zh-TW")} 股・成交 {money(item.investedCapital)}</small></td>
             <td><strong>行情模擬成交價 {price(item.entryPrice)}</strong><small>同筆行情時間 {dateTime(item.entryTime)}</small></td>
-            <td><strong>{price(item.currentPrice)}</strong></td>
-            <td className={returnClass(item.unrealizedProfit)}><strong>{money(item.unrealizedProfit)}</strong><small>{percent(item.actualReturnPercent)}</small><small>價差 {percent(item.priceReturnPercent)}・股息 {item.dividendDataAvailable ? `${percent(item.dividendReturnPercent)}／${money(item.dividendIncome)}` : "資料待補"}</small></td>
+            <td><strong>{price(item.currentPrice)}</strong><small>{({ live: "即時成交價", delayed: "延遲／備援報價", close: "日收盤價", stored: "留存估值", unknown: "報價時間不明" } as Record<string, string>)[item.quoteStatus ?? "unknown"]}</small><small>{item.quoteSource ?? "來源待確認"}</small><small>{item.quoteTimestamp ? dateTime(item.quoteTimestamp) : "無可驗證的報價時間"}</small></td>
+            <td className={returnClass(item.unrealizedProfit)}><strong>{money(item.unrealizedProfit)}</strong><small>{!item.valuationIsRealtime && "依非即時價格估算・"}{percent(item.actualReturnPercent)}</small><small>價差 {percent(item.priceReturnPercent)}・股息 {item.dividendDataAvailable ? `${percent(item.dividendReturnPercent)}／${money(item.dividendIncome)}` : "資料待補"}</small></td>
             <td><strong className="forecast">{percent(item.predictedMonthReturnPercent)}</strong></td>
             <td><strong>{item.currentScore.toFixed(1)}</strong><small>入選 {item.selectionScore.toFixed(1)}</small></td>
             <td><div className="holding-progress"><i><b style={{ width: `${Math.min(100, item.holdingTradingDays / item.minimumHoldingDays * 100)}%` }} /></i><span>{item.holdingTradingDays} / {item.minimumHoldingDays} 天</span></div></td>
