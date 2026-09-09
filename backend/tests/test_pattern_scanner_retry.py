@@ -7,7 +7,7 @@ import pytest
 from app.services import pattern_robot_automation as automation
 
 
-@pytest.mark.parametrize('failure', ['disconnect', '503'])
+@pytest.mark.parametrize('failure', ['disconnect', '503', 'proxy503'])
 def test_transient_page_failure_recovers(monkeypatch, failure):
     calls = []
     def handler(request):
@@ -15,6 +15,8 @@ def test_transient_page_failure_recovers(monkeypatch, failure):
         if len(calls) == 1:
             if failure == 'disconnect':
                 raise httpx.RemoteProtocolError('incomplete chunked read')
+            if failure == 'proxy503':
+                return httpx.Response(200, json={'error': 'unavailable', 'statusCode': 503})
             return httpx.Response(503)
         return httpx.Response(200, json={'ok': True})
     monkeypatch.setattr(automation.asyncio, 'sleep', AsyncMock())
