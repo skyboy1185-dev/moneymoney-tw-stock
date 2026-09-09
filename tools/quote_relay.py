@@ -7,6 +7,7 @@ import argparse
 from datetime import datetime, time
 import json
 import logging
+import os
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import time as clock
@@ -20,6 +21,18 @@ def main():
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
+    # A second login/manual start must not double the exchange request rate.
+    lock_file = args.config.with_suffix(".lock").open("a+b")
+    if os.name == "nt" and not args.once:
+        import msvcrt
+        lock_file.seek(0)
+        lock_file.write(b"1")
+        lock_file.flush()
+        lock_file.seek(0)
+        try:
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return
     config = json.loads(args.config.read_text(encoding="utf-8"))
     log = logging.getLogger("quote-relay")
     log.setLevel(logging.INFO)
@@ -68,9 +81,10 @@ def main():
             except Exception as exc:
                 failures += 1
                 # Exception URLs and headers are deliberately not logged.
-                log.warning("cycle failed: %s", type(exc).__name__)
+                http_status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+                log.warning("cycle failed: %s status=%s", type(exc).__name__, http_status)
                 status_path.write_text(json.dumps({"state": "ERROR", "errorType": type(exc).__name__,
-                    "updatedAt": now.isoformat(), "consecutiveFailures": failures}), encoding="utf-8")
+                    "httpStatus": http_status, "updatedAt": now.isoformat(), "consecutiveFailures": failures}), encoding="utf-8")
             if args.once:
                 break
             clock.sleep(max(1, min(60, 10*max(1, failures)) - (clock.monotonic()-started)))
