@@ -75,7 +75,16 @@ def test_hung_scan_cancels_before_retry_and_never_processes_partial_data(monkeyp
         assert finished.is_set() and not worker._run_lock.locked()
         process.assert_not_called()
         assert worker.state['status'] == 'error'
-        monkeypatch.setattr(automation, 'fetch_pattern_scan_payload', AsyncMock(return_value=object()))
+        from types import SimpleNamespace
+        payload = SimpleNamespace(trade_date=automation.datetime.now(automation.TAIPEI).date(), is_trading_day=True)
+        from datetime import timedelta
+        old = SimpleNamespace(trade_date=payload.trade_date-timedelta(days=1), is_trading_day=True)
+        monkeypatch.setattr(automation, 'fetch_pattern_scan_payload', AsyncMock(return_value=old))
+        with pytest.raises(RuntimeError):
+            await worker.run_once(force=True)
+        process.assert_not_called()
+        assert worker.state['lastSuccessAt'] is None
+        monkeypatch.setattr(automation, 'fetch_pattern_scan_payload', AsyncMock(return_value=payload))
         await worker.run_once(force=True)
         process.assert_called_once()
         assert worker.state['status'] == 'running'

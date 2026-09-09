@@ -162,6 +162,8 @@ class PatternRobotAutomation:
             self._state["nextRunAt"] = None
             try:
                 payload = await asyncio.wait_for(fetch_pattern_scan_payload(self._state["scanProgress"]), timeout=900)
+                if payload.trade_date != local.date() or not payload.is_trading_day:
+                    raise RuntimeError("行情交易日不是今天，保留前次資料並等待重試")
             except Exception as error:
                 self._state.update({"status": "error", "lastError": str(error)[:500] or type(error).__name__})
                 raise
