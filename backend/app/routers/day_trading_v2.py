@@ -850,6 +850,14 @@ def _verify_automatic_entry_quote(db: Session, user_id: str, symbol: str, config
         raise HTTPException(409, "該股票五檔行情逾時或未驗證，禁止建立新部位")
 
 
+def _pending_candidate(db: Session, user_id: str, trading_date, symbol: str):
+    # Production sessions disable autoflush: repeated strategies for one symbol
+    # must reuse the pending row before it becomes visible to SELECT.
+    return next((row for row in db.new if isinstance(row, DayTradeV2CandidateState)
+                 and row.user_id == user_id and row.mode == "PAPER"
+                 and row.trading_date == trading_date and row.symbol == symbol), None)
+
+
 def _legacy_scan_now(user_id: str, db: Session, coordinator_now: datetime | None = None, *, entries_enabled: bool = True, observation: dict | None = None) -> dict[str, object]:
     """Evaluate verified MIS bars. The coordinator calls this every five seconds."""
     setting, _ = _ensure_defaults(db, user_id)
@@ -979,7 +987,7 @@ def _legacy_scan_now(user_id: str, db: Session, coordinator_now: datetime | None
             candidate_reasons.append(str((candidate.get("warnings") or ["策略條件尚未完全符合"])[0]))
         if winner and score < dec(config["riskGateThreshold"]):
             candidate_reasons.append("信心分數不足")
-        previous_candidate = db.scalar(select(DayTradeV2CandidateState).where(
+        previous_candidate = _pending_candidate(db, user_id, trading_date, symbol) or db.scalar(select(DayTradeV2CandidateState).where(
             DayTradeV2CandidateState.user_id == user_id, DayTradeV2CandidateState.mode == "PAPER",
             DayTradeV2CandidateState.trading_date == trading_date, DayTradeV2CandidateState.symbol == symbol,
         ))
@@ -1405,7 +1413,7 @@ def _scan_now(user_id: str, db: Session, coordinator_now: datetime | None = None
         db, user_id, current, live_candidates, snapshot.effective_regime, config, day_trading_engine,
     )
     for ranked_row, _candidate_row in stored:
-        existing_state = db.scalar(select(DayTradeV2CandidateState).where(
+        existing_state = _pending_candidate(db, user_id, trading_date, ranked_row.candidate.symbol) or db.scalar(select(DayTradeV2CandidateState).where(
             DayTradeV2CandidateState.user_id == user_id, DayTradeV2CandidateState.mode == "PAPER",
             DayTradeV2CandidateState.trading_date == trading_date,
             DayTradeV2CandidateState.symbol == ranked_row.candidate.symbol,

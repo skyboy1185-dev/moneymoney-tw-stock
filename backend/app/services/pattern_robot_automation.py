@@ -207,7 +207,7 @@ class PatternRobotAutomation:
                 raise
             except Exception as error:
                 logger.exception("Pattern robot automation cycle failed")
-                self._state.update({"status": "error", "lastError": str(error)[:500]})
+                self._state.update({"status": "error", "lastError": str(error)[:500] or type(error).__name__})
             self._state["nextRunAt"] = (datetime.now(UTC).timestamp() + interval)
             await asyncio.sleep(interval)
 
