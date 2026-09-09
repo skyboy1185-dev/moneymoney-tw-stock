@@ -1,7 +1,8 @@
 from datetime import UTC, datetime, timedelta
 from dataclasses import replace
+import json
 
-from app.services.long_term_selection import _PortfolioQuote, _valuation_metadata
+from app.services.long_term_selection import _PortfolioQuote, _valuation_metadata, _parse_yahoo_tw_quote
 from app.services.official_market_data import OfficialStockQuote, StockQuoteRequest, TwseMisMarketDataProvider
 
 
@@ -37,3 +38,20 @@ def test_relay_shares_prices_with_portfolio_without_refreshing_timestamp(monkeyp
     cached = provider.cached_quotes([StockQuoteRequest("3532", "test", "上市")])["3532"]
     assert cached.price == 406
     assert cached.quote_timestamp == now.isoformat()
+
+
+def test_tw_page_uses_matching_trade_object_not_bid_ask_or_chart():
+    now = datetime(2026, 9, 9, 2, 3, tzinfo=UTC)
+    row = {"symbol": "3532.TW", "price": {"raw": "417"}, "bid": {"raw": "416.5"},
+           "regularMarketTime": "2026-09-09T02:02:50Z", "exchangeDataDelayedBy": 0, "marketStatus": "open"}
+    def page(changes):
+        return 'root.App.main = {"unrelated":undefined,"quote":{"data":' + json.dumps({**row, **changes}) + '}};'
+    quote = _parse_yahoo_tw_quote(page({}), "3532.TW", now)
+    assert quote.price == 417
+    assert _valuation_metadata(quote, now)["valuationIsRealtime"]
+    assert _parse_yahoo_tw_quote(page({}), "3693.TWO", now) is None
+    assert _parse_yahoo_tw_quote(page({"regularMarketTime": "2026-09-09T02:03:01Z"}), "3532.TW", now) is None
+    assert _parse_yahoo_tw_quote(page({"price": {"raw": "NaN"}}), "3532.TW", now) is None
+    delayed = _parse_yahoo_tw_quote(page({"exchangeDataDelayedBy": 20}), "3532.TW", now)
+    assert not _valuation_metadata(delayed, now)["valuationIsRealtime"]
+    assert not _valuation_metadata(quote, now+timedelta(minutes=2))["valuationIsRealtime"]

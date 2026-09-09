@@ -6,6 +6,8 @@ from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 import json
 import logging
+import math
+import re
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -1357,10 +1359,33 @@ def _valuation_metadata(quote, now):
     stamp = quote_time(quote) if quote is not None else None
     source = getattr(quote, "source", "留存估值") if quote is not None else "留存估值"
     age = max(0, int((now-stamp).total_seconds())) if stamp and stamp <= now else None
-    live = bool(quote and trusted_quote(quote, now=now, max_age_seconds=15))
+    # TW Yahoo page quotes declare their own delay and carry the actual trade
+    # timestamp. This applies only to portfolio valuation, never robot entry.
+    tw_live = (isinstance(quote, _PortfolioQuote) and quote.source == "Yahoo 台灣股市"
+               and quote.is_realtime and age is not None and age <= 60
+               and stamp.astimezone(TAIPEI).date() == now.astimezone(TAIPEI).date())
+    live = bool(tw_live or quote and trusted_quote(quote, now=now, max_age_seconds=15))
     status = "live" if live else "close" if source == "TWSE 日收盤價" else "delayed" if stamp else "unknown" if quote else "stored"
     return {"quoteTimestamp": stamp.isoformat() if stamp else None, "quoteSource": source,
             "quoteAgeSeconds": age, "quoteStatus": status, "valuationIsRealtime": live}
+
+
+def _parse_yahoo_tw_quote(html: str, ticker: str, now: datetime) -> _PortfolioQuote | None:
+    """Decode just the quote object; never execute the page's JavaScript."""
+    for match in re.finditer(r'"quote"\s*:\s*\{\s*"data"\s*:', html):
+        try:
+            row = json.JSONDecoder().raw_decode(html[match.end():].lstrip())[0]
+            if row.get("symbol") != ticker:
+                continue
+            price = float(row["price"]["raw"])
+            stamp = datetime.fromisoformat(row["regularMarketTime"].replace("Z", "+00:00"))
+            if not math.isfinite(price) or price <= 0 or stamp.tzinfo is None or stamp > now:
+                continue
+            live = row.get("exchangeDataDelayedBy") == 0 and row.get("marketStatus") == "open"
+            return _PortfolioQuote(price, "Yahoo 台灣股市", stamp.isoformat(), live)
+        except (ValueError, TypeError, KeyError, AttributeError):
+            continue
+    return None
 
 
 async def _yahoo_portfolio_quotes(requests: list[StockQuoteRequest]) -> dict[str, _PortfolioQuote]:
@@ -1376,6 +1401,18 @@ async def _yahoo_portfolio_quotes(requests: list[StockQuoteRequest]) -> dict[str
             suffixes = (".TWO", ".TW") if request.market in {'上櫃', 'TPEX', 'OTC'} else (".TW", ".TWO")
             for suffix in suffixes:
                 ticker = f"{request.symbol}{suffix}"
+                try:
+                    response = await client.get(f"https://tw.stock.yahoo.com/quote/{ticker}",
+                        params={"_": str(int(datetime.now(UTC).timestamp()))},
+                        headers={"Cache-Control": "no-cache"})
+                    response.raise_for_status()
+                    quote = _parse_yahoo_tw_quote(response.text, ticker, datetime.now(UTC))
+                    if quote is not None:
+                        return request.symbol, quote
+                except (httpx.HTTPError, ValueError):
+                    continue
+            for suffix in suffixes:
+                ticker = f"{request.symbol}{suffix}"
                 for url in YAHOO_QUOTE_URLS:
                     try:
                         response = await client.get(url.format(ticker=ticker), params={"range": "1d", "interval": "1m"})
@@ -1389,7 +1426,12 @@ async def _yahoo_portfolio_quotes(requests: list[StockQuoteRequest]) -> dict[str
                     except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError):
                         continue
             return request.symbol, None
-        rows = await asyncio.gather(*(fetch(request) for request in requests))
+        async def bounded_fetch(request):
+            try:
+                return await asyncio.wait_for(fetch(request), timeout=6)
+            except asyncio.TimeoutError:
+                return request.symbol, None
+        rows = await asyncio.gather(*(bounded_fetch(request) for request in requests))
     return {symbol: quote for symbol, quote in rows if quote is not None}
 
 
