@@ -414,10 +414,24 @@ class DayTradingQuotePump:
                 recovered = ws_healthy and (old in {None, "FUGLE_WS"} or tick - self._healthy_since[symbol] >= self._recovery_seconds)
                 yahoo_current = bool(yahoo and trusted_quote(yahoo, now=now) and yahoo.received_at
                     and 0 <= (now-datetime.fromisoformat(yahoo.received_at)).total_seconds() <= 15)
-                source = "FUGLE_WS" if recovered else "FUGLE_REST" if allowed and trusted_quote(rest, now=now, max_age_seconds=15) else "YAHOO_TW" if yahoo_current else "TWSE_MIS" if trusted_quote(mis, now=now, max_age_seconds=15) else None
+                free_sources = [name for name, valid in (
+                    ("YAHOO_TW", yahoo_current),
+                    ("TWSE_MIS", trusted_quote(mis, now=now, max_age_seconds=15)),
+                ) if valid]
+                # Compare exchange timestamps, never HTTP receipt times. Keep
+                # the current provider on ties to avoid needless history resets.
+                free_source = max(free_sources, key=lambda name: (
+                    quote_time(self._source_quotes[name][symbol]), name == old,
+                ), default=None)
+                source = "FUGLE_WS" if recovered else "FUGLE_REST" if allowed and trusted_quote(rest, now=now, max_age_seconds=15) else free_source
                 if source is None:
                     continue
                 selected = self._source_quotes[source][symbol]
+                previous = self._source_quotes.get(old, {}).get(symbol)
+                if previous and quote_time(previous) and quote_time(selected) < quote_time(previous):
+                    # An expired provider cannot make an older fallback a newer
+                    # trade. Leave the published quote to age out naturally.
+                    continue
                 counts[source] = counts.get(source, 0) + 1
                 if symbol in {"t00", "IX0001"}:
                     index_source = source
@@ -579,11 +593,11 @@ class DayTradingQuotePump:
                 if not targets:
                     await asyncio.sleep(2)
                     continue
-                try:
-                    index = next((r for r in targets if r.symbol == "t00"), None)
-                    stocks = [r for r in targets if r.symbol != "t00"]
-                    for start in range(0, max(1, len(stocks)), 49):
-                        batch = ([index] if index else []) + stocks[start:start+49]
+                index = next((r for r in targets if r.symbol == "t00"), None)
+                stocks = [r for r in targets if r.symbol != "t00"]
+                for start in range(0, max(1, len(stocks)), 49):
+                    batch = ([index] if index else []) + stocks[start:start+49]
+                    try:
                         quotes = await fetch_batch(client, batch)
                         now = self._utcnow()
                         quotes = {s: official_market_data_provider.attach_order_book(q, now) for s, q in quotes.items()}
@@ -593,14 +607,14 @@ class DayTradingQuotePump:
                             self._state["yahooLastError"] = None
                         self._publish_selected()
                         official_market_data_provider.ingest_verified_quotes(quotes)
-                        await asyncio.sleep(1)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    with self._lock:
-                        self._state["yahooLastError"] = type(exc).__name__
-                    logger.warning("Yahoo TW quote batch failed: %s", type(exc).__name__)
-                    await asyncio.sleep(10)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        with self._lock:
+                            self._state["yahooLastError"] = type(exc).__name__
+                        logger.warning("Yahoo TW quote batch failed: %s", type(exc).__name__)
+                    # A failed batch must not starve the rest of the universe.
+                    await asyncio.sleep(1)
                 await asyncio.sleep(1)
 
 

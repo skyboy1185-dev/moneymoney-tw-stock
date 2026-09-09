@@ -82,9 +82,19 @@ def test_cached_selection_filters_user_open_signal(monkeypatch: Any) -> None:
         def scalars(_: object) -> ScalarResult:
             return ScalarResult()
 
+    live = {"phase": "scanning", "formalSignalsAllowed": True}
+    monkeypatch.setattr(day_trading, "_live_selection_context", lambda *a, **k: (
+        live, {"dataStatus": "normal"}, {}, None,
+    ))
     selection = day_trading._automation_cached_selection(FakeDb(), "test-user")
 
     assert selection is not None
     assert selection["selectionSource"] == "automation_cache"
     assert selection["recommended"] == [{"id": "fresh", "direction": "long"}]
     assert selection["candidates"] == [{"id": "candidate", "direction": "long"}]
+
+    live.update(phase="entry_closed", formalSignalsAllowed=False)
+    closed = day_trading._automation_cached_selection(FakeDb(), "test-user")
+    assert closed["session"]["phase"] == "entry_closed"
+    assert closed["recommended"] == []
+    assert closed["updatedAt"] == "2026-08-27T01:00:00+00:00"

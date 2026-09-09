@@ -334,3 +334,54 @@ def test_rest_loop_keeps_quotes_fresh_through_thirty_second_ws_recovery(monkeypa
     assert all(0 <= age <= 15 for _tick, _source, age in observed)
     assert any(tick >= 27 for tick in rest_calls), "REST must continue beyond the initial snapshot lifetime"
     assert not any(tick > 42 for tick in rest_calls), "REST stops after the actual WS switch"
+
+
+def test_newer_mis_beats_recently_received_old_yahoo_and_ties_stay_stable():
+    pump, clock, adapter, mis, published = fixture(publish=False)
+    asyncio.run(pump.run_once())
+    clock.tick = 5
+    old_yahoo = replace(quote(clock, source="Yahoo \u53f0\u7063\u80a1\u5e02"),
+        quote_timestamp=(clock.now() - timedelta(seconds=4)).isoformat(),
+        received_at=clock.now().isoformat())
+    current_mis = quote(clock, source="TWSE MIS")
+    pump._cache_source("YAHOO_TW", {"2330": old_yahoo})
+    pump._cache_source("TWSE_MIS", {"2330": current_mis})
+    pump._publish_selected()
+    assert published[-1]["2330"].source == "TWSE MIS"
+    pump._cache_source("YAHOO_TW", {"2330": replace(old_yahoo,
+        quote_timestamp=current_mis.quote_timestamp)})
+    pump._publish_selected()
+    assert published[-1]["2330"].source == "TWSE MIS"
+
+    count = len(published)
+    clock.tick = 30
+    pump._cache_source("YAHOO_TW", {"2330": replace(old_yahoo,
+        received_at=clock.now().isoformat())})
+    pump._publish_selected()
+    assert len(published) == count
+
+
+def test_failed_yahoo_batch_does_not_skip_remaining_symbols(monkeypatch):
+    import httpx
+    from app.services import yahoo_tw_live_quotes
+    pump, clock, adapter, mis, published = fixture(publish=False)
+    targets = [StockQuoteRequest(str(1000 + i), "test", "listed") for i in range(60)]
+    monkeypatch.setattr(pump, "relay_targets", lambda: targets)
+    calls = []
+    async def fetch(client, batch):
+        calls.append([row.symbol for row in batch])
+        if len(calls) == 1:
+            raise httpx.ReadTimeout("test")
+        raise asyncio.CancelledError()
+    async def sleep(seconds):
+        pass
+    monkeypatch.setattr(yahoo_tw_live_quotes, "fetch_batch", fetch)
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    async def run():
+        try:
+            await pump._run_yahoo()
+        except asyncio.CancelledError:
+            pass
+    asyncio.run(run())
+    assert calls[0] == [row.symbol for row in targets[:49]]
+    assert calls[1] == [row.symbol for row in targets[49:]]

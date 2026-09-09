@@ -339,14 +339,7 @@ def _settings_payload(item: DayTradingSettings, schedule: DayTradingScheduleSett
     }
 
 
-def _selection(
-    db: Session,
-    user_id: str,
-    *,
-    raw_signals: list[dict[str, Any]] | None = None,
-    now: datetime | None = None,
-    force_candidate_ranking: bool = False,
-) -> dict[str, Any]:
+def _live_selection_context(db: Session, user_id: str, *, now: datetime | None = None):
     risk = _settings(db, user_id)
     schedule_settings = _schedule_settings(db, user_id)
     config = _schedule_config(risk, schedule_settings)
@@ -376,6 +369,18 @@ def _selection(
     )
     strategy = strategy_context(regime, session)
     regime = {**regime, **strategy}
+    return session, regime, infrastructure, config
+
+
+def _selection(
+    db: Session,
+    user_id: str,
+    *,
+    raw_signals: list[dict[str, Any]] | None = None,
+    now: datetime | None = None,
+    force_candidate_ranking: bool = False,
+) -> dict[str, Any]:
+    session, regime, infrastructure, config = _live_selection_context(db, user_id, now=now)
     # When risk controls already block formal signals (for example a stale or
     # disconnected quote feed), candidate generation cannot affect the public
     # result. Avoid the expensive 276-symbol signal and chip-history scan so
@@ -397,7 +402,7 @@ def _selection(
         )
         candidates = strategy_eligible_signals(route_signals_to_active_robot(
             candidates,
-            strategy["activeRobot"],
+            regime["activeRobot"],
         ))
         open_ids = set(db.scalars(select(DayTradingPosition.signal_id).where(
             DayTradingPosition.user_id == user_id,
@@ -618,11 +623,12 @@ def _automation_cached_selection(db: Session, user_id: str) -> dict[str, Any] | 
     regime = payload.get("regime")
     if not isinstance(session, dict) or not isinstance(regime, dict):
         return None
+    session, regime, infrastructure, config = _live_selection_context(db, user_id)
     open_ids = _open_signal_ids(db, user_id)
     recommended = [
         item
         for item in _payload_list(payload.get("recommended"))
-        if str(item.get("id") or "") not in open_ids
+        if session["formalSignalsAllowed"] and str(item.get("id") or "") not in open_ids
     ]
     candidates = _payload_list(payload.get("candidates"))
     return {
@@ -631,18 +637,9 @@ def _automation_cached_selection(db: Session, user_id: str) -> dict[str, Any] | 
         "totalRecommended": len(recommended),
         "maximumRecommendations": int(payload.get("maximumRecommendations") or 10),
         "session": session,
-        "infrastructure": {
-            "quoteSource": (
-                "degraded" if regime.get("dataQualityMode") == "index_delay"
-                else "healthy" if regime.get("dataStatus") == "normal"
-                else "closed" if regime.get("dataStatus") == "closed"
-                else "error"
-            ),
-            "redis": day_trading_cache.status,
-            "database": "healthy",
-            "stream": "healthy",
-        },
-        "summary": str(payload.get("summary") or "目前沒有符合風控條件的股票，持續掃描中"),
+        "infrastructure": infrastructure,
+        "summary": (str(payload.get("summary") or "目前沒有符合風控條件的股票，持續掃描中")
+                    if session["formalSignalsAllowed"] else session.get("statusMessage", "暫停新進場")),
         "regime": regime,
         "selectionSource": str(payload.get("source") or "automation_cache"),
         "updatedAt": payload.get("updatedAt"),
