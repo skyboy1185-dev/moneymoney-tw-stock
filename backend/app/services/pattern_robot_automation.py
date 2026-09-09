@@ -52,8 +52,7 @@ async def fetch_pattern_scan_payload() -> PatternScanPayload:
 
         async def fetch_page(page: int) -> PatternScanPayload:
             separator = "&" if "?" in scanner_url else "?"
-            response = await client.get(f"{scanner_url}{separator}page={page}&pageSize=80", headers=headers)
-            response.raise_for_status()
+            response = await _fetch_scanner_page(client, f"{scanner_url}{separator}page={page}&pageSize=40", headers)
             payload = response.json()
             if isinstance(payload, dict) and payload.get("error"):
                 raise RuntimeError(f"型態掃描器：{payload['error']}")
@@ -65,12 +64,30 @@ async def fetch_pattern_scan_payload() -> PatternScanPayload:
             batch = await fetch_page(page)
             if batch.trade_date != result.trade_date:
                 raise RuntimeError("型態掃描批次交易日不一致，取消寫入")
+            if batch.page != page or batch.page_count != result.page_count:
+                raise RuntimeError("型態掃描分頁不一致，取消寫入")
             stocks.extend(batch.stocks)
         if not stocks:
             raise RuntimeError("沒有股票通過真實行情完整性與流動性門檻")
         result.stocks = stocks
         result.source_status["batches"] = f"{result.page_count} pages merged; {len(stocks)} eligible stocks"
         return result
+
+
+async def _fetch_scanner_page(client, url, headers):
+    """Retry only transient read failures; never retry writes or invalid payloads."""
+    for attempt in range(3):
+        try:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            return response
+        except (httpx.TransportError, httpx.HTTPStatusError) as error:
+            if isinstance(error, httpx.HTTPStatusError) and error.response.status_code not in {408, 429, 500, 502, 503, 504}:
+                raise
+            if attempt == 2:
+                raise
+            logger.warning("Pattern scanner page retry %s: %s", attempt + 1, type(error).__name__)
+            await asyncio.sleep(2 ** (attempt + 1))
 
 
 class PatternRobotAutomation:
@@ -127,7 +144,11 @@ class PatternRobotAutomation:
                 result = {"status": "skipped_pre_open"}
                 self._state.update({"status": "running", "lastResult": result})
                 return result
-            payload = await fetch_pattern_scan_payload()
+            try:
+                payload = await asyncio.wait_for(fetch_pattern_scan_payload(), timeout=900)
+            except Exception as error:
+                self._state.update({"status": "error", "lastError": str(error)[:500] or type(error).__name__})
+                raise
             with SessionLocal() as db:
                 try:
                     result = process_pattern_scan(db, payload, force=force)
@@ -177,12 +198,12 @@ class PatternRobotAutomation:
                     await self.run_once(force=completed)
                     if should_close:
                         self._last_close_scan_date = local.date()
-                self._state["nextRunAt"] = (datetime.now(UTC).timestamp() + interval)
             except asyncio.CancelledError:
                 raise
             except Exception as error:
                 logger.exception("Pattern robot automation cycle failed")
                 self._state.update({"status": "error", "lastError": str(error)[:500]})
+            self._state["nextRunAt"] = (datetime.now(UTC).timestamp() + interval)
             await asyncio.sleep(interval)
 
 
