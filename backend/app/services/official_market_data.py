@@ -221,6 +221,33 @@ def parse_mis_quote(
 
 
 class TwseMisMarketDataProvider:
+    def ingest_order_books(self, quotes):
+        from .quote_quality import positive
+        now = datetime.now(UTC)
+        for symbol, quote in quotes.items():
+            if quote.source not in {"TWSE MIS", "TWSE MIS 五檔參考價"}:
+                continue
+            try:
+                stamp = datetime.fromisoformat(quote.book_timestamp)
+                if not 0 <= (now-stamp).total_seconds() <= 15:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            if not positive(quote.best_bid) or not positive(quote.best_ask) or quote.best_bid > quote.best_ask:
+                continue
+            prior = self._books.get(symbol)
+            if prior is None or stamp >= datetime.fromisoformat(prior.book_timestamp):
+                self._books[symbol] = quote
+
+    def attach_order_book(self, quote, now):
+        from dataclasses import replace
+        book = self._books.get(quote.symbol)
+        if book and 0 <= (now-datetime.fromisoformat(book.book_timestamp)).total_seconds() <= 15:
+            return replace(quote, best_bid=book.best_bid, best_ask=book.best_ask,
+                bid_prices=book.bid_prices, bid_volumes=book.bid_volumes,
+                ask_prices=book.ask_prices, ask_volumes=book.ask_volumes, book_timestamp=book.book_timestamp)
+        return quote
+
     def cached_quotes(self, requests: list[StockQuoteRequest]) -> dict[str, OfficialStockQuote]:
         return {r.symbol: self._cache[r.symbol][0] for r in requests if r.symbol in self._cache}
 
@@ -238,6 +265,7 @@ class TwseMisMarketDataProvider:
             self._last_trades[symbol] = quote
 
     def __init__(self) -> None:
+        self._books: dict[str, OfficialStockQuote] = {}
         self._cache: dict[str, tuple[OfficialStockQuote, datetime]] = {}
         self._last_trades: dict[str, OfficialStockQuote] = {}
         self._lock = asyncio.Lock()

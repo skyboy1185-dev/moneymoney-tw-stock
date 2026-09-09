@@ -5,7 +5,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 TAIPEI = ZoneInfo("Asia/Taipei")
-TRUSTED_SOURCES = frozenset({"TWSE MIS", "FUGLE"})
+TRUSTED_SOURCES = frozenset({"TWSE MIS", "FUGLE", "Yahoo 台灣股市"})
 
 
 def value(quote: Any, name: str, default: Any = None) -> Any:

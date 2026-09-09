@@ -24,8 +24,8 @@ def quote_health(quotes: dict, now: datetime, timeout: int, diagnostics: dict | 
             "overCapacity": diagnostics.get("overCapacity", False)}
     # Public projection is an explicit allowlist: never expose adapter errors,
     # endpoint URLs, headers, or credentials from its internal diagnostics.
-    modes = {"shadow", "primary", "degraded", "mis_only"}
-    sources = {"FUGLE_WS", "FUGLE_REST", "TWSE_MIS", "MIXED", "NONE"}
+    modes = {"shadow", "primary", "degraded", "mis_only", "free_quotes"}
+    sources = {"FUGLE_WS", "FUGLE_REST", "TWSE_MIS", "YAHOO_TW", "MIXED", "NONE"}
     if diagnostics.get("providerMode") in modes:
         result["providerMode"] = diagnostics["providerMode"]
     if diagnostics.get("activeSource") in sources:

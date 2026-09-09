@@ -23,7 +23,7 @@ export function v2SourceLabel(runtime: RuntimeState, fallback = "尚未取得行
   const source = runtime.quoteHealth?.activeSource;
   const labels: Record<string, string> = {
     FUGLE_WS: "Fugle 即時串流", FUGLE_REST: "Fugle 備援報價",
-    TWSE_MIS: "TWSE MIS", MIXED: "多來源報價", NONE: "尚未取得行情",
+    TWSE_MIS: "TWSE MIS", YAHOO_TW: "Yahoo 台灣股市", MIXED: "多來源報價", NONE: "尚未取得行情",
   };
   return source ? labels[source] ?? "行情來源待確認" : fallback;
 }
@@ -36,6 +36,7 @@ export function v2SourceStatus(runtime: RuntimeState): string | null {
     return health.entitlementReady === false ? "備援驗證中，帳號額度尚未達標" : "備援驗證中，尚未啟用";
   }
   if (health.activeSource === "NONE") return "全部行情來源暫時不可用";
+  if (health.providerMode === "free_quotes") return "免費報價批次更新中";
   if (health.providerMode === "degraded" || health.activeSource === "FUGLE_REST") return "使用備援行情，自動重連中";
   if (health.providerMode === "mis_only") return "使用 MIS 行情";
   return health.ready ? "主要行情連線正常" : "行情連線檢查中";

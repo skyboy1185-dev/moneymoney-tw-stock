@@ -61,13 +61,17 @@ def relay_quotes(body: RelayBatch):
     previous = day_trading_engine.official_quotes_snapshot()
     now = datetime.now(UTC)
     quotes = {}
+    books = {}
     for raw in body.rows:
         symbol = raw.get("c", "")
         if symbol not in targets:
             continue
         quote = parse_mis_quote(raw, targets[symbol], previous.get(symbol), now=now)
+        if quote is not None:
+            books[symbol] = quote
         if trusted_quote(quote, now=now, max_age_seconds=15):
             quotes[symbol] = quote
+    official_market_data_provider.ingest_order_books(books)
     official_market_data_provider.ingest_verified_quotes(quotes)
     day_trading_quote_pump.ingest_mis_relay(quotes)
     accepted = len(quotes)

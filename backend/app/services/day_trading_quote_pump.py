@@ -88,13 +88,14 @@ class DayTradingQuotePump:
         self._cycle_lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
         self._backup_task: asyncio.Task | None = None
+        self._yahoo_task: asyncio.Task | None = None
         self._rest_attempts: dict[str, float] = {}
         self._mandatory_symbols: set[str] = set()
         self._fugle = fugle_provider
         self._auto_fugle = provider is None
         self._publish_fugle = publish_enabled
         self._failover_seconds, self._recovery_seconds = failover_seconds, recovery_seconds
-        self._source_quotes: dict[str, dict[str, OfficialStockQuote]] = {name: {} for name in ("FUGLE_WS", "FUGLE_REST", "TWSE_MIS")}
+        self._source_quotes: dict[str, dict[str, OfficialStockQuote]] = {name: {} for name in ("FUGLE_WS", "FUGLE_REST", "TWSE_MIS", "YAHOO_TW")}
         self._active_sources: dict[str, str] = {}
         self._healthy_since: dict[str, float] = {}
         self._validated_symbols: set[str] = set()
@@ -229,6 +230,8 @@ class DayTradingQuotePump:
         with self._lock:
             self._state["status"] = "running"
         self._task = asyncio.create_task(self._run(), name="day-trading-quote-pump")
+        if self._auto_fugle:
+            self._yahoo_task = asyncio.create_task(self._run_yahoo(), name="yahoo-tw-quote-pump")
 
     async def stop(self) -> None:
         task, self._task = self._task, None
@@ -238,6 +241,11 @@ class DayTradingQuotePump:
                 with suppress(asyncio.CancelledError):
                     await task
         finally:
+            if self._yahoo_task:
+                self._yahoo_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await self._yahoo_task
+                self._yahoo_task = None
             if self._backup_task:
                 self._backup_task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -373,7 +381,8 @@ class DayTradingQuotePump:
                 ws = self._source_quotes["FUGLE_WS"].get(symbol)
                 rest = self._source_quotes["FUGLE_REST"].get(symbol)
                 mis = self._source_quotes["TWSE_MIS"].get(symbol)
-                eligible = [("TWSE_MIS", mis)]
+                yahoo = self._source_quotes["YAHOO_TW"].get(symbol)
+                eligible = [("TWSE_MIS", mis), ("YAHOO_TW", yahoo)]
                 if allowed:
                     eligible.extend([("FUGLE_WS", ws), ("FUGLE_REST", rest)])
                 for source, quote in eligible:
@@ -384,7 +393,7 @@ class DayTradingQuotePump:
                             self._invalidations[symbol] = (event, quote, source)
                 blocked = self._invalidations.get(symbol)
                 if blocked:
-                    replacements = [q for q in ([mis, ws, rest] if allowed else [mis])
+                    replacements = [q for q in ([mis, yahoo, ws, rest] if allowed else [mis, yahoo])
                                     if trusted_quote(q, now=now, max_age_seconds=15)
                                     and (stamp := quote_time(q)) is not None and stamp > blocked[0]]
                     if replacements:
@@ -403,7 +412,9 @@ class DayTradingQuotePump:
                     self._healthy_since.pop(symbol, None)
                 old = self._active_sources.get(symbol)
                 recovered = ws_healthy and (old in {None, "FUGLE_WS"} or tick - self._healthy_since[symbol] >= self._recovery_seconds)
-                source = "FUGLE_WS" if recovered else "FUGLE_REST" if allowed and trusted_quote(rest, now=now, max_age_seconds=15) else "TWSE_MIS" if trusted_quote(mis, now=now, max_age_seconds=15) else None
+                yahoo_current = bool(yahoo and trusted_quote(yahoo, now=now) and yahoo.received_at
+                    and 0 <= (now-datetime.fromisoformat(yahoo.received_at)).total_seconds() <= 15)
+                source = "FUGLE_WS" if recovered else "FUGLE_REST" if allowed and trusted_quote(rest, now=now, max_age_seconds=15) else "YAHOO_TW" if yahoo_current else "TWSE_MIS" if trusted_quote(mis, now=now, max_age_seconds=15) else None
                 if source is None:
                     continue
                 selected = self._source_quotes[source][symbol]
@@ -425,8 +436,8 @@ class DayTradingQuotePump:
             shadow_fresh = sum(any(trusted_quote(self._source_quotes[source].get(symbol), now=now, max_age_seconds=15)
                                    for source in ("FUGLE_WS", "FUGLE_REST")) for symbol in shadow_symbols)
             summary_counts = stock_counts or counts
-            self._state.update(ready=allowed, entitlementReady=entitled, entitlementReason=reason,
-                providerMode="mis_only" if not self._fugle else "shadow" if not allowed else "degraded" if stock_counts.get("TWSE_MIS") or stock_counts.get("FUGLE_REST") else "primary",
+            self._state.update(ready=allowed or bool(stock_counts.get("YAHOO_TW")), entitlementReady=entitled, entitlementReason=None if stock_counts.get("YAHOO_TW") else reason,
+                providerMode="free_quotes" if stock_counts.get("YAHOO_TW") else "mis_only" if not self._fugle else "shadow" if not allowed else "degraded" if stock_counts.get("TWSE_MIS") or stock_counts.get("FUGLE_REST") else "primary",
                 activeSource=next(iter(summary_counts)) if len(summary_counts) == 1 else "MIXED" if summary_counts else "NONE",
                 activeSourceCounts=counts, indexSource=index_source, fugleShadowFreshCount=shadow_fresh,
                 fugleShadowObservedAt=now.isoformat())
@@ -517,7 +528,7 @@ class DayTradingQuotePump:
                 if quotes:
                     with self._lock:
                         accepted = self._cache_source("TWSE_MIS", quotes)
-                    if self._fugle:
+                    if self._fugle or self._yahoo_task:
                         self._publish_selected()
                     else:
                         if accepted and self._enabled:
@@ -557,6 +568,40 @@ class DayTradingQuotePump:
         while True:
             await self.run_once()
             await asyncio.sleep(0.1)
+
+    async def _run_yahoo(self) -> None:
+        import httpx
+        from .yahoo_tw_live_quotes import fetch_batch
+        from .official_market_data import official_market_data_provider
+        async with httpx.AsyncClient(timeout=3, headers={"User-Agent": "Mozilla/5.0", "Cache-Control": "no-cache"}) as client:
+            while True:
+                targets = self.relay_targets()
+                if not targets:
+                    await asyncio.sleep(2)
+                    continue
+                try:
+                    index = next((r for r in targets if r.symbol == "t00"), None)
+                    stocks = [r for r in targets if r.symbol != "t00"]
+                    for start in range(0, max(1, len(stocks)), 49):
+                        batch = ([index] if index else []) + stocks[start:start+49]
+                        quotes = await fetch_batch(client, batch)
+                        now = self._utcnow()
+                        quotes = {s: official_market_data_provider.attach_order_book(q, now) for s, q in quotes.items()}
+                        with self._lock:
+                            self._cache_source("YAHOO_TW", quotes)
+                            self._state["yahooLastReceivedAt"] = now.isoformat()
+                            self._state["yahooLastError"] = None
+                        self._publish_selected()
+                        official_market_data_provider.ingest_verified_quotes(quotes)
+                        await asyncio.sleep(1)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    with self._lock:
+                        self._state["yahooLastError"] = type(exc).__name__
+                    logger.warning("Yahoo TW quote batch failed: %s", type(exc).__name__)
+                    await asyncio.sleep(10)
+                await asyncio.sleep(1)
 
 
 day_trading_quote_pump = DayTradingQuotePump()
