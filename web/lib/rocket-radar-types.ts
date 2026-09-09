@@ -24,6 +24,7 @@ export interface RocketStatRow {
 }
 
 export interface RocketDashboard {
+  automation?: {status:string;lastSuccessAt:string|null;lastError:string|null;nextRunAt:number|null;scanDeadlineAt:number|null;lastResult?:{status?:string}};
   market: { regime: string; label: string; score: number; maximumExposurePercent: number; strategy: string; reasons: string[]; missingFields: string[]; updatedAt: string | null };
   account: { initialCapital: number; cash: number; marketValue: number; totalEquity: number; cumulativePnl: number; returnPercent: number; todayPnl: number; realizedPnl: number; unrealizedPnl: number; positionCount: number };
   top5: RocketCandidate[]; candidates: RocketCandidate[]; candidateMessage: string | null;

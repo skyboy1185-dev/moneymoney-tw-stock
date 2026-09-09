@@ -15,6 +15,7 @@ from ..database import BackgroundSessionLocal as SessionLocal
 from ..models import PatternRobotRun, PatternRobotSetting
 from ..pattern_schemas import PatternScanPayload
 from .worker_supervision import supervise
+from .scanner_http import fetch_scanner_response as _fetch_scanner_page
 from .day_trading_schedule import is_twse_trading_day
 from .pattern_robot_service import ensure_pattern_settings, process_pattern_scan
 
@@ -81,25 +82,6 @@ async def fetch_pattern_scan_payload(progress=None) -> PatternScanPayload:
         return result
 
 
-async def _fetch_scanner_page(client, url, headers):
-    """Retry only transient read failures; never retry writes or invalid payloads."""
-    for attempt in range(3):
-        try:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            # The scanner proxy streams keepalive whitespace with HTTP 200;
-            # its upstream failure is reported in the JSON envelope.
-            payload = response.json()
-            if isinstance(payload, dict) and payload.get("error") and payload.get("statusCode") in {408, 429, 500, 502, 503, 504}:
-                raise httpx.RemoteProtocolError("Scanner upstream temporarily unavailable")
-            return response
-        except (httpx.TransportError, httpx.HTTPStatusError) as error:
-            if isinstance(error, httpx.HTTPStatusError) and error.response.status_code not in {408, 429, 500, 502, 503, 504}:
-                raise
-            if attempt == 2:
-                raise
-            logger.warning("Pattern scanner page retry %s: %s", attempt + 1, type(error).__name__)
-            await asyncio.sleep(2 ** (attempt + 1))
 
 
 class PatternRobotAutomation:

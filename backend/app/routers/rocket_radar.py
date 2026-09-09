@@ -36,7 +36,7 @@ def status() -> dict[str, object]:
 
 @router.get("/dashboard")
 def dashboard(db: Session = Depends(get_db)) -> dict[str, object]:
-    return dashboard_payload(db)
+    return {**dashboard_payload(db), "automation": rocket_radar_automation.state}
 
 
 @router.get("/candidate/{stock_code}")

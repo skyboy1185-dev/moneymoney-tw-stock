@@ -17,6 +17,8 @@ from ..models import RocketNotification
 from .day_trading_schedule import is_twse_trading_day
 from .gmail_messaging import gmail_notification_dispatcher
 from .rocket_service import process_rocket_scan
+from .worker_supervision import supervise
+from .scanner_http import fetch_scanner_response
 
 
 logger = logging.getLogger(__name__)
@@ -77,17 +79,18 @@ async def fetch_rocket_scan_payload() -> AdaptiveScanPayload:
     async with httpx.AsyncClient(
         timeout=settings.rocket_radar_scanner_timeout_seconds, follow_redirects=True,
     ) as client:
-        response = await client.get(url, headers=headers)
-        response.raise_for_status()
+        response = await fetch_scanner_response(client, url, headers)
         return AdaptiveScanPayload.model_validate(response.json())
 
 
 class RocketRadarAutomation:
     def __init__(self) -> None:
         self._task: asyncio.Task[None] | None = None
+        self._run_lock = asyncio.Lock()
         self._state: dict[str, object] = {
             "status": "stopped", "lastRunAt": None, "lastSuccessAt": None,
             "lastResult": None, "lastError": None, "lineNotifications": False,
+            "nextRunAt": None, "scanDeadlineAt": None,
         }
 
     @property
@@ -97,7 +100,7 @@ class RocketRadarAutomation:
     async def start(self) -> None:
         if self._task and not self._task.done(): return
         self._state["status"] = "running"
-        self._task = asyncio.create_task(self._run(), name="rocket-radar-automation")
+        self._task = asyncio.create_task(supervise(self._run, self._state), name="rocket-radar-automation")
 
     async def stop(self) -> None:
         if not self._task: return
@@ -107,6 +110,19 @@ class RocketRadarAutomation:
         self._state["status"] = "stopped"
 
     async def run_once(self, now: datetime | None = None, *, force: bool = False) -> dict[str, object]:
+        async with self._run_lock:
+            try:
+                return await self._run_once(now, force=force)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                self._state.update(status="error", lastError=str(error)[:500] or type(error).__name__)
+                raise
+            finally:
+                self._state["scanDeadlineAt"] = None
+                self._state["nextRunAt"] = datetime.now(UTC).timestamp() + max(10, get_settings().rocket_radar_scan_interval_seconds)
+
+    async def _run_once(self, now: datetime | None = None, *, force: bool = False) -> dict[str, object]:
         current = now or datetime.now(UTC)
         local = current.astimezone(TAIPEI)
         settings = get_settings()
@@ -118,7 +134,9 @@ class RocketRadarAutomation:
         elif not force and not (time(8, 50) <= local.time() <= time(14, 10)):
             result = {"status": "waiting_market_session"}
         else:
-            payload = await fetch_rocket_scan_payload()
+            self._state.update(status="scanning", lastError=None, nextRunAt=None,
+                               scanDeadlineAt=datetime.now(UTC).timestamp()+900)
+            payload = await asyncio.wait_for(fetch_rocket_scan_payload(), timeout=900)
             if not force and payload.market.trade_date != local.date():
                 result = {"status": "waiting_current_quotes", "payloadTradeDate": payload.market.trade_date.isoformat()}
             else:
@@ -143,7 +161,7 @@ class RocketRadarAutomation:
                 raise
             except Exception as error:
                 logger.exception("Rocket radar scan failed")
-                self._state.update({"status": "error", "lastError": str(error)[:500]})
+                self._state.update({"status": "error", "lastError": str(error)[:500] or type(error).__name__})
             await asyncio.sleep(interval)
 
 

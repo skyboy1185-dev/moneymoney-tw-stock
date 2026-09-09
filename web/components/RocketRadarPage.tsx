@@ -195,6 +195,13 @@ export function RocketRadarPage({ onSelectStock, onUnreadChange }: { onSelectSto
   return <div className="rocket-page">
     <header className="rocket-heading"><div><p>ROCKET MOMENTUM DETECTION SYSTEM</p><h1><Rocket size={27} />飆股雷達</h1><span>尋找尚未大幅噴出、即將進入主升段的標的；正式買進會同步寄送 Gmail，不發送 LINE。</span></div><div className="rocket-heading-actions"><label><Volume2 size={14} /><input type="checkbox" checked={soundEnabled} onChange={(event) => setSoundEnabled(event.target.checked)} />通知音效</label><button onClick={() => void load()} disabled={loading}><RefreshCw className={loading ? "spin-icon" : ""} size={15} />立即更新</button></div></header>
     {error && <div className="error-banner">{error}</div>}
+    {data.automation && <div className="rocket-panel" role="status">
+      雷達運作：{data.automation.status === "error" ? "更新失敗，等待自動重試" : data.automation.status === "recovering" ? "背景工作自動恢復中" : data.automation.status === "scanning" ? "正在掃描（含排隊與資料抓取）" : data.automation.lastResult?.status === "waiting_current_quotes" ? "等待今日行情，尚未更新" : data.automation.status === "stopped" ? "已停止" : "等待下一輪掃描"}
+      <div>最近成功：{data.automation.lastSuccessAt ? new Date(data.automation.lastSuccessAt).toLocaleString("zh-TW", {hour12:false}) : "本次啟動後尚未完成"}</div>
+      {data.automation.nextRunAt && <div>下次執行：{new Date(data.automation.nextRunAt * 1000).toLocaleTimeString("zh-TW", {hour12:false})}</div>}
+      {data.automation.scanDeadlineAt && <div>逾時檢查：{new Date(data.automation.scanDeadlineAt * 1000).toLocaleTimeString("zh-TW", {hour12:false})}</div>}
+      {data.automation.lastError && <div>本輪資料尚未更新，系統會自動重試。</div>}
+    </div>}
 
     <section className="rocket-dashboard">
       <article className="regime"><span>目前市場</span><strong>{data.market.label}</strong><small>{data.market.strategy}</small></article>
