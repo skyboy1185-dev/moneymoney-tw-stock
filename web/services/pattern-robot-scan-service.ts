@@ -1,3 +1,4 @@
+import { patternCurrentQuotes, type PatternQuote } from "@/services/pattern-current-quotes";
 import type { Market, StockMeta } from "@/lib/types";
 import { backendJson } from "@/services/backend-client";
 import { getOfficialRecentHistory } from "@/services/market-data/official-history-provider";
@@ -93,7 +94,7 @@ async function loadOfficialUniverse() {
     })),
   ].filter((item) => /^\d{4}$/.test(item.symbol) && item.name);
   if (companies.length < 500) throw new Error("上市櫃普通股公司清單不完整，取消本次掃描");
-  const quoteMap = new Map<string, { price:number; open:number; high:number; low:number; volume:number; turnover:number; date:string; source:string }>();
+  const quoteMap = new Map<string, PatternQuote>();
   for (const row of listedQuotes) {
     const symbol = stringValue(row, ["Code", "證券代號"]);
     quoteMap.set(symbol, { price:numberValue(row.ClosingPrice), open:numberValue(row.OpeningPrice), high:numberValue(row.HighestPrice), low:numberValue(row.LowestPrice), volume:numberValue(row.TradeVolume), turnover:numberValue(row.TradeValue), date:rocDate(stringValue(row,["Date"])) ?? "", source:"TWSE OpenAPI" });
@@ -227,6 +228,14 @@ async function buildUncached(page: number, pageSize: number) {
     symbol: item.stockCode, name: item.stockName, market: item.market as Market,
     sector: item.industry, listingDate: null,
   }));
+  const pageCount=Math.max(1,Math.ceil(scopedCompanies.length/pageSize));
+  const pageCompanies=scopedCompanies.slice((page-1)*pageSize,page*pageSize);
+  const histories = new Map(await Promise.all(pageCompanies.map(async company => {
+    try { return [company.symbol, await patternHistory(company)] as const; }
+    catch { return [company.symbol, null] as const; }
+  })));
+  // Fetch current observations AFTER the slower history downloads.
+  const currentQuotes = await patternCurrentQuotes(pageCompanies);
   const now=new Date();
   const taipeiParts=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Taipei",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false}).formatToParts(now);
   const part=(type:string)=>taipeiParts.find((item)=>item.type===type)?.value??"";
@@ -234,12 +243,11 @@ async function buildUncached(page: number, pageSize: number) {
   const currentTime=`${part("hour")}:${part("minute")}:${part("second")}`;
   const closeComplete=currentTime>="13:40:00";
   let validHistoryCount=0;
-  const pageCount=Math.max(1,Math.ceil(scopedCompanies.length/pageSize));
-  const pageCompanies=scopedCompanies.slice((page-1)*pageSize,page*pageSize);
   const candidates=await Promise.all(pageCompanies.map(async(company)=>{
-    let quote=quoteMap.get(company.symbol);
-    let history:Awaited<ReturnType<typeof patternHistory>>;
-    try{history=await patternHistory(company);validHistoryCount+=1;}catch{return null;}
+    let quote=currentQuotes.get(company.symbol) ?? (closeComplete ? quoteMap.get(company.symbol) : undefined);
+    const history=histories.get(company.symbol);
+    if (!history) return null;
+    validHistoryCount+=1;
     const actual=[...history.actual];
     const adjusted=[...history.adjusted];
     const latest=actual.at(-1);
@@ -247,7 +255,7 @@ async function buildUncached(page: number, pageSize: number) {
       quote = { price:latest.close, open:latest.open, high:latest.high, low:latest.low,
         volume:latest.volume, turnover:latest.turnover, date:latest.date, source:history.source };
     }
-    if (!quote?.price || !quote.volume) return null;
+    if (!quote?.price || !quote.volume || quote.date !== today) return null;
     if(quote.date&&latest&&quote.date>=latest.date){
       const candle={date:quote.date,open:quote.open||quote.price,high:quote.high||quote.price,low:quote.low||quote.price,close:quote.price,volume:quote.volume,turnover:quote.turnover||quote.price*quote.volume};
       actual.splice(actual.findIndex((row)=>row.date===quote.date),actual.some((row)=>row.date===quote.date)?1:0,candle);
@@ -257,11 +265,11 @@ async function buildUncached(page: number, pageSize: number) {
     }
     const current=actual.at(-1)!;
     const avgTurnover=actual.slice(-20).reduce((sum,row)=>sum+row.turnover,0)/Math.min(20,actual.length);
-    const vwap=current.volume?current.turnover/current.volume:null;
+    const vwap=quote.vwap ?? (current.volume?current.turnover/current.volume:null);
     const stock={stock_code:company.symbol,stock_name:company.name,market_type:company.market,sector_name:company.sector,listing_date:company.listingDate,
       is_etf:false,is_etn:false,is_warrant:false,is_disposed:disposed.has(company.symbol),is_full_delivery:fullDelivery.has(company.symbol),
       current_price:current.close,current_volume:current.volume,current_turnover:current.turnover,vwap,
-      quote_time:`${quote.date||today}T${currentTime}+08:00`,quote_realtime:quote.date===today&&!closeComplete,quote_source:quote.source,
+      quote_time:quote.timestamp ?? `${quote.date||today}T13:30:00+08:00`,quote_realtime:quote.realtime === true && !closeComplete,quote_source:quote.source,
       close_complete:quote.date<today||closeComplete,adjusted_prices:adjusted.slice(-200),actual_prices:actual.slice(-30),average_turnover_20d:avgTurnover,history_source:history.source};
     const listingDays=stock.listing_date?Math.floor((Date.parse(today)-Date.parse(stock.listing_date))/86_400_000):9999;
     return !stock.is_disposed&&!stock.is_full_delivery&&stock.current_volume>0&&stock.average_turnover_20d>=30_000_000&&listingDays>=168&&stock.adjusted_prices.length>=180?stock:null;
