@@ -1434,6 +1434,8 @@ def _scan_now(user_id: str, db: Session, coordinator_now: datetime | None = None
         existing_state.quote_at = quote_time(observation["quotes"].get(ranked_row.candidate.symbol))
         existing_state.bar_at = ranked_row.candidate.signal_time
         existing_state.scanned_at = current
+    if "uq_dtv2_candidate_day_symbol" in (runtime.latest_error or ""):
+        runtime.latest_error = ""
     db.commit()
     return {
         "evaluated": len(stored), "executed": executed, "skipped": len(stored) - executed,
