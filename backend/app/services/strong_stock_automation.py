@@ -18,6 +18,7 @@ from ..strong_stock_models import (
     StrongStockScanArchive,
 )
 from .adaptive_electronic_automation import fetch_adaptive_scan_payload
+from .worker_supervision import supervise
 from .day_trading_schedule import is_twse_trading_day
 from .gmail_messaging import gmail_notification_dispatcher
 from .official_market_data import StockQuoteRequest, official_market_data_provider
@@ -49,7 +50,7 @@ class StrongStockAutomation:
         if self._task and not self._task.done():
             return
         self._state["status"] = "running"
-        self._task = asyncio.create_task(self._run(), name="strong-stock-automation")
+        self._task = asyncio.create_task(supervise(self._run, self._state), name="strong-stock-automation")
 
     async def stop(self) -> None:
         if self._task is None:
@@ -195,7 +196,7 @@ class StrongStockAutomation:
     async def _run(self) -> None:
         while True:
             try:
-                await self.run_once()
+                await asyncio.wait_for(self.run_once(), timeout=900)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

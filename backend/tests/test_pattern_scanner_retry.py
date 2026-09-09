@@ -49,3 +49,35 @@ def test_cancellation_is_not_retried(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(automation._fetch_scanner_page(client, 'https://scanner.test/', {}))
     assert client.get.await_count == 1
+
+
+def test_hung_scan_cancels_before_retry_and_never_processes_partial_data(monkeypatch):
+    from unittest.mock import MagicMock
+    async def scenario():
+        finished = asyncio.Event()
+        async def hung(progress):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                finished.set()
+        wait_for = asyncio.wait_for
+        async def bounded(awaitable, timeout):
+            return await wait_for(awaitable, timeout=.01)
+        monkeypatch.setattr(automation.asyncio, 'wait_for', bounded)
+        monkeypatch.setattr(automation, '_is_trading_day', lambda day: True)
+        monkeypatch.setattr(automation, 'fetch_pattern_scan_payload', hung)
+        process = MagicMock(return_value={'completed': True})
+        monkeypatch.setattr(automation, 'process_pattern_scan', process)
+        monkeypatch.setattr(automation, 'SessionLocal', MagicMock())
+        worker = automation.PatternRobotAutomation()
+        with pytest.raises(TimeoutError):
+            await worker.run_once(force=True)
+        assert finished.is_set() and not worker._run_lock.locked()
+        process.assert_not_called()
+        assert worker.state['status'] == 'error'
+        monkeypatch.setattr(automation, 'fetch_pattern_scan_payload', AsyncMock(return_value=object()))
+        await worker.run_once(force=True)
+        process.assert_called_once()
+        assert worker.state['status'] == 'running'
+        assert worker.state['lastError'] is None
+    asyncio.run(scenario())

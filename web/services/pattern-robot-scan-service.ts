@@ -1,6 +1,7 @@
 import type { Market, StockMeta } from "@/lib/types";
 import { backendJson } from "@/services/backend-client";
 import { getOfficialRecentHistory } from "@/services/market-data/official-history-provider";
+import { AsyncValueCache } from "@/services/async-value-cache";
 import { withScanLoadLock } from "@/services/scan-load-coordinator";
 import { THEME_STOCKS } from "@/services/theme-stock-universe";
 
@@ -148,7 +149,22 @@ async function withConcurrency<T>(task: () => Promise<T>): Promise<T> {
   finally { activeHistory -= 1; queue.shift()?.(); }
 }
 
-async function patternHistory(company: Company) {
+type PatternHistory = { actual: Candle[]; adjusted: Candle[]; source: string };
+const historyCache = new AsyncValueCache<PatternHistory>(30 * 60_000, 500);
+
+export async function patternHistory(company: Company) {
+  const today = taipeiDate(Date.now() / 1000);
+  const key = `${company.market}:${company.symbol}:${today}`;
+  return historyCache.get(key, async () => {
+    const history = await fetchPatternHistory(company);
+    // Cache completed historical bars only. Today's quote must come from the
+    // current quote snapshot, never from a cached intraday history response.
+    return { ...history, actual: history.actual.filter(row => row.date < today),
+      adjusted: history.adjusted.filter(row => row.date < today) };
+  });
+}
+
+async function fetchPatternHistory(company: Company) {
   return withConcurrency(async () => {
     const suffix = company.market === "上市" ? "TW" : "TWO";
     try {

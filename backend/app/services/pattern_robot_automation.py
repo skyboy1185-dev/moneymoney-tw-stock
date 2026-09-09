@@ -14,6 +14,7 @@ from ..config import get_settings
 from ..database import BackgroundSessionLocal as SessionLocal
 from ..models import PatternRobotRun, PatternRobotSetting
 from ..pattern_schemas import PatternScanPayload
+from .worker_supervision import supervise
 from .day_trading_schedule import is_twse_trading_day
 from .pattern_robot_service import ensure_pattern_settings, process_pattern_scan
 
@@ -42,7 +43,7 @@ def _is_trading_day(day: date) -> bool:
     return is_twse_trading_day(day, holidays)
 
 
-async def fetch_pattern_scan_payload() -> PatternScanPayload:
+async def fetch_pattern_scan_payload(progress=None) -> PatternScanPayload:
     settings = get_settings()
     headers = {"Accept": "application/json", "User-Agent": "TWSE-Pattern-Robot/1.0"}
     if settings.adaptive_electronic_scanner_token:
@@ -51,6 +52,8 @@ async def fetch_pattern_scan_payload() -> PatternScanPayload:
         scanner_url = _scanner_url()
 
         async def fetch_page(page: int) -> PatternScanPayload:
+            if progress is not None:
+                progress.update(page=page, phase="fetching", updatedAt=datetime.now(UTC).isoformat())
             separator = "&" if "?" in scanner_url else "?"
             response = await _fetch_scanner_page(client, f"{scanner_url}{separator}page={page}&pageSize=40", headers)
             payload = response.json()
@@ -59,6 +62,8 @@ async def fetch_pattern_scan_payload() -> PatternScanPayload:
             return PatternScanPayload.model_validate(payload)
 
         result = await fetch_page(1)
+        if progress is not None:
+            progress.update(pageCount=result.page_count, completedPages=1)
         stocks = list(result.stocks)
         for page in range(2, result.page_count + 1):
             batch = await fetch_page(page)
@@ -67,6 +72,8 @@ async def fetch_pattern_scan_payload() -> PatternScanPayload:
             if batch.page != page or batch.page_count != result.page_count:
                 raise RuntimeError("型態掃描分頁不一致，取消寫入")
             stocks.extend(batch.stocks)
+            if progress is not None:
+                progress.update(completedPages=page, updatedAt=datetime.now(UTC).isoformat())
         if not stocks:
             raise RuntimeError("沒有股票通過真實行情完整性與流動性門檻")
         result.stocks = stocks
@@ -120,7 +127,7 @@ class PatternRobotAutomation:
             self._state["status"] = "running"
             return
         self._state["status"] = "running"
-        self._task = asyncio.create_task(self._run(), name="pattern-robot-automation")
+        self._task = asyncio.create_task(supervise(self._run, self._state), name="pattern-robot-automation")
 
     async def stop(self, *, persist: bool = True) -> None:
         if persist:
@@ -149,11 +156,16 @@ class PatternRobotAutomation:
                 result = {"status": "skipped_pre_open"}
                 self._state.update({"status": "running", "lastResult": result})
                 return result
+            self._state["scanProgress"] = {"page": 1, "pageCount": None, "completedPages": 0,
+                "phase": "fetching", "updatedAt": now.isoformat()}
+            self._state["scanDeadlineAt"] = now.timestamp() + 900
+            self._state["nextRunAt"] = None
             try:
-                payload = await asyncio.wait_for(fetch_pattern_scan_payload(), timeout=900)
+                payload = await asyncio.wait_for(fetch_pattern_scan_payload(self._state["scanProgress"]), timeout=900)
             except Exception as error:
                 self._state.update({"status": "error", "lastError": str(error)[:500] or type(error).__name__})
                 raise
+            self._state["scanProgress"]["phase"] = "saving"
             with SessionLocal() as db:
                 try:
                     result = process_pattern_scan(db, payload, force=force)
@@ -169,6 +181,8 @@ class PatternRobotAutomation:
                         run.completed_at = datetime.now(UTC)
                         db.commit()
                     raise
+            self._state["scanProgress"]["phase"] = "completed"
+            self._state["scanDeadlineAt"] = None
             self._state.update({
                 "status": "running", "lastSuccessAt": datetime.now(UTC).isoformat(),
                 "lastResult": result, "lastError": None,

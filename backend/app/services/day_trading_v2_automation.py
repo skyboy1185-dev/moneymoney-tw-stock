@@ -20,6 +20,7 @@ from ..day_trading_v2_models import (
     DayTradeV2CalendarHoliday, DayTradeV2CandidateState, DayTradeV2Notification,
     DayTradeV2RuntimeState, DayTradeV2ScheduleEvent, DayTradeV2Setting, DayTradeV2Trade,
 )
+from .worker_supervision import supervise
 from .day_trading_v2 import merged_config
 from .day_trading_v2_schedule import at_time, event_schedule, is_trading_day, trading_phase
 from .day_trading import day_trading_engine
@@ -80,13 +81,14 @@ class DayTradingV2Coordinator:
         self._backtest_task: asyncio.Task | None = None
         self._learning_task: asyncio.Task | None = None
         self._stop = asyncio.Event()
+        self.supervision = {}
         self._worker_id = f"{os.getenv('RAILWAY_REPLICA_ID', 'local')}:{uuid4()}"
 
     async def start(self) -> None:
         if self._task and not self._task.done():
             return
         self._stop.clear()
-        self._task = asyncio.create_task(self._run(), name="day-trading-v2-coordinator")
+        self._task = asyncio.create_task(supervise(self._run, self.supervision, stopping=self._stop.is_set), name="day-trading-v2-coordinator")
         self._learning_task = asyncio.create_task(self._run_learning(), name="day-trading-v2-learning")
 
     async def stop(self) -> None:
