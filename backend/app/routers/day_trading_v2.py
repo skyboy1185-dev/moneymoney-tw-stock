@@ -239,10 +239,14 @@ def _candidate_dict(row: DayTradeV2CandidateState) -> dict[str, object]:
 def _record_skip(db: Session, user_id: str, mode: str, trading_date: date, reason: str) -> None:
     if not reason:
         return
-    row = db.scalar(select(DayTradeV2SkipStat).where(
+    row = next((item for item in db.new if isinstance(item, DayTradeV2SkipStat)
+                and item.user_id == user_id and item.mode == mode
+                and item.trading_date == trading_date and item.reason == reason), None)
+    if row is None:
+        row = db.scalar(select(DayTradeV2SkipStat).where(
         DayTradeV2SkipStat.user_id == user_id, DayTradeV2SkipStat.mode == mode,
         DayTradeV2SkipStat.trading_date == trading_date, DayTradeV2SkipStat.reason == reason,
-    ))
+        ))
     if row is None:
         db.add(DayTradeV2SkipStat(user_id=user_id, mode=mode, trading_date=trading_date, reason=reason, occurrence_count=1))
     else:
@@ -1434,7 +1438,7 @@ def _scan_now(user_id: str, db: Session, coordinator_now: datetime | None = None
         existing_state.quote_at = quote_time(observation["quotes"].get(ranked_row.candidate.symbol))
         existing_state.bar_at = ranked_row.candidate.signal_time
         existing_state.scanned_at = current
-    if "uq_dtv2_candidate_day_symbol" in (runtime.latest_error or "") or runtime.latest_error == "系統心跳曾逾時，已重新啟動並重新檢查行情":
+    if any(key in (runtime.latest_error or "") for key in ("uq_dtv2_candidate_day_symbol", "uq_dtv2_skip_reason_day")) or runtime.latest_error == "系統心跳曾逾時，已重新啟動並重新檢查行情":
         runtime.latest_error = ""
     db.commit()
     return {

@@ -25,3 +25,21 @@ def test_repeated_symbol_reuses_unflushed_candidate():
         rows = list(db.scalars(select(DayTradeV2CandidateState)))
         assert len(rows) == 1
         assert rows[0].strategy_id == 'second'
+
+
+def test_repeated_skip_reason_counts_pending_and_persisted_rows():
+    from app.day_trading_v2_models import DayTradeV2SkipStat
+    from app.routers.day_trading_v2 import _record_skip
+    engine = create_engine('sqlite://')
+    DayTradeV2SkipStat.__table__.create(engine)
+    today = datetime.now(UTC).date()
+    with Session(engine, autoflush=False) as db:
+        for _ in range(5):
+            _record_skip(db, 'test-user', 'PAPER', today, 'same reason')
+        _record_skip(db, 'other-user', 'PAPER', today, 'same reason')
+        db.commit()
+        _record_skip(db, 'test-user', 'PAPER', today, 'same reason')
+        db.commit()
+        rows = list(db.scalars(select(DayTradeV2SkipStat)))
+        assert len(rows) == 2
+        assert {r.user_id: r.occurrence_count for r in rows} == {'test-user': 6, 'other-user': 1}
