@@ -71,6 +71,12 @@ export function StrongStockPage({ userId, onSelectStock }: { userId: string; onS
     </header>
     {(error || notice) && <div className={error ? "error-banner" : "strong-notice"}>{error || notice}</div>}
     <nav className="strong-tabs">{sectionLabels.map(([key, label]) => <button key={key} className={section === key ? "active" : ""} onClick={() => setSection(key)}>{label}</button>)}</nav>
+    {data.dataStatus.automation?.quoteHealth && <div className="strong-notice">
+      盤中行情：{({ no_targets: "目前無持倉或待成交委託", current: "報價正常", partial: "部分報價過期，僅處理有效行情", unavailable: "無有效新報價，暫停成交與價格更新" } as Record<string, string>)[data.dataStatus.automation.quoteHealth.status] ?? "等待檢查"}
+      {data.dataStatus.automation.quoteHealth.requestedCount > 0 && <> · 有效 {data.dataStatus.automation.quoteHealth.freshCount}/{data.dataStatus.automation.quoteHealth.requestedCount} 檔 · {data.dataStatus.automation.quoteHealth.sources.join("／") || "來源尚未就緒"}</>}
+      {" · "}最近檢查 {dt(data.dataStatus.automation.quoteHealth.observedAt)} · 盤中每 {data.dataStatus.automation.nextCheckSeconds ?? 5} 秒檢查
+      {!!data.dataStatus.automation.quoteHealth.unresolvedSymbols?.length && <> · 股票市場資料待補：{data.dataStatus.automation.quoteHealth.unresolvedSymbols.join("、")}</>}
+    </div>}
 
     {section === "overview" && <>
       <div className="strong-metrics">

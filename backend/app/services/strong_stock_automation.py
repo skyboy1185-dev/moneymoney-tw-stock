@@ -157,11 +157,17 @@ class StrongStockAutomation:
                         ).order_by(StrongStockRanking.trade_date.desc()).limit(1))
                         if ranking:
                             requests.append(StockQuoteRequest(symbol=symbol, name=name, market=ranking.market))
-                quotes = await official_market_data_provider.get_quotes(requests, force_refresh=True) if requests else {}
-                decimal_prices = {symbol: dec(quote.price) for symbol, quote in quotes.items() if quote.is_realtime}
+                from .strong_stock_quotes import load_quotes, MAX_QUOTE_AGE_SECONDS
+                from .quote_quality import trusted_quote
+                quotes, quote_health = await load_quotes(requests, now=(lambda: current) if now is not None else None)
+                execution_at = datetime.now(UTC) if now is None else current
+                decimal_prices = {symbol: dec(quote.price) for symbol, quote in quotes.items()
+                                  if trusted_quote(quote, execution_at, MAX_QUOTE_AGE_SECONDS)}
+                quote_health["unresolvedSymbols"] = sorted(set(names) - {r.symbol for r in requests})
+                self._state["quoteHealth"] = quote_health
                 with SessionLocal() as db:
-                    fills = {uid: fill_pending_orders(db, uid, decimal_prices, local) for uid in users}
-                    exits = {uid: monitor_positions(db, uid, decimal_prices, local) for uid in users}
+                    fills = {uid: fill_pending_orders(db, uid, decimal_prices, execution_at.astimezone(TAIPEI)) for uid in users}
+                    exits = {uid: monitor_positions(db, uid, decimal_prices, execution_at.astimezone(TAIPEI)) for uid in users}
                 self._last_intraday_quote_at = current
                 result = {"status": "intraday_monitor", "users": len(users), "fills": fills, "exits": exits}
         else:
@@ -205,7 +211,10 @@ class StrongStockAutomation:
                         db.commit()
                 except Exception:
                     logger.exception("Unable to persist strong-stock scheduler failure")
-            await asyncio.sleep(60)
+            local = datetime.now(TAIPEI)
+            interval = max(2, get_settings().strong_stock_quote_poll_seconds) if local.weekday() < 5 and time(9) <= local.time() <= time(13, 30) else 60
+            self._state["nextCheckSeconds"] = interval
+            await asyncio.sleep(interval)
 
 
 strong_stock_automation = StrongStockAutomation()

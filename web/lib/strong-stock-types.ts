@@ -35,6 +35,8 @@ export type StrongDashboard = {
   pendingOrders: Array<{ id: string; symbol: string; name: string; limitPrice: string; quantity: number; validDate: string; entryType: string; status: string; reason: string }>;
   equityCurve: Array<{ date: string; cash: string; marketValue: string; totalEquity: string; dailyPnl: string; drawdownPct: string }>;
   notifications: Array<{ id: number; eventType: string; title: string; message: string; priority: string; read: boolean; createdAt: string }>;
-  dataStatus: { status: string; latestTradeDate: string | null; lastSuccessfulUpdate: string | null; sources: unknown; missing: string[]; error: string; historicalBacktestReady: boolean };
+  dataStatus: { status: string; latestTradeDate: string | null; lastSuccessfulUpdate: string | null; sources: unknown; missing: string[]; error: string; historicalBacktestReady: boolean;
+    automation?: { status: string; lastSuccessAt?: string; lastError?: string | null; nextCheckSeconds?: number;
+      quoteHealth?: { status: string; observedAt: string; requestedCount: number; freshCount: number; sources: string[]; latestQuoteAt: string | null; unresolvedSymbols: string[] } } };
   notice: string;
 };
