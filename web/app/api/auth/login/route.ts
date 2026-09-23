@@ -4,6 +4,7 @@ import {
   PRIVATE_SITE_COOKIE,
   PRIVATE_SITE_SESSION_SECONDS,
   secureCredentialEqual,
+  shouldUseSecureCookie,
 } from "@/lib/private-site-auth";
 
 type Attempt = { count: number; resetAt: number };
@@ -60,7 +61,7 @@ export async function POST(request: NextRequest) {
     name: PRIVATE_SITE_COOKIE,
     value: await createPrivateSiteSession(expectedUsername),
     httpOnly: true,
-    secure: process.env.APP_RUNTIME_MODE !== "local",
+    secure: shouldUseSecureCookie(request.headers, request.nextUrl.protocol),
     sameSite: "strict",
     path: "/",
     maxAge: PRIVATE_SITE_SESSION_SECONDS,

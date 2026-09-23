@@ -132,4 +132,24 @@ for ($attempt = 1; $attempt -le 30; $attempt++) {
     try { if ((Invoke-WebRequest -Uri "$LanBaseUrl/login" -UseBasicParsing -TimeoutSec 3).StatusCode -eq 200) { $frontendReady = $true; break } } catch { Start-Sleep -Seconds 1 }
 }
 if (-not $frontendReady) { throw "Local frontend did not become healthy. Check $RuntimeRoot\frontend.err.log" }
+$Tailscale = "C:\Program Files\Tailscale\tailscale.exe"
+if (Test-Path -LiteralPath $Tailscale) {
+    try {
+        $tailscaleStatus = (& $Tailscale status --json 2>$null | Out-String) | ConvertFrom-Json
+        if ($tailscaleStatus.BackendState -eq "Running" -and $tailscaleStatus.Self.Online -and $tailscaleStatus.Self.DNSName) {
+            & $Tailscale funnel --bg --https=443 $LanBaseUrl 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                $publicUrl = "https://$($tailscaleStatus.Self.DNSName.TrimEnd('.'))"
+                Set-Content -LiteralPath (Join-Path $RuntimeRoot "public-address.txt") -Value $publicUrl -Encoding ascii
+                if ($Desktop) {
+                    Set-Content -LiteralPath (Join-Path $Desktop "TWSE-public-url.txt") -Value @(
+                        "TWSE Public URL", "URL: $publicUrl", "Username: admin", "Password: 111"
+                    ) -Encoding utf8
+                }
+            }
+        }
+    } catch {
+        "$(Get-Date -Format o) Tailscale Funnel update failed: $_" | Add-Content -LiteralPath (Join-Path $RuntimeRoot "supervisor.log")
+    }
+}
 Write-Output "Local TWSE is ready: $LanBaseUrl"

@@ -51,6 +51,11 @@ export async function verifyAdaptiveScannerToken(token: string | null | undefine
   return secureCredentialEqual(token, expected);
 }
 
+export function shouldUseSecureCookie(headers: Pick<Headers, "get">, protocol: string): boolean {
+  const forwardedProtocol = headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
+  return forwardedProtocol ? forwardedProtocol === "https" : protocol.toLowerCase() === "https:";
+}
+
 export async function createPrivateSiteSession(username: string, now = Date.now()): Promise<string> {
   const expiresAt = Math.floor(now / 1000) + PRIVATE_SITE_SESSION_SECONDS;
   const payload = `${username}.${expiresAt}`;

@@ -3,6 +3,7 @@ import {
   createPrivateSiteSession,
   PRIVATE_SITE_SESSION_SECONDS,
   secureCredentialEqual,
+  shouldUseSecureCookie,
   verifyAdaptiveScannerToken,
   verifyPrivateSiteSession,
 } from "./private-site-auth";
@@ -52,5 +53,14 @@ describe("private site authentication", () => {
       .resolves.toBe(true);
     await expect(verifyAdaptiveScannerToken("wrong-token")).resolves.toBe(false);
     await expect(verifyAdaptiveScannerToken(undefined)).resolves.toBe(false);
+  });
+
+  it("uses secure cookies for HTTPS proxies while retaining LAN HTTP access", () => {
+    expect(shouldUseSecureCookie(new Headers({ "x-forwarded-proto": "https" }), "http:"))
+      .toBe(true);
+    expect(shouldUseSecureCookie(new Headers({ "x-forwarded-proto": "http" }), "https:"))
+      .toBe(false);
+    expect(shouldUseSecureCookie(new Headers(), "https:")).toBe(true);
+    expect(shouldUseSecureCookie(new Headers(), "http:")).toBe(false);
   });
 });
