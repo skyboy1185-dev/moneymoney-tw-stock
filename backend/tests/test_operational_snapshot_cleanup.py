@@ -110,7 +110,11 @@ def test_operational_cleanup_prunes_intraday_snapshots_by_hours(monkeypatch) -> 
                 {"day": date.today().isoformat(), "at": now.strftime("%Y-%m-%d %H:%M:%S")},
             )
 
-    deleted = database.cleanup_expired_operational_data(retention_days=1, intraday_snapshot_retention_hours=2)
+    deleted = database.cleanup_expired_operational_data(
+        retention_days=1,
+        intraday_snapshot_retention_hours=2,
+        signal_retention_days=7,
+    )
 
     assert deleted["chip_flow_snapshots"] == 1
     assert deleted["day_trading_signals"] == 1

@@ -379,6 +379,7 @@ def _rowcount(value) -> int:
 def cleanup_expired_operational_data(
     retention_days: int = 3,
     intraday_snapshot_retention_hours: int = 2,
+    signal_retention_days: int = 90,
 ) -> dict[str, int]:
     """Prune reconstructable intraday data without touching user portfolios/trades."""
     cutoff = date.today() - timedelta(days=max(1, retention_days))
@@ -392,8 +393,10 @@ def cleanup_expired_operational_data(
             signal_result = connection.execute(
                 text(
                     "DELETE FROM day_trading_signals "
-                    "WHERE generated_at < CURRENT_TIMESTAMP - INTERVAL '7 days'"
-                )
+                    "WHERE generated_at < CURRENT_TIMESTAMP - "
+                    "(:signal_retention_days * INTERVAL '1 day')"
+                ),
+                {"signal_retention_days": max(7, signal_retention_days)},
             )
             candidate_snapshot_result = connection.execute(
                 text(
@@ -419,8 +422,9 @@ def cleanup_expired_operational_data(
             signal_result = connection.execute(
                 text(
                     "DELETE FROM day_trading_signals "
-                    "WHERE generated_at < datetime('now', '-7 days')"
-                )
+                    "WHERE generated_at < datetime('now', :signal_retention_modifier)"
+                ),
+                {"signal_retention_modifier": f"-{max(7, signal_retention_days)} days"},
             )
             candidate_snapshot_result = connection.execute(
                 text(
