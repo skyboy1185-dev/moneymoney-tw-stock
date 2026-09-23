@@ -3,10 +3,11 @@ from datetime import date, timedelta
 import logging
 from pathlib import Path
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from .config import get_settings
 
@@ -23,8 +24,9 @@ OPERATIONAL_TABLES = (
     "day_trading_candidate_snapshots",
     "limit_up_ai_snapshots",
 )
-connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
-pool_options = {} if settings.database_url.startswith("sqlite") else {
+is_sqlite = settings.database_url.startswith("sqlite")
+connect_args = {"check_same_thread": False, "timeout": 30} if is_sqlite else {}
+pool_options = {"poolclass": NullPool} if is_sqlite else {
     # The dashboard has several independent polling panels. Keep enough steady
     # connections for them, but fail fast instead of freezing the event loop for
     # SQLAlchemy's 30-second default when PostgreSQL is saturated.
@@ -40,6 +42,22 @@ engine = create_engine(
     connect_args=connect_args,
     **pool_options,
 )
+
+if is_sqlite:
+    @event.listens_for(engine, "connect")
+    def _configure_sqlite(dbapi_connection, _connection_record) -> None:
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA busy_timeout=30000")
+            cursor.execute("PRAGMA foreign_keys=ON")
+        finally:
+            cursor.close()
+
+    # WAL allows the dashboard to keep reading while the scheduled SQLite
+    # backup takes its consistent snapshot.
+    with engine.begin() as connection:
+        connection.exec_driver_sql("PRAGMA journal_mode=WAL")
+        connection.exec_driver_sql("PRAGMA synchronous=NORMAL")
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 # Background scanners perform network I/O and bursty writes. Giving them their
