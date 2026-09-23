@@ -37,16 +37,58 @@ function Restore-Environment([hashtable]$Previous) {
         [Environment]::SetEnvironmentVariable($name, $Previous[$name], "Process")
     }
 }
+function Get-LanAddress {
+    $configuration = Get-NetIPConfiguration -ErrorAction Stop |
+        Where-Object { $_.NetAdapter.Status -eq "Up" -and $null -ne $_.IPv4DefaultGateway -and $null -ne $_.IPv4Address } |
+        Sort-Object { $_.NetAdapter.InterfaceMetric } |
+        Select-Object -First 1
+    if ($null -eq $configuration) { throw "No active LAN adapter with an IPv4 default gateway was found" }
+    return $configuration.IPv4Address.IPAddress
+}
+function Set-TemporaryEnvironment([hashtable]$Values) {
+    $previous = @{}
+    foreach ($name in $Values.Keys) {
+        $previous[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
+        [Environment]::SetEnvironmentVariable($name, $Values[$name], "Process")
+    }
+    return $previous
+}
 
 $Python = (Get-Command python.exe -ErrorAction Stop).Source
 $Npm = (Get-Command npm.cmd -ErrorAction Stop).Source
 $Node = (Get-Command node.exe -ErrorAction Stop).Source
 $BackendPid = Join-Path $RuntimeRoot "backend.pid"
 $FrontendPid = Join-Path $RuntimeRoot "frontend.pid"
+$LanAddress = Get-LanAddress
+$LanBaseUrl = "http://${LanAddress}:3000"
+$LanAddressFile = Join-Path $RuntimeRoot "lan-address.txt"
+Set-Content -LiteralPath $LanAddressFile -Value $LanBaseUrl -Encoding ascii
+$Desktop = [Environment]::GetFolderPath("Desktop")
+if ($Desktop) {
+    $shortcutContent = @(
+        "[InternetShortcut]", "URL=$LanBaseUrl/?symbol=2408&view=prepost-analysis",
+        "IconFile=C:\Windows\System32\SHELL32.dll", "IconIndex=13"
+    )
+    Set-Content -LiteralPath (Join-Path $Desktop "TWSE-Local.url") -Value $shortcutContent -Encoding ascii
+    Get-ChildItem -LiteralPath $Desktop -Filter "TWSE*.url" -File | ForEach-Object {
+        Set-Content -LiteralPath $_.FullName -Value $shortcutContent -Encoding ascii
+    }
+}
 if (-not (Test-RecordedProcess $BackendPid)) {
     $out = Join-Path $RuntimeRoot "backend.out.log"; $err = Join-Path $RuntimeRoot "backend.err.log"
     Rotate-Log $out; Rotate-Log $err
-    $process = Start-Process -FilePath $Python -ArgumentList @("-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000") -WorkingDirectory $BackendRoot -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err -PassThru
+    $backendEnvironment = Set-TemporaryEnvironment @{
+        ADAPTIVE_ELECTRONIC_SCANNER_URL = "$LanBaseUrl/api/adaptive-electronic/scan"
+        AI_STOCK_SCANNER_URL = "$LanBaseUrl/api/ai"
+        PATTERN_ROBOT_SCANNER_URL = "$LanBaseUrl/api/pattern-robot/scanner"
+        PUBLIC_WEB_URL = $LanBaseUrl
+        ROCKET_RADAR_SCANNER_URL = "$LanBaseUrl/api/rocket-radar/scan"
+    }
+    try {
+        $process = Start-Process -FilePath $Python -ArgumentList @("-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000") -WorkingDirectory $BackendRoot -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err -PassThru
+    } finally {
+        Restore-Environment $backendEnvironment
+    }
     Set-Content -LiteralPath $BackendPid -Value $process.Id -Encoding ascii
 }
 $backendReady = $false
@@ -76,7 +118,7 @@ if (-not (Test-RecordedProcess $FrontendPid)) {
     Rotate-Log $out; Rotate-Log $err
     $previousEnvironment = Import-DotEnv (Join-Path $WebRoot ".env.local")
     $previousHostname = $env:HOSTNAME; $previousPort = $env:PORT
-    $env:HOSTNAME = "127.0.0.1"; $env:PORT = "3000"
+    $env:HOSTNAME = $LanAddress; $env:PORT = "3000"
     try {
         $process = Start-Process -FilePath $Node -ArgumentList @($standaloneServer) -WorkingDirectory $WebRoot -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err -PassThru
     } finally {
@@ -87,7 +129,7 @@ if (-not (Test-RecordedProcess $FrontendPid)) {
 }
 $frontendReady = $false
 for ($attempt = 1; $attempt -le 30; $attempt++) {
-    try { if ((Invoke-WebRequest -Uri "http://127.0.0.1:3000/login" -UseBasicParsing -TimeoutSec 3).StatusCode -eq 200) { $frontendReady = $true; break } } catch { Start-Sleep -Seconds 1 }
+    try { if ((Invoke-WebRequest -Uri "$LanBaseUrl/login" -UseBasicParsing -TimeoutSec 3).StatusCode -eq 200) { $frontendReady = $true; break } } catch { Start-Sleep -Seconds 1 }
 }
 if (-not $frontendReady) { throw "Local frontend did not become healthy. Check $RuntimeRoot\frontend.err.log" }
-Write-Output "Local TWSE is ready: http://127.0.0.1:3000"
+Write-Output "Local TWSE is ready: $LanBaseUrl"
