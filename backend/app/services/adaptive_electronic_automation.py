@@ -141,7 +141,7 @@ async def fetch_adaptive_scan_payload(timeout_seconds: float | None = None) -> A
     last_error: Exception | None = None
     effective_timeout = min(
         timeout_seconds if timeout_seconds is not None else settings.adaptive_electronic_scanner_timeout_seconds,
-        300.0 if timeout_seconds is not None else 25.0,
+        300.0,
     )
     async with httpx.AsyncClient(
         timeout=effective_timeout,

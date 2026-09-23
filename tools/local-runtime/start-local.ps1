@@ -96,6 +96,7 @@ if (-not (Test-RecordedProcess $BackendPid)) {
     Rotate-Log $out; Rotate-Log $err
     $backendEnvironment = Set-TemporaryEnvironment @{
         ADAPTIVE_ELECTRONIC_SCANNER_URL = "$LanBaseUrl/api/adaptive-electronic/scan"
+        ADAPTIVE_ELECTRONIC_SCANNER_TIMEOUT_SECONDS = "300"
         AI_STOCK_SCANNER_URL = "$LanBaseUrl/api/ai"
         PATTERN_ROBOT_SCANNER_URL = "$LanBaseUrl/api/pattern-robot/scanner"
         PUBLIC_WEB_URL = $LanBaseUrl
