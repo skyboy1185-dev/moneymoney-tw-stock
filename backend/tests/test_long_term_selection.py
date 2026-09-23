@@ -584,6 +584,7 @@ def test_sync_overflow_is_quarantined_without_creating_sell_performance() -> Non
     assert repaired == {"long_only": 10, "focused_long": 3}
     assert sum(item.portfolio_mode == "long_only" for item in open_positions) == 10
     assert sum(item.portfolio_mode == "focused_long" for item in open_positions) == 3
+    assert all(item.entry_date == date(2026, 8, 13) for item in open_positions)
     assert len(cancelled) == 13
     assert all(item.exit_time is None and item.actual_return_pct == 0 for item in cancelled)
 

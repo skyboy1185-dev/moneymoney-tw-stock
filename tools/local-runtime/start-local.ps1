@@ -32,6 +32,19 @@ function Import-DotEnv([string]$Path) {
     }
     return $previous
 }
+function Get-DotEnvValue([string]$Path, [string]$Key) {
+    if (-not (Test-Path -LiteralPath $Path)) { return "" }
+    foreach ($line in Get-Content -LiteralPath $Path) {
+        if ($line -notmatch '^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$') { continue }
+        if ($Matches[1] -ne $Key) { continue }
+        $value = $Matches[2].Trim()
+        if (($value.StartsWith('"') -and $value.EndsWith('"')) -or ($value.StartsWith("'") -and $value.EndsWith("'"))) {
+            $value = $value.Substring(1, $value.Length - 2)
+        }
+        return $value
+    }
+    return ""
+}
 function Restore-Environment([hashtable]$Previous) {
     foreach ($name in $Previous.Keys) {
         [Environment]::SetEnvironmentVariable($name, $Previous[$name], "Process")
@@ -59,6 +72,10 @@ $Npm = (Get-Command npm.cmd -ErrorAction Stop).Source
 $Node = (Get-Command node.exe -ErrorAction Stop).Source
 $BackendPid = Join-Path $RuntimeRoot "backend.pid"
 $FrontendPid = Join-Path $RuntimeRoot "frontend.pid"
+$BackendScannerToken = Get-DotEnvValue (Join-Path $BackendRoot ".env") "ADAPTIVE_ELECTRONIC_SCANNER_TOKEN"
+if ($BackendScannerToken.Length -lt 32) {
+    throw "backend/.env must contain an ADAPTIVE_ELECTRONIC_SCANNER_TOKEN of at least 32 characters"
+}
 $LanAddress = Get-LanAddress
 $LanBaseUrl = "http://${LanAddress}:3000"
 $LanAddressFile = Join-Path $RuntimeRoot "lan-address.txt"
@@ -118,11 +135,14 @@ if (-not (Test-RecordedProcess $FrontendPid)) {
     Rotate-Log $out; Rotate-Log $err
     $previousEnvironment = Import-DotEnv (Join-Path $WebRoot ".env.local")
     $previousHostname = $env:HOSTNAME; $previousPort = $env:PORT
+    $previousScannerToken = $env:ADAPTIVE_ELECTRONIC_SCANNER_TOKEN
     $env:HOSTNAME = $LanAddress; $env:PORT = "3000"
+    $env:ADAPTIVE_ELECTRONIC_SCANNER_TOKEN = $BackendScannerToken
     try {
         $process = Start-Process -FilePath $Node -ArgumentList @($standaloneServer) -WorkingDirectory $WebRoot -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err -PassThru
     } finally {
         $env:HOSTNAME = $previousHostname; $env:PORT = $previousPort
+        $env:ADAPTIVE_ELECTRONIC_SCANNER_TOKEN = $previousScannerToken
         Restore-Environment $previousEnvironment
     }
     Set-Content -LiteralPath $FrontendPid -Value $process.Id -Encoding ascii

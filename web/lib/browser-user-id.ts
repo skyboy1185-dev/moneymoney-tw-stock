@@ -1,15 +1,14 @@
 export const BROWSER_USER_ID_KEY = "moneymoney-user-id";
 
-let temporaryUserId = "";
+// This is a private, single-account installation.  The previous Railway site
+// stored all user-owned records under this id.  Keeping it stable across hosts
+// prevents a new LAN/Funnel origin from silently creating an empty account.
+export const PRIVATE_SITE_OWNER_ID = "0db66ac7-d683-4294-8c1c-bf43fe16a454";
 
 /** Shared by the page and notifications, including when browser storage is unavailable. */
 export function getBrowserUserId(): string {
   try {
-    const stored = window.localStorage.getItem(BROWSER_USER_ID_KEY);
-    if (stored) return stored;
-  } catch { /* keep a stable ID for this page session */ }
-  temporaryUserId ||= globalThis.crypto?.randomUUID?.()
-    ?? `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  try { window.localStorage.setItem(BROWSER_USER_ID_KEY, temporaryUserId); } catch { /* storage is optional */ }
-  return temporaryUserId;
+    window.localStorage.setItem(BROWSER_USER_ID_KEY, PRIVATE_SITE_OWNER_ID);
+  } catch { /* storage is optional */ }
+  return PRIVATE_SITE_OWNER_ID;
 }

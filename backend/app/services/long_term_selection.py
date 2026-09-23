@@ -974,7 +974,7 @@ def repair_long_term_position_overflow(
     db: Session,
     at: datetime | None = None,
 ) -> dict[str, int]:
-    """Keep the configured oldest portfolio and quarantine sync-created overflow.
+    """Keep the configured newest portfolio and quarantine sync-created overflow.
 
     Cancelled rows remain available for audit, but are deliberately not treated
     as sells and therefore never enter realized performance.
@@ -986,9 +986,9 @@ def repair_long_term_position_overflow(
             LongTermPosition.portfolio_mode == mode,
             LongTermPosition.status == "open",
         ).order_by(
-            LongTermPosition.entry_date,
-            LongTermPosition.entry_time,
-            LongTermPosition.id,
+            LongTermPosition.entry_date.desc(),
+            LongTermPosition.entry_time.desc(),
+            LongTermPosition.id.desc(),
         )).all())
         kept_symbols: set[str] = set()
         kept_count = 0
