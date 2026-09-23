@@ -60,7 +60,7 @@ export async function POST(request: NextRequest) {
     name: PRIVATE_SITE_COOKIE,
     value: await createPrivateSiteSession(expectedUsername),
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: process.env.APP_RUNTIME_MODE !== "local",
     sameSite: "strict",
     path: "/",
     maxAge: PRIVATE_SITE_SESSION_SECONDS,

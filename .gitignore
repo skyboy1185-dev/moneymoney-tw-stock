@@ -51,3 +51,4 @@ backend/.env
 **/__pycache__/
 *.py[cod]
 .env
+.local-runtime/

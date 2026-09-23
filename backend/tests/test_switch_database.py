@@ -44,3 +44,10 @@ def test_discover_railway_remote_url_does_not_fall_back_to_private_url(monkeypat
     )
 
     assert switch_database.discover_railway_remote_url() == ""
+
+
+def test_switch_metadata_contains_all_application_model_groups() -> None:
+    tables = switch_database.Base.metadata.tables
+    assert "day_trade_v2_notifications" in tables
+    assert "strong_stock_positions" in tables
+    assert "prepost_analysis_days" in tables

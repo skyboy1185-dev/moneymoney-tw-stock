@@ -17,7 +17,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app import models  # noqa: E402,F401
+from app import day_trading_v2_models, models, prepost_models, strong_stock_models  # noqa: E402,F401
 from app.database import Base  # noqa: E402
 from app.services.database_sync import (  # noqa: E402
     create_sync_engine,
