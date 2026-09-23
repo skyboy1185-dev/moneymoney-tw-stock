@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { StockMeta } from "@/lib/types";
 import {
   mergeOfficialHistoryWithQuote,
@@ -7,6 +7,9 @@ import {
   parseTpexMonthlyHistory,
   parseTwseMonthlyHistory,
   validateOfficialHistoryContinuity,
+  getOfficialHistory,
+  resetOfficialHistoryCacheForTests,
+  stockPayloadFromHistory,
 } from "./official-history-provider";
 
 const listed: StockMeta = {
@@ -19,6 +22,63 @@ const otc: StockMeta = {
 };
 
 describe("official historical price parsers", () => {
+  it("displays 147 real candles with null annual averages without filling the strict history cache", async () => {
+    resetOfficialHistoryCacheForTests();
+    const data = Array.from({ length: 147 }, (_, i) => ({
+      date: new Date(Date.UTC(2026, 0, 29 + i)).toISOString().slice(0, 10),
+      Trading_Volume: 1000, open: 100, max: 102, min: 99, close: 101,
+    }));
+    const fetcher = vi.fn(async () => Response.json({ status: 200, data }));
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      const meta = { ...otc, symbol: "6907" };
+      const prices = await getOfficialHistory(meta, 1);
+      const payload = stockPayloadFromHistory(meta, null, prices);
+      expect(payload.prices).toHaveLength(147);
+      expect(payload.indicators.at(-1)?.ma120).toBe(101);
+      expect(payload.indicators.at(-1)?.ma240).toBeNull();
+      expect(() => validateOfficialHistoryContinuity(prices)).toThrow("不足");
+      // Strict callers must perform their own load, not reuse display-only bars.
+      fetcher.mockImplementation(async () => {
+        throw new Error("strict source unavailable");
+      });
+      const pending = getOfficialHistory(meta);
+      await Promise.resolve();
+      expect(fetcher.mock.calls.length).toBeGreaterThan(1);
+      // Let all retries finish immediately while verifying the strict rejection.
+      vi.useFakeTimers();
+      const rejected = expect(pending).rejects.toThrow();
+      await vi.runAllTimersAsync();
+      await rejected;
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+      resetOfficialHistoryCacheForTests();
+    }
+  });
+  it("uses validated Yahoo history when FinMind fails, without monthly fanout", async () => {
+    resetOfficialHistoryCacheForTests();
+    const timestamp = Array.from({ length: 250 }, (_, i) => Date.UTC(2025, 0, 1 + i) / 1000);
+    const values = (n: number) => timestamp.map(() => n);
+    const fetcher = vi.fn(async (url: string) => {
+      if (url.includes("finmindtrade")) return new Response("unavailable", { status: 503 });
+      if (url.includes("range=5y")) return Response.json({ chart: { result: [{
+        timestamp, indicators: { quote: [{ open: values(100), high: values(102), low: values(99), close: values(101), volume: values(1000) }] },
+      }] } });
+      throw new Error("Unexpected monthly request");
+    });
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      const prices = await getOfficialHistory(listed);
+      expect(prices).toHaveLength(250);
+      expect(prices[0].close).toBe(101);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(stockPayloadFromHistory(listed, null, prices).dataQuality?.historySource).toContain("Yahoo");
+    } finally {
+      vi.unstubAllGlobals();
+      resetOfficialHistoryCacheForTests();
+    }
+  });
   it("parses FinMind market history without synthetic scaling", () => {
     const prices = parseFinMindHistory({
       status: 200,

@@ -193,3 +193,41 @@ def test_late_post_close_boot_completes_runtime_without_replaying_notifications(
         assert runtime.phase == "COMPLETED"
         assert "PREOPEN_READY" not in event_types
         assert "DAILY_REPORT" not in event_types
+
+
+def test_slow_notification_delivery_does_not_block_coordinator(monkeypatch):
+    import asyncio
+    from app.services import day_trading_v2_backtests as backtests
+
+    async def scenario():
+        coordinator = automation.DayTradingV2Coordinator()
+        delivery_started = asyncio.Event()
+        release_delivery = asyncio.Event()
+        cycles = []
+
+        async def slow_delivery():
+            delivery_started.set()
+            await release_delivery.wait()
+
+        def cycle():
+            cycles.append(True)
+
+        monkeypatch.setattr(coordinator, "dispatch_pending", slow_delivery)
+        monkeypatch.setattr(coordinator, "run_cycle", cycle)
+        monkeypatch.setattr(backtests, "process_next_backtest_job", lambda: None)
+        notifications = asyncio.create_task(coordinator._run_notifications())
+        await asyncio.wait_for(delivery_started.wait(), 2)
+        runner = asyncio.create_task(coordinator._run())
+        try:
+            async with asyncio.timeout(4):
+                while len(cycles) < 2:
+                    await asyncio.sleep(0.01)
+            assert not release_delivery.is_set()
+        finally:
+            coordinator._stop.set()
+            release_delivery.set()
+            await asyncio.gather(runner, notifications)
+            if coordinator._backtest_task:
+                await coordinator._backtest_task
+
+    asyncio.run(scenario())

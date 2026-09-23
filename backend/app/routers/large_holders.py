@@ -14,6 +14,8 @@ from ..services.large_holders import (
     get_large_holder_history,
     get_large_holder_rankings,
     persist_latest_distribution,
+    repair_large_holder_metadata,
+    tdcc_large_holder_provider,
 )
 from ..services.whale_accumulation import get_whale_accumulation, resolve_whale_comparison_context
 from ..services.whale_market_data import fetch_whale_period_market_data
@@ -36,6 +38,18 @@ def _user_id_optional(x_user_id: str | None = Header(default=None, max_length=80
 
 def _user_id(x_user_id: str = Header(min_length=8, max_length=80)) -> str:
     return x_user_id
+
+
+async def _repair_official_metadata(db: Session, report_date: date) -> int:
+    """Best-effort repair for weeks saved while an exchange directory was unavailable."""
+    try:
+        directory = await tdcc_large_holder_provider.fetch_stock_directory()
+    except (httpx.HTTPError, ValueError):
+        return 0
+    repaired = repair_large_holder_metadata(db, directory, report_date=report_date)
+    if repaired:
+        db.commit()
+    return repaired
 
 
 @router.get("/rankings")
@@ -105,6 +119,8 @@ async def accumulation(
     requested_end = _iso_date(endDate, "結束日期")
     try:
         context_mode, actual_start, actual_end, available_dates = resolve_whale_comparison_context(db, requested_start, requested_end)
+        if context_mode == "official_tdcc":
+            await _repair_official_metadata(db, actual_end)
         comparison_dates = [value for value in available_dates if actual_start <= value <= actual_end]
         if len(comparison_dates) > 16:
             step = max(1, len(comparison_dates) // 15)
@@ -141,6 +157,8 @@ async def accumulation_trend(
     requested_end = _iso_date(endDate, "結束日期")
     try:
         context_mode, actual_start, actual_end, available_dates = resolve_whale_comparison_context(db, requested_start, requested_end)
+        if context_mode == "official_tdcc":
+            await _repair_official_metadata(db, actual_end)
         comparison_dates = [value for value in available_dates if actual_start <= value <= actual_end]
         if len(comparison_dates) > 16:
             step = max(1, len(comparison_dates) // 15)

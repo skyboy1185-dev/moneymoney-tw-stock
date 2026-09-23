@@ -256,6 +256,9 @@ def _finish(
     position_pct = 20 if score >= 85 else 15 if score >= 70 else 0
     if action == "PROBE_BUY":
         position_pct *= .35
+    if current >= target > 0 and action not in {"STOP_LOSS", "EXIT"}:
+        action, label, position_pct = "NO_TRADE", "目標已達，不再進場", 0
+        missing.append("價格已達此型態目標，等待新的型態")
     return PatternResult(
         pattern_type=pattern_type, pattern_status=status, score=score,
         start_date=points[0][1].trade_date,

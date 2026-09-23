@@ -553,25 +553,25 @@ def test_super_ai_bold_profile_caps_stops_and_allows_only_qualified_short(monkey
         gate = trading_gate(db, settings, candidate, "BREAKOUT", now)
 
         assert gate["allowed"], gate["failures"]
-        assert gate["maxStopDistancePct"] == Decimal("8.0")
-        assert gate["stop"] == Decimal("92")
-        assert gate["stopDistancePct"] == Decimal("8.0000")
+        assert gate["maxStopDistancePct"] == Decimal("1.5")
+        assert gate["stop"] == Decimal("98.50")
+        assert gate["stopDistancePct"] == Decimal("1.5000")
         assert "stop_distance_too_wide" not in gate["failures"]
-        assert "stop_distance_capped_to_8.00%" not in gate["reasons"]
+        assert "stop_distance_capped_to_1.50%" in gate["reasons"]
 
         candidate.stop_loss_price = Decimal("90.00")
         gate = trading_gate(db, settings, candidate, "BREAKOUT", now)
         assert gate["allowed"], gate["failures"]
-        assert gate["stop"] == Decimal("92.00")
-        assert gate["stopDistancePct"] == Decimal("8.0000")
-        assert "stop_distance_capped_to_8.00%" in gate["reasons"]
+        assert gate["stop"] == Decimal("98.50")
+        assert gate["stopDistancePct"] == Decimal("1.5000")
+        assert "stop_distance_capped_to_1.50%" in gate["reasons"]
 
         candidate.stop_loss_price = Decimal("98.00")
         gate = trading_gate(db, settings, candidate, "BREAKOUT", now)
         assert gate["allowed"], gate["failures"]
-        assert gate["stop"] == Decimal("98.00")
-        assert gate["stopDistancePct"] == Decimal("2.0000")
-        assert "stop_distance_capped_to_8.00%" not in gate["reasons"]
+        assert gate["stop"] == Decimal("98.50")
+        assert gate["stopDistancePct"] == Decimal("1.5000")
+        assert "stop_distance_capped_to_1.50%" in gate["reasons"]
 
         candidate.strategy_type = "CRASH"
         candidate.relative_strength = Decimal("-8")
@@ -590,7 +590,7 @@ def test_super_ai_bold_profile_caps_stops_and_allows_only_qualified_short(monkey
         assert "stop_distance_capped_to_8.00%" not in gate["reasons"]
 
 
-def test_super_ai_balanced_breakout_allows_mid_quality_realtime_breakout_candidate() -> None:
+def test_super_ai_strict_breakout_blocks_mid_quality_candidate() -> None:
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -645,14 +645,11 @@ def test_super_ai_balanced_breakout_allows_mid_quality_realtime_breakout_candida
         settings.min_ai_score_to_trade = Decimal("80")
         gate = trading_gate(db, settings, candidate, "BREAKOUT", now)
 
-        assert gate["allowed"], gate["failures"]
-        assert gate["entryMode"] == "FORMAL"
-        assert gate["aiScore"] >= Decimal("60")
-        assert "precision_total_score_below_58" not in gate["failures"]
-        assert "precision_health_score_below_55" not in gate["failures"]
-        assert "precision_industry_strength_below_20" not in gate["failures"]
-        assert "intraday_bull_breakout_bonus=+8" not in gate["reasons"]
-        assert "stop_distance_capped_to_8.00%" not in gate["reasons"]
+        assert not gate["allowed"]
+        assert gate["entryMode"] == "BLOCKED"
+        assert "long_health_score_below_68" in gate["failures"]
+        assert "long_industry_strength_below_55" in gate["failures"]
+        assert "probe_entries_disabled_by_strict_risk_policy" in gate["failures"]
 
 
 def test_super_ai_balanced_breakout_blocks_candidate_below_probe_floor() -> None:
@@ -677,7 +674,8 @@ def test_super_ai_balanced_breakout_blocks_candidate_below_probe_floor() -> None
 
         assert not gate["allowed"]
         assert gate["entryMode"] == "BLOCKED"
-        assert "probe_total_score_below_54" in gate["failures"]
+        assert "long_total_score_below_70" in gate["failures"]
+        assert "probe_entries_disabled_by_strict_risk_policy" in gate["failures"]
 
 
 def test_super_ai_precision_breakout_allows_high_quality_realtime_breakout_candidate() -> None:
@@ -699,11 +697,11 @@ def test_super_ai_precision_breakout_allows_high_quality_realtime_breakout_candi
 
         assert gate["allowed"], gate["failures"]
         assert gate["aiScore"] >= Decimal("88")
-        assert gate["riskAmount"] == Decimal("7500.00")
+        assert gate["riskAmount"] == Decimal("4500.00")
         assert gate["entryMode"] == "FORMAL"
         assert "bold_long_biased_mode" in gate["reasons"]
         assert "intraday_bull_breakout_bonus=+4" in gate["reasons"]
-        assert "stop_distance_capped_to_8.00%" not in gate["reasons"]
+        assert "stop_distance_capped_to_1.50%" in gate["reasons"]
 
 
 def test_super_ai_settings_can_stop_new_trades() -> None:
@@ -1066,7 +1064,7 @@ def test_super_ai_observation_signal_enters_trade_when_gate_allows() -> None:
         assert stored_signal.signal_type == "entry_confirmed"
 
 
-def test_super_ai_probe_observation_signal_enters_one_probe_trade() -> None:
+def test_super_ai_probe_observation_signal_is_blocked() -> None:
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -1093,16 +1091,15 @@ def test_super_ai_probe_observation_signal_enters_one_probe_trade() -> None:
         db.commit()
         settings = ensure_super_ai_settings(db, now)
         gate = trading_gate(db, settings, candidate, "BREAKOUT", now)
-        assert gate["allowed"], gate["failures"]
-        assert gate["entryMode"] == "PROBE"
-        assert gate["probeEligible"] is True
+        assert not gate["allowed"]
+        assert gate["entryMode"] == "BLOCKED"
+        assert gate["probeEligible"] is False
 
         update_adaptive_paper_trades(db, payload, [candidate], [signal], "BREAKOUT")
         db.commit()
 
         trade = db.scalar(select(AdaptivePaperTrade))
-        assert trade is not None
-        assert "probe_entry" in trade.entry_reason
+        assert trade is None
 
 
 def test_super_ai_open_trade_takes_partial_profit_at_tp1() -> None:

@@ -120,6 +120,7 @@ def test_quote_refresh_lock_is_recreated_for_a_new_event_loop() -> None:
 
 def test_quote_history_for_returns_only_today_and_respects_limit() -> None:
     engine = MockDayTradingEngine()
+    engine._now = lambda: datetime(2026, 9, 14, 2, 0, tzinfo=UTC)  # type: ignore[method-assign]
     now = engine._now().astimezone(official_market_data.TAIPEI)
     yesterday = now - timedelta(days=1)
     quotes = [

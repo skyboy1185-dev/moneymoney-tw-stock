@@ -16,6 +16,20 @@ export interface ThreeGateLevelStatus {
   position: ThreeGatePosition;
 }
 
+export type ThreeGateSignal = "middle_breakout" | "upper_breakout" | "lower_breakdown" | null;
+
+export function classifyThreeGateSignal(
+  currentPrice: number,
+  previousPrice: number,
+  threeGate: ThreeGatePrice,
+): ThreeGateSignal {
+  if (![currentPrice, previousPrice, threeGate.upper, threeGate.middle, threeGate.lower].every(Number.isFinite)) return null;
+  if (previousPrice < threeGate.upper && currentPrice >= threeGate.upper) return "upper_breakout";
+  if (previousPrice < threeGate.middle && currentPrice >= threeGate.middle && currentPrice < threeGate.upper) return "middle_breakout";
+  if (previousPrice >= threeGate.lower && currentPrice < threeGate.lower) return "lower_breakdown";
+  return null;
+}
+
 export function stockTickSize(price: number) {
   if (price < 10) return 0.01;
   if (price < 50) return 0.05;

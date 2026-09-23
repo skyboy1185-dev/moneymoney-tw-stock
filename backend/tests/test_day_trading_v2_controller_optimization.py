@@ -380,11 +380,11 @@ def test_new_strategy_runtime_error_stops_version_and_queues_previous_version():
         assert pending is not None and pending.version == "2.0.0"
 
 
-@pytest.mark.parametrize("scenario", ["fresh", "all_stale", "partial", "expired_at_entry", "stale_book"])
+@pytest.mark.parametrize("scenario", ["fresh", "all_stale", "partial", "expired_at_entry", "stale_book", "recover_book", "cross_user", "yahoo_book"])
 def test_automated_scan_can_only_create_one_order_through_persisted_controller_decision(monkeypatch, scenario):
     from app.routers import day_trading_v2 as router
     from app.services.official_market_data import OfficialStockQuote
-    from app.day_trading_v2_models import DayTradeV2CandidateState
+    from app.day_trading_v2_models import DayTradeV2CandidateState, DayTradeV2Position
 
     current = datetime(2026, 9, 7, 1, 16, tzinfo=UTC)
     start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
@@ -416,7 +416,18 @@ def test_automated_scan_can_only_create_one_order_through_persisted_controller_d
             for symbol in (symbols or [item["symbol"] for item in self.signals()]):
                 stamp = current - timedelta(seconds=16) if scenario == "all_stale" or symbol == "2317" else current
                 result[symbol] = OfficialStockQuote(symbol, "測試", 102, 100, 100, 103, 99, 5_000_000, 2, 2, stamp.isoformat(), "TWSE MIS", True, best_bid=101.9, best_ask=102.1,
-                    book_timestamp=(current - timedelta(seconds=16) if scenario == "stale_book" else stamp).isoformat())
+                    book_timestamp=(current - timedelta(seconds=16) if scenario in {"stale_book", "recover_book"} else stamp).isoformat())
+                if scenario == "yahoo_book":
+                    from app.services.yahoo_tw_live_quotes import parse_quote
+                    from app.services.official_market_data import StockQuoteRequest
+                    result[symbol] = parse_quote({
+                        "symbol": symbol + ".TW", "marketStatus": "open", "exchangeDataDelayedBy": 0,
+                        "regularMarketTime": stamp.isoformat(), "price": {"raw": "102"},
+                        "regularMarketPreviousClose": {"raw": "100"}, "regularMarketOpen": {"raw": "100"},
+                        "regularMarketDayHigh": {"raw": "103"}, "regularMarketDayLow": {"raw": "99"},
+                        "volume": "5000000", "bid": {"raw": "101.9"}, "ask": {"raw": "102.1"},
+                        "orderbook": [{"bid": "101.9", "ask": "102.1", "bidVol": 50000, "askVol": 60000}],
+                    }, StockQuoteRequest(symbol, "test", "上市"), current)
             return result
 
         def minute_bars_for(self, symbol):
@@ -430,6 +441,8 @@ def test_automated_scan_can_only_create_one_order_through_persisted_controller_d
     sessions = sessionmaker(bind=engine, expire_on_commit=False)
     monkeypatch.setattr(router, "day_trading_engine", FakeEngine())
     monkeypatch.setattr(router, "_now", lambda: current + timedelta(seconds=16) if scenario == "expired_at_entry" else current)
+    day_start = current.astimezone(router.TAIPEI).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(UTC)
+    monkeypatch.setattr(router, "_today_bounds", lambda: (day_start, day_start + timedelta(days=1)))
     with sessions() as db:
         router._ensure_defaults(db, "controller-user")
         runtime = DayTradeV2RuntimeState(
@@ -440,6 +453,14 @@ def test_automated_scan_can_only_create_one_order_through_persisted_controller_d
         db.add(runtime)
         db.commit()
         result = router._scan_now("controller-user", db, current)
+        if scenario == "recover_book":
+            assert result["executed"] == 0
+            assert db.scalar(select(DayTradeV2Order)) is None
+            skipped = db.scalar(select(DayTradeV2Signal))
+            assert skipped.status == "SKIPPED" and "五檔行情缺失或逾時" in skipped.skip_reason
+            scenario = "fresh"
+            current += timedelta(seconds=5)
+            result = router._scan_now("controller-user", db, current)
         if scenario in {"all_stale", "expired_at_entry", "stale_book"}:
             assert result["executed"] == 0
             assert db.scalar(select(DayTradeV2Order)) is None
@@ -459,3 +480,28 @@ def test_automated_scan_can_only_create_one_order_through_persisted_controller_d
         again = router._scan_now("controller-user", db, current)
         assert again["idempotent"] is True
         assert len(list(db.scalars(select(DayTradeV2Order)).all())) == 1
+        if scenario == "yahoo_book":
+            position = db.scalar(select(DayTradeV2Position))
+            router.close_position(position.id, router.CloseBody(fill_price=Decimal("103")), "controller-user", db)
+            trade = db.scalar(select(DayTradeV2Trade))
+            assert trade is not None and trade.entry_price == Decimal("102")
+            assert position.status == "CLOSED"
+            assert router._dashboard(db, "controller-user")["today"]["tradeCount"] == 1
+        if scenario == "cross_user":
+            router._ensure_defaults(db, "second-controller-user")
+            db.add(DayTradeV2RuntimeState(user_id="second-controller-user", mode="PAPER",
+                trading_date=current.date(), status="RUNNING", initialized=True,
+                receiving_quotes=True, scanning=True, order_allowed=True, heartbeat_at=current))
+            db.commit()
+            second = router._scan_now("second-controller-user", db, current)
+            assert second["executed"] == 1
+            signals = list(db.scalars(select(DayTradeV2Signal).where(DayTradeV2Signal.status == "EXECUTED")))
+            assert len(signals) == 2 and len({s.id for s in signals}) == 2
+            assert {s.user_id for s in signals} == {"controller-user", "second-controller-user"}
+        current += timedelta(seconds=5)
+        later = router._scan_now("controller-user", db, current)
+        if scenario == "yahoo_book":
+            # A different strategy may qualify after closing; this exact signal cannot refill.
+            assert len(list(db.scalars(select(DayTradeV2Order).where(DayTradeV2Order.signal_id == order.signal_id)))) == 1
+        else:
+            assert later["executed"] == 0

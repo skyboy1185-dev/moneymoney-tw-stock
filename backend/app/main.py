@@ -30,6 +30,7 @@ from .routers import (
     market_data,
     pattern_robot,
     portfolio,
+    prepost_analysis,
     rocket_radar,
     screener,
     strong_stock,
@@ -46,6 +47,7 @@ from .services.limit_up_ai_automation import limit_up_ai_automation
 from .services.long_term_automation import long_term_selection_automation
 from .services.operational_maintenance import operational_maintenance_automation
 from .services.pattern_robot_automation import pattern_robot_automation
+from .services.prepost_analysis import prepost_automation
 from .services.rocket_automation import rocket_radar_automation
 from .services.strong_stock_automation import strong_stock_automation
 
@@ -62,6 +64,7 @@ async def lifespan(_: FastAPI):
     except Exception:
         logger.exception("operational database retention cleanup failed")
     await line_notification_dispatcher.start()
+    await prepost_automation.start()
     await day_trading_automation.start()
     await day_trading_v2_notification_automation.start()
     # 型態掃描必須先於原本 AI 選股偵測啟動；09:00 後重啟會由此立即補掃。
@@ -91,6 +94,7 @@ async def lifespan(_: FastAPI):
         await day_trading_automation.stop()
         await day_trading_v2_notification_automation.stop()
         await line_notification_dispatcher.stop()
+        await prepost_automation.stop()
 
 
 app = FastAPI(
@@ -111,6 +115,7 @@ app.include_router(screener.router, prefix=settings.api_prefix)
 app.include_router(content.router, prefix=settings.api_prefix)
 app.include_router(chip_flow.router, prefix=settings.api_prefix)
 app.include_router(portfolio.router, prefix=settings.api_prefix)
+app.include_router(prepost_analysis.router, prefix=settings.api_prefix)
 app.include_router(day_trading.router, prefix=settings.api_prefix)
 app.include_router(day_trading_v2.router, prefix=settings.api_prefix)
 app.include_router(robot_health.router, prefix=settings.api_prefix)

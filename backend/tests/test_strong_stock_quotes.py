@@ -10,8 +10,8 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.services.official_market_data import StockQuoteRequest, OfficialStockQuote
 from app.services.strong_stock_quotes import load_quotes
-from app.services.strong_stock import ensure_defaults, queue_paper_orders, fill_pending_orders, monitor_positions
-from app.strong_stock_models import StrongStockPosition, StrongStockRanking
+from app.services.strong_stock import ensure_defaults, queue_paper_orders, fill_pending_orders, monitor_positions, _paper_buy_fill, merged_config
+from app.strong_stock_models import StrongStockOrder, StrongStockPosition, StrongStockRanking
 
 NOW = datetime(2026, 9, 9, 2, 30, tzinfo=UTC)
 REQUEST = StockQuoteRequest("2330", "test", "上市")
@@ -48,6 +48,20 @@ def test_future_and_unknown_symbols_are_rejected_at_handoff():
         return {"2330": quote(age=-1), "9999": replace(quote(), symbol="9999")}
     quotes, health = asyncio.run(load_quotes([REQUEST], provider=Provider(), fetcher=fetch, now=lambda: NOW))
     assert quotes == {} and health["freshCount"] == 0
+
+
+def test_new_execution_model_requires_fresh_book_and_respects_visible_ask_depth():
+    order = StrongStockOrder(id="order", user_id="quote-test", signal_key="signal", symbol="2330", name="test",
+        limit_price=Decimal("101"), quantity=100, filled_quantity=0, entry_type="BREAKOUT",
+        strategy_version="1.1.0", reason="test", valid_date=NOW.date())
+    executable = replace(quote(), best_bid=99.5, best_ask=100, bid_prices=(99.5,), ask_prices=(100,),
+        bid_volumes=(500,), ask_volumes=(40,), book_timestamp=NOW.isoformat())
+    price, quantity, evidence = _paper_buy_fill(order, executable, NOW, merged_config())
+    assert price == Decimal("100.0500")
+    assert quantity == 40 and evidence["fillStatus"] == "PARTIAL"
+    assert evidence["executionModel"] == "FRESH_BEST_ASK_DEPTH_V1"
+    assert _paper_buy_fill(order, replace(executable, best_ask=102, ask_prices=(102,)), NOW, merged_config()) is None
+    assert _paper_buy_fill(order, replace(executable, book_timestamp=(NOW-timedelta(seconds=16)).isoformat()), NOW, merged_config()) is None
 
 
 def test_new_source_fills_and_marks_paper_position_but_old_quote_cannot_stop_it():

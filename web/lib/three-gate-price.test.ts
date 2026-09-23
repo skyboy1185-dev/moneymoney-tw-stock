@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DailyPrice } from "./types";
-import { calculateThreeGatePrice, evaluateThreeGateLevels, stockTickSize } from "./three-gate-price";
+import { calculateThreeGatePrice, classifyThreeGateSignal, evaluateThreeGateLevels, stockTickSize } from "./three-gate-price";
 
 function candle(date: string, high: number, low: number, close: number): DailyPrice {
   return {
@@ -16,6 +16,14 @@ function candle(date: string, high: number, low: number, close: number): DailyPr
 }
 
 describe("three-gate price", () => {
+  it("classifies fresh crossings into exclusive middle, upper, and lower groups", () => {
+    const gate = { sourceDate: "2026-07-27", upper: 110, middle: 100, lower: 90 };
+    expect(classifyThreeGateSignal(101, 99, gate)).toBe("middle_breakout");
+    expect(classifyThreeGateSignal(111, 99, gate)).toBe("upper_breakout");
+    expect(classifyThreeGateSignal(89, 91, gate)).toBe("lower_breakdown");
+    expect(classifyThreeGateSignal(111, 110, gate)).toBeNull();
+    expect(classifyThreeGateSignal(101, 100, gate)).toBeNull();
+  });
   it("uses the latest completed candle during market hours", () => {
     const prices = [
       candle("2026-07-27", 260, 250, 253),

@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { clientKey, rateLimit } from "@/lib/server-utils";
 import { getOfficialQuote } from "@/services/market-data/official-quote-provider";
-import { buildOfficialStockPayload } from "@/services/market-data/official-history-provider";
+import { getOfficialHistory, stockPayloadFromHistory } from "@/services/market-data/official-history-provider";
 import { enrichOfficialStockMeta } from "@/services/market-data/official-fundamentals-provider";
 import { resolveOfficialStock } from "@/services/market-data/stock-directory";
 
 export const dynamic = "force-dynamic";
 
-type StockPayload = Awaited<ReturnType<typeof buildOfficialStockPayload>>;
+type StockPayload = ReturnType<typeof stockPayloadFromHistory>;
 
 const STOCK_CACHE_TTL_MS = 60_000;
 const stockPayloadCache = new Map<string, { payload: StockPayload; expiresAt: number }>();
@@ -38,9 +38,15 @@ export async function GET(request: NextRequest) {
     let pending = inFlightStockPayloads.get(cacheKey);
     if (!pending) {
       pending = (async () => {
-        const officialQuote = await getOfficialQuote(meta);
-        const enrichedMeta = await enrichOfficialStockMeta(meta, officialQuote?.price);
-        return buildOfficialStockPayload(enrichedMeta, officialQuote);
+        const [prices, { officialQuote, enrichedMeta }] = await Promise.all([
+          getOfficialHistory(meta, 1),
+          (async () => {
+            const officialQuote = await getOfficialQuote(meta);
+            const enrichedMeta = await enrichOfficialStockMeta(meta, officialQuote?.price);
+            return { officialQuote, enrichedMeta };
+          })(),
+        ]);
+        return stockPayloadFromHistory(enrichedMeta, officialQuote, prices);
       })();
       inFlightStockPayloads.set(cacheKey, pending);
     }

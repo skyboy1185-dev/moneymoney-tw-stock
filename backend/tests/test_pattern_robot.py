@@ -78,6 +78,15 @@ def test_double_bottom_standard_pattern():
     assert result and result.pattern_type == "DOUBLE_BOTTOM"
 
 
+def test_old_double_bottom_above_target_has_no_entry_allocation():
+    rows = candles([108] * 70 + [160])
+    points = [pivot(rows, 10, 100, "LOW"), pivot(rows, 25, 112, "HIGH"), pivot(rows, 40, 102, "LOW")]
+    result = _detect_double_bottom(rows, points, **context())
+    assert result and result.current_price > result.target_price
+    assert result.action == "NO_TRADE"
+    assert result.suggested_position_pct == 0
+
+
 @pytest.mark.parametrize("second", [94, 106])
 def test_double_bottom_rejects_price_difference_over_five_percent(second):
     rows = candles([108] * 71)

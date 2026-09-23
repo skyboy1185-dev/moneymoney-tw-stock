@@ -1,6 +1,7 @@
 import asyncio
 from dataclasses import replace
 import hmac
+import hashlib
 import json
 import os
 from datetime import UTC, date, datetime, timedelta
@@ -30,11 +31,11 @@ from ..day_trading_v2_models import (
 from ..services.day_trading_v2 import (
     BACKTEST_ENGINE_VERSION, DEFAULT_CONFIG, DEFAULT_STRATEGY_PARAMETERS, STRATEGIES, MinuteBar, calculate_position_size,
     calculate_trade_result, dec, evaluate_strategies, exit_action, market_gate_reasons,
-    merged_config, money, performance, performance_by_strategy, resolve_duplicate_signals, risk_status, signal_level,
+    merged_config, strict_execution_config, money, performance, performance_by_strategy, resolve_duplicate_signals, risk_status, signal_level,
     run_backtest,
 )
 from ..services.day_trading import day_trading_engine
-from ..services.day_trading_v2_quotes import QUOTE_NOTICES, fresh_quote, quote_health, quote_time, update_quote_notice
+from ..services.day_trading_v2_quotes import QUOTE_NOTICES, entry_spread, fresh_quote, quote_health, quote_time, update_quote_notice
 from ..services.quote_quality import trusted_quote
 from ..services.day_trading_quote_pump import day_trading_quote_pump
 from ..services.day_trading_v2_controller import (
@@ -185,7 +186,8 @@ def _notification(db: Session, *, user_id: str, mode: str, event_id: str, event_
         DayTradeV2Notification.user_id == user_id, DayTradeV2Notification.event_id == event_id,
     ))
     if not exists:
-        db.add(DayTradeV2Notification(user_id=user_id, event_id=event_id, mode=mode, event_type=event_type, title=title, message=message, payload_json=json.dumps(payload or {}, ensure_ascii=False)))
+        db.add(DayTradeV2Notification(user_id=user_id, event_id=event_id, mode=mode, event_type=event_type,
+            title=title, message=message, payload_json=json.dumps(payload or {}, ensure_ascii=False), created_at=_now()))
 
 
 def _audit(db: Session, user_id: str, action: str, mode: str, details: dict | None = None, entity_id: str = "") -> None:
@@ -344,11 +346,11 @@ def _controller_dashboard(db: Session, user_id: str, mode: str) -> dict[str, obj
     regime = db.scalar(select(DayTradeV2MarketRegimeSnapshot).where(
         DayTradeV2MarketRegimeSnapshot.user_id == user_id,
         DayTradeV2MarketRegimeSnapshot.mode == mode,
-    ).order_by(DayTradeV2MarketRegimeSnapshot.bucket_at.desc()))
+    ).order_by(DayTradeV2MarketRegimeSnapshot.bucket_at.desc()).limit(1))
     cycle = db.scalar(select(DayTradeV2ControllerCycle).where(
         DayTradeV2ControllerCycle.user_id == user_id,
         DayTradeV2ControllerCycle.mode == mode,
-    ).order_by(DayTradeV2ControllerCycle.evaluated_at.desc()))
+    ).order_by(DayTradeV2ControllerCycle.evaluated_at.desc()).limit(1))
     candidates = list(db.scalars(select(DayTradeV2ControllerCandidate).where(
         DayTradeV2ControllerCandidate.cycle_id == cycle.id,
     ).order_by(DayTradeV2ControllerCandidate.allowed.desc(), DayTradeV2ControllerCandidate.final_score.desc())).all()) if cycle else []
@@ -443,12 +445,12 @@ def _dashboard(db: Session, user_id: str) -> dict[str, object]:
     from ..services.day_trading_v2_learning import learning_dashboard
     setting, robots = _ensure_defaults(db, user_id)
     mode = setting.trade_mode if setting.trade_mode in MODE_VALUES else "PAPER"
-    config = merged_config(_json(setting.config_json, {}))
+    config = strict_execution_config(_json(setting.config_json, {}))
     today_start, today_end = _today_bounds()
     month_start, month_end = _month_bounds()
     all_trades = list(db.scalars(select(DayTradeV2Trade).where(DayTradeV2Trade.user_id == user_id, DayTradeV2Trade.mode == mode).order_by(DayTradeV2Trade.exit_fill_time.desc())).all())
-    today_trades = [row for row in all_trades if today_start <= row.exit_fill_time < today_end]
-    month_trades = [row for row in all_trades if month_start <= row.exit_fill_time < month_end]
+    today_trades = [row for row in all_trades if today_start <= _aware(row.exit_fill_time) < today_end]
+    month_trades = [row for row in all_trades if month_start <= _aware(row.exit_fill_time) < month_end]
     positions = list(db.scalars(select(DayTradeV2Position).where(
         DayTradeV2Position.user_id == user_id, DayTradeV2Position.mode == mode, DayTradeV2Position.status == "OPEN",
     )).all())
@@ -479,7 +481,7 @@ def _dashboard(db: Session, user_id: str) -> dict[str, object]:
     latest_dataset = db.scalar(select(DayTradeV2OptimizationDataset).where(
         DayTradeV2OptimizationDataset.user_id == user_id,
         DayTradeV2OptimizationDataset.quality_status.in_(("READY", "BACKTEST_READY")),
-    ).order_by(DayTradeV2OptimizationDataset.created_at.desc()))
+    ).order_by(DayTradeV2OptimizationDataset.created_at.desc()).limit(1))
     from ..config import get_settings
     application_settings = get_settings()
     automatic_history_ready = bool(
@@ -574,7 +576,7 @@ def _today_runtime(db: Session, user_id: str, mode: str, config: dict[str, objec
 
 def _set_runtime_status(db: Session, user_id: str, action: str, status: str) -> dict[str, object]:
     setting, robots = _ensure_defaults(db, user_id)
-    config = merged_config(_json(setting.config_json, {}))
+    config = strict_execution_config(_json(setting.config_json, {}))
     runtime = _today_runtime(db, user_id, setting.trade_mode, config)
     if action == "RESUME_TRADING" and (runtime.status in {"STOPPED", "EMERGENCY_STOP", "RISK_HALTED"} or any(robot.status in {"EMERGENCY_STOP", "HALTED_TODAY"} for robot in robots)):
         raise HTTPException(409, "停止或風控鎖定狀態不能由恢復交易解除")
@@ -596,7 +598,7 @@ def _set_runtime_status(db: Session, user_id: str, action: str, status: str) -> 
 @router.get("/runtime")
 def runtime_status(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -> dict[str, object]:
     setting, _ = _ensure_defaults(db, user_id)
-    config = merged_config(_json(setting.config_json, {}))
+    config = strict_execution_config(_json(setting.config_json, {}))
     return _runtime_dict(_today_runtime(db, user_id, setting.trade_mode, config), config)
 
 
@@ -623,7 +625,7 @@ def stop_strategies(user_id: str = Depends(_user_id), db: Session = Depends(get_
 @router.get("/settings")
 def settings(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -> dict[str, object]:
     setting, _ = _ensure_defaults(db, user_id)
-    return {"mode": setting.trade_mode, "liveEnabled": False, "config": merged_config(_json(setting.config_json, {})), "liveLockReason": "尚未設定並驗證券商API"}
+    return {"mode": setting.trade_mode, "liveEnabled": False, "config": strict_execution_config(_json(setting.config_json, {})), "liveLockReason": "尚未設定並驗證券商API"}
 
 
 class SettingsBody(BaseModel):
@@ -638,7 +640,7 @@ def save_settings(body: SettingsBody, user_id: str = Depends(_user_id), db: Sess
     if body.mode == "LIVE":
         raise HTTPException(409, "真實交易已鎖定：尚未設定並驗證券商API")
     setting, _ = _ensure_defaults(db, user_id)
-    config = merged_config(body.config)
+    config = strict_execution_config(body.config)
     if dec(config["initialCapital"]) != Decimal("3000000"):
         raise HTTPException(422, "目前共用總資金必須為3,000,000元")
     thresholds = [dec(config[key]) for key in ("generalScanThreshold", "watchThreshold", "nearEntryThreshold", "riskGateThreshold")]
@@ -757,7 +759,7 @@ def paper_entry(body: PaperEntryBody, user_id: str = Depends(_user_id), db: Sess
             raise HTTPException(409, "自動策略委託缺少有效的總控決策")
         if controller_candidate.status not in {"SELECTED", "ORDER_FAILED"} or controller_candidate.strategy_id != body.strategy_id or controller_candidate.symbol != body.symbol:
             raise HTTPException(409, "總控候選狀態或內容不符")
-    config = merged_config(_json(setting.config_json, {}))
+    config = strict_execution_config(_json(setting.config_json, {}))
     open_positions = list(db.scalars(select(DayTradeV2Position).where(
         DayTradeV2Position.user_id == user_id, DayTradeV2Position.mode == "PAPER", DayTradeV2Position.status == "OPEN",
     )).all())
@@ -802,14 +804,23 @@ def paper_entry(body: PaperEntryBody, user_id: str = Depends(_user_id), db: Sess
     version = active_version(db, user_id, body.strategy_id)
     entry_regime = body.market_regime if body.market_regime in REGIME_LABELS else REGIME_UNKNOWN
     market_context = {**body.market_context, "sector": body.sector, "marketRegime": entry_regime}
-    db.add(DayTradeV2Signal(
+    existing_signal = db.get(DayTradeV2Signal, signal_id)
+    if existing_signal and (existing_signal.user_id != user_id or existing_signal.mode != "PAPER" or existing_signal.status != "SKIPPED"):
+        raise HTTPException(409, "訊號已執行或不屬於此帳戶")
+    signal_values = dict(
         id=signal_id, user_id=user_id, mode="PAPER", strategy_id=body.strategy_id, strategy_version=version,
         symbol=body.symbol, stock_name=body.stock_name, sector=body.sector, side="LONG", signal_time=body.signal_time,
         signal_price=body.signal_price, confidence=body.confidence, risk_reward=risk_reward,
         stop_price=body.stop_price, target_price=body.target_price, status="EXECUTED",
         reasons_json=json.dumps(body.reasons, ensure_ascii=False), market_context_json=json.dumps(market_context, ensure_ascii=False, default=str),
         controller_decision_id=body.controller_decision_id,
-    ))
+        skip_reason="",
+    )
+    if existing_signal:
+        for key, value in signal_values.items():
+            setattr(existing_signal, key, value)
+    else:
+        db.add(DayTradeV2Signal(**signal_values))
     db.add(DayTradeV2Order(
         id=order_id, user_id=user_id, mode="PAPER", signal_id=signal_id, client_order_id=f"paper-{order_id}",
         broker_order_id=f"paper-{order_id}", symbol=body.symbol, side="BUY", order_price=body.fill_price,
@@ -852,6 +863,8 @@ def _verify_automatic_entry_quote(db: Session, user_id: str, symbol: str, config
         raise HTTPException(409, "該股票即時行情逾時或未驗證，禁止建立新部位")
     if not trusted_quote(quote, now, int(config["quoteTimeoutSeconds"]), require_book=True):
         raise HTTPException(409, "該股票五檔行情逾時或未驗證，禁止建立新部位")
+    if dec(entry_spread(quote, now, int(config["quoteTimeoutSeconds"]))) > dec(config["maximumSpreadPct"]):
+        raise HTTPException(409, "下單前買賣價差過大，禁止建立新部位")
 
 
 def _pending_candidate(db: Session, user_id: str, trading_date, symbol: str):
@@ -862,10 +875,23 @@ def _pending_candidate(db: Session, user_id: str, trading_date, symbol: str):
                  and row.trading_date == trading_date and row.symbol == symbol), None)
 
 
+def _paper_signal_key(user_id: str, symbol: str, stamp: datetime, strategy_id: str) -> str:
+    identity = json.dumps([user_id, "PAPER", symbol, _aware(stamp).astimezone(UTC).isoformat(), strategy_id])
+    return "v2:" + hashlib.sha256(identity.encode()).hexdigest()
+
+
+def _signal_executed(db: Session, user_id: str, symbol: str, stamp: datetime, strategy_id: str) -> bool:
+    keys = (_paper_signal_key(user_id, symbol, stamp, strategy_id),
+            f"v2:{symbol}:{stamp.isoformat()}:{strategy_id}")
+    # Recognize pre-fix fills without allowing another account's skip to block us.
+    return any(row is not None and row.user_id == user_id and row.mode == "PAPER" and row.status == "EXECUTED"
+               for key in keys for row in [db.get(DayTradeV2Signal, key)])
+
+
 def _legacy_scan_now(user_id: str, db: Session, coordinator_now: datetime | None = None, *, entries_enabled: bool = True, observation: dict | None = None) -> dict[str, object]:
     """Evaluate verified MIS bars. The coordinator calls this every five seconds."""
     setting, _ = _ensure_defaults(db, user_id)
-    config = merged_config(_json(setting.config_json, {}))
+    config = strict_execution_config(_json(setting.config_json, {}))
     if setting.trade_mode != "PAPER":
         return {"evaluated": 0, "executed": 0, "skipped": 0, "message": "目前模式不執行即時模擬訊號"}
     current = coordinator_now or _now()
@@ -1020,14 +1046,14 @@ def _legacy_scan_now(user_id: str, db: Session, coordinator_now: datetime | None
             _record_skip(db, user_id, "PAPER", trading_date, primary_reason)
         if winner is None:
             continue
-        signal_key = f"v2:{symbol}:{bars[-1].timestamp.isoformat()}:{winner.strategy_id}"
+        signal_key = _paper_signal_key(user_id, symbol, bars[-1].timestamp, winner.strategy_id)
         if db.get(DayTradeV2Signal, signal_key):
             continue
         reasons = market_gate_reasons(
             now=current, market_crashing=dec(regime.get("score", 0)) <= -60,
             quote_reliable=fresh_quote(candidate, current, int(config["quoteTimeoutSeconds"])),
             volume=int(candidate.get("volume") or 0), turnover=candidate.get("turnover") or 0,
-            spread_pct=candidate.get("spreadPercentage") or 999,
+            spread_pct=entry_spread(observation["quotes"].get(symbol), current, int(config["quoteTimeoutSeconds"])),
             vwap_deviation_pct=candidate.get("vwapDeviationPercent") or 0,
             blocked=bool(candidate.get("tradeRestricted")), connection_ok=regime.get("dataStatus") == "normal" and quote_fresh,
             available_capital=dec(config["initialCapital"]) - used,
@@ -1043,7 +1069,7 @@ def _legacy_scan_now(user_id: str, db: Session, coordinator_now: datetime | None
         if risk_reward < dec(config["minimumRiskReward"]):
             reasons.append("風險報酬比不足")
         for duplicate in duplicates:
-            duplicate_id = f"v2:{symbol}:{bars[-1].timestamp.isoformat()}:{duplicate.strategy_id}"
+            duplicate_id = _paper_signal_key(user_id, symbol, bars[-1].timestamp, duplicate.strategy_id)
             if not db.get(DayTradeV2Signal, duplicate_id):
                 db.add(DayTradeV2Signal(
                     id=duplicate_id, user_id=user_id, mode="PAPER", strategy_id=duplicate.strategy_id,
@@ -1122,10 +1148,12 @@ def _legacy_scan_now(user_id: str, db: Session, coordinator_now: datetime | None
     return {"evaluated": evaluated, "executed": executed, "skipped": skipped, "exits": exits, "items": items}
 
 
-def _quote_observation(current: datetime, config: dict) -> dict:
+def _quote_observation(current: datetime, config: dict, *, refresh_clock: bool = False) -> dict:
     regime = day_trading_engine.market_regime()
     candidates = day_trading_engine.signals()
     quotes = day_trading_engine.official_quotes_snapshot()
+    if refresh_clock:
+        current = _now()
     observed = []
     for candidate in candidates:
         quote = quotes.get(str(candidate.get("symbol") or ""))
@@ -1137,7 +1165,7 @@ def _quote_observation(current: datetime, config: dict) -> dict:
                          "isHalted": quote.is_halted if quote else False})
     valid = [quote for quote in quotes.values() if fresh_quote(quote, current, int(config["quoteTimeoutSeconds"]))]
     stamps = [quote_time(quote) for quote in quotes.values() if trusted_quote(quote, current)]
-    return {"regime": regime, "candidates": observed, "quotes": quotes,
+    return {"observedAt": current, "regime": regime, "candidates": observed, "quotes": quotes,
             "latestQuote": max((stamp for stamp in stamps if stamp and stamp <= current and stamp.astimezone(TAIPEI).date() == current.astimezone(TAIPEI).date()), default=None),
             "fresh": bool(valid)}
 
@@ -1145,13 +1173,16 @@ def _quote_observation(current: datetime, config: dict) -> dict:
 def _scan_now(user_id: str, db: Session, coordinator_now: datetime | None = None) -> dict[str, object]:
     """Run exits first, then send every strategy candidate through the sole controller gateway."""
     setting, robots = _ensure_defaults(db, user_id)
-    config = merged_config(_json(setting.config_json, {}))
+    config = strict_execution_config(_json(setting.config_json, {}))
     if setting.trade_mode != "PAPER":
         return {"evaluated": 0, "executed": 0, "skipped": 0, "message": "目前模式不執行即時模擬訊號"}
     current = coordinator_now or _now()
     local_now = current.astimezone(TAIPEI)
     trading_date = local_now.date()
-    observation = _quote_observation(current, config)
+    observation = _quote_observation(current, config, refresh_clock=coordinator_now is None)
+    current = observation["observedAt"]
+    local_now = current.astimezone(TAIPEI)
+    trading_date = local_now.date()
     monitor = _legacy_scan_now(user_id, db, current, entries_enabled=False, observation=observation)
     runtime = _today_runtime(db, user_id, "PAPER", config, trading_date)
     legacy_regime = observation["regime"]
@@ -1249,7 +1280,7 @@ def _scan_now(user_id: str, db: Session, coordinator_now: datetime | None = None
             override = overrides.get(signal.strategy_id)
             rr = (signal.target_price - signal.entry_price) / (signal.entry_price - signal.stop_price)
             item = ControllerCandidateInput(
-                key=f"v2:{symbol}:{bars[-1].timestamp.isoformat()}:{signal.strategy_id}",
+                key=_paper_signal_key(user_id, symbol, bars[-1].timestamp, signal.strategy_id),
                 symbol=symbol, stock_name=str(source.get("stockName") or ""), sector=sector,
                 strategy_id=signal.strategy_id, strategy_version=version_map[signal.strategy_id],
                 signal_time=bars[-1].timestamp, raw_score=signal.confidence,
@@ -1271,7 +1302,7 @@ def _scan_now(user_id: str, db: Session, coordinator_now: datetime | None = None
                 now=current, market_crashing=snapshot.effective_regime == "E_CRASH",
                 quote_reliable=fresh_quote(source, current, int(config["quoteTimeoutSeconds"])),
                 volume=int(source.get("volume") or 0), turnover=source.get("turnover") or 0,
-                spread_pct=source.get("spreadPercentage") or 999,
+                spread_pct=entry_spread(observation["quotes"].get(symbol), current, int(config["quoteTimeoutSeconds"])),
                 vwap_deviation_pct=source.get("vwapDeviationPercent") or 0,
                 blocked=bool(source.get("tradeRestricted")), connection_ok=legacy_regime.get("dataStatus") == "normal",
                 available_capital=dec(config["initialCapital"]) - used_capital,
@@ -1282,7 +1313,7 @@ def _scan_now(user_id: str, db: Session, coordinator_now: datetime | None = None
                 common.append("機器人未啟用或已停機")
             if not runtime.order_allowed:
                 common.append("系統目前禁止新委託")
-            if db.get(DayTradeV2Signal, item.key):
+            if _signal_executed(db, user_id, symbol, bars[-1].timestamp, signal.strategy_id):
                 common.append("同一根K棒訊號已處理")
             if common:
                 row = replace(row, allowed=False, blocked_reasons=tuple(dict.fromkeys((*row.blocked_reasons, *common))))
@@ -1466,7 +1497,7 @@ def close_position(position_id: str, body: CloseBody, user_id: str = Depends(_us
     if position is None or position.user_id != user_id or position.status != "OPEN":
         raise HTTPException(404, "找不到未平倉部位")
     setting, robots = _ensure_defaults(db, user_id)
-    config = merged_config(_json(setting.config_json, {}))
+    config = strict_execution_config(_json(setting.config_json, {}))
     quantity = position.quantity if body.percentage == 100 else max(1, position.quantity * body.percentage // 100)
     now = _now()
     result = calculate_trade_result(
@@ -1524,7 +1555,7 @@ def close_position(position_id: str, body: CloseBody, user_id: str = Depends(_us
 @router.post("/emergency-stop")
 def emergency_stop(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -> dict[str, object]:
     setting, robots = _ensure_defaults(db, user_id)
-    config = merged_config(_json(setting.config_json, {}))
+    config = strict_execution_config(_json(setting.config_json, {}))
     for robot in robots:
         robot.status = "EMERGENCY_STOP"
     runtime = _today_runtime(db, user_id, setting.trade_mode, config)
@@ -1554,7 +1585,9 @@ def cancel_all(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) 
 @router.get("/notifications")
 def notifications(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -> dict[str, object]:
     rows = list(db.scalars(select(DayTradeV2Notification).where(DayTradeV2Notification.user_id == user_id).order_by(DayTradeV2Notification.created_at.desc()).limit(200)).all())
-    return {"unread": sum(not row.read for row in rows), "items": [{"id": row.id, "eventId": row.event_id, "mode": row.mode, "eventType": row.event_type, "title": row.title, "message": row.message, "read": row.read, "createdAt": row.created_at} for row in rows]}
+    return {"unread": sum(not row.read for row in rows), "items": [{"id": row.id, "eventId": row.event_id, "mode": row.mode, "eventType": row.event_type, "title": row.title, "message": row.message, "read": row.read, "createdAt": row.created_at,
+        "deliveryStatus": "SENT" if row.email_sent and row.email_delivery_status == "PENDING" else row.email_delivery_status,
+        "emailSentAt": row.email_sent_at} for row in rows]}
 
 
 @router.get("/controller")
@@ -1626,7 +1659,7 @@ def performance_by_market_regime(
     if period not in {"RECENT_20", "RECENT_50", "MONTH", "ALL"}:
         raise HTTPException(422, "統計期間不正確")
     setting, _ = _ensure_defaults(db, user_id)
-    config = merged_config(_json(setting.config_json, {}))
+    config = strict_execution_config(_json(setting.config_json, {}))
     minimum_sample = int(config.get("healthMinTrades", 20))
     records: list[dict[str, object]] = []
     source_name = source
@@ -1655,7 +1688,7 @@ def performance_by_market_regime(
             DayTradeV2BacktestJob.user_id == user_id,
             DayTradeV2BacktestJob.status == "COMPLETED",
             DayTradeV2BacktestJob.backtest_mode != "RESEARCH",
-        ).order_by(DayTradeV2BacktestJob.created_at.desc()))
+        ).order_by(DayTradeV2BacktestJob.created_at.desc()).limit(1))
         if not job:
             raise HTTPException(404, "找不到已完成的回測任務")
         selected_id = job.id
@@ -1669,7 +1702,7 @@ def performance_by_market_regime(
             DayTradeV2ChallengerRun.id == source_id,
         )) if source_id else db.scalar(select(DayTradeV2ChallengerRun).where(
             DayTradeV2ChallengerRun.user_id == user_id,
-        ).order_by(DayTradeV2ChallengerRun.started_at.desc()))
+        ).order_by(DayTradeV2ChallengerRun.started_at.desc()).limit(1))
         if not run:
             raise HTTPException(404, "找不到Challenger模擬批次")
         selected_id = run.id
@@ -1701,7 +1734,7 @@ def optimization_status(user_id: str = Depends(_user_id), db: Session = Depends(
 @router.post("/optimization/diagnose")
 def diagnose_now(user_id: str = Depends(_user_id), db: Session = Depends(get_db)) -> dict[str, object]:
     setting, _ = _ensure_defaults(db, user_id)
-    config = merged_config(_json(setting.config_json, {}))
+    config = strict_execution_config(_json(setting.config_json, {}))
     rows = run_health_diagnosis(db, user_id, setting.trade_mode, config)
     _audit(db, user_id, "STRATEGY_HEALTH_DIAGNOSED", setting.trade_mode, {"count": len(rows)})
     db.commit()
@@ -1765,7 +1798,7 @@ def create_optimization_job(body: OptimizationJobBody, user_id: str = Depends(_u
     dataset = db.get(DayTradeV2OptimizationDataset, body.dataset_id) if body.dataset_id else db.scalar(select(DayTradeV2OptimizationDataset).where(
         DayTradeV2OptimizationDataset.user_id == user_id,
         DayTradeV2OptimizationDataset.quality_status == "READY",
-    ).order_by(DayTradeV2OptimizationDataset.created_at.desc()))
+    ).order_by(DayTradeV2OptimizationDataset.created_at.desc()).limit(1))
     if dataset and dataset.user_id != user_id:
         raise HTTPException(404, "找不到資料集")
     versions = list(db.scalars(select(DayTradeV2StrategyVersion.version).where(
@@ -1930,7 +1963,7 @@ def approve_strategy_version(
         DayTradeV2ChallengerRun.user_id == user_id,
         DayTradeV2ChallengerRun.strategy_id == strategy_id,
         DayTradeV2ChallengerRun.challenger_version == version,
-    ).order_by(DayTradeV2ChallengerRun.started_at.desc()))
+    ).order_by(DayTradeV2ChallengerRun.started_at.desc()).limit(1))
     if not deployment or not run:
         raise HTTPException(409, "候選版本尚未完成驗證或模擬觀察")
     challenger_metrics = _json(run.challenger_metrics_json, {})
@@ -1974,7 +2007,7 @@ def reject_strategy_version(
         DayTradeV2ChallengerRun.user_id == user_id,
         DayTradeV2ChallengerRun.strategy_id == strategy_id,
         DayTradeV2ChallengerRun.challenger_version == version,
-    ).order_by(DayTradeV2ChallengerRun.started_at.desc()))
+    ).order_by(DayTradeV2ChallengerRun.started_at.desc()).limit(1))
     if run:
         run.status = "REJECTED"
         run.completed_at = _now()
@@ -2006,7 +2039,7 @@ def rollback_strategy_version(
         DayTradeV2StrategyDeployment.user_id == user_id,
         DayTradeV2StrategyDeployment.strategy_id == strategy_id,
         DayTradeV2StrategyDeployment.status == "SUPERSEDED",
-    ).order_by(DayTradeV2StrategyDeployment.disabled_at.desc()))
+    ).order_by(DayTradeV2StrategyDeployment.disabled_at.desc()).limit(1))
     if not current or not previous:
         raise HTTPException(409, "沒有可回復的上一個驗證版本")
     current.status = "ROLLBACK_DISABLED"
@@ -2127,7 +2160,7 @@ def create_backtest(body: BacktestBody, user_id: str = Depends(_user_id), db: Se
         versions[strategy] = version
     execution_snapshot = {
         "source": "CURRENT_SETTINGS", "capturedAt": _now().isoformat(),
-        "config": merged_config(_json(setting.config_json, {})),
+        "config": strict_execution_config(_json(setting.config_json, {})),
         "strategyParameters": parameters, "strategyVersions": versions,
     }
     frozen_request = json.dumps({

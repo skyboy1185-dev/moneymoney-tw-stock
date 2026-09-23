@@ -20,6 +20,8 @@ BASELINE_SIZE = 80
 BATCH_SIZE = 10
 REQUEST_SECONDS = 1.0
 REQUEST_TIMEOUT_SECONDS = 2.0
+FREE_QUOTE_INTERVAL_SECONDS = 5.0
+FREE_QUOTE_BATCH_SIZE = 50
 
 
 def _dedupe(rows: Iterable[StockQuoteRequest]) -> list[StockQuoteRequest]:
@@ -90,6 +92,7 @@ class DayTradingQuotePump:
         self._backup_task: asyncio.Task | None = None
         self._yahoo_task: asyncio.Task | None = None
         self._rest_attempts: dict[str, float] = {}
+        self._yahoo_baseline_attempts: dict[str, float] = {}
         self._mandatory_symbols: set[str] = set()
         self._fugle = fugle_provider
         self._auto_fugle = provider is None
@@ -149,6 +152,24 @@ class DayTradingQuotePump:
         with self._lock:
             return _dedupe([*self._priority, *self._baseline]) if self._enabled else []
 
+    def priority_symbols(self) -> set[str]:
+        with self._lock:
+            return {row.symbol for row in self._priority} if self._enabled else set()
+
+    def yahoo_targets(self, lane: str) -> list[StockQuoteRequest]:
+        with self._lock:
+            if not self._enabled:
+                return []
+            if lane == "priority":
+                # Includes every mandatory holding even when the soft cap is exceeded.
+                return list(self._priority)
+            allowed = {row.symbol for row in self._baseline}
+            self._yahoo_baseline_attempts = {s: t for s, t in self._yahoo_baseline_attempts.items() if s in allowed}
+            batch = sorted(self._baseline, key=lambda row: self._yahoo_baseline_attempts.get(row.symbol, float("-inf")))[:FREE_QUOTE_BATCH_SIZE]
+            for row in batch:
+                self._yahoo_baseline_attempts[row.symbol] = self._monotonic()
+            return batch
+
     def ingest_mis_relay(self, quotes: dict[str, OfficialStockQuote]) -> int:
         """Authenticated transport only; exchange timestamps still gate publication."""
         with self._lock:
@@ -187,6 +208,9 @@ class DayTradingQuotePump:
                                overCapacity=bool(overflow) or len(required) > PRIORITY_CAPACITY,
                                mandatoryOverCapacity=len(required) > PRIORITY_CAPACITY,
                                missingMandatoryCount=len(mandatory - {row.symbol for row in required}))
+            self._state.update(freeQuotePrioritySeconds=FREE_QUOTE_INTERVAL_SECONDS,
+                               freeQuoteBaselineBatchSize=FREE_QUOTE_BATCH_SIZE,
+                               freeQuoteBaselineSweepSeconds=((len(remaining) + FREE_QUOTE_BATCH_SIZE - 1) // FREE_QUOTE_BATCH_SIZE) * FREE_QUOTE_INTERVAL_SECONDS)
             for cache in self._source_quotes.values():
                 for symbol in set(cache) - live_symbols:
                     cache.pop(symbol, None)
@@ -588,34 +612,36 @@ class DayTradingQuotePump:
         from .yahoo_tw_live_quotes import fetch_batch
         from .official_market_data import official_market_data_provider
         async with httpx.AsyncClient(timeout=3, headers={"User-Agent": "Mozilla/5.0", "Cache-Control": "no-cache"}) as client:
-            while True:
-                targets = self.relay_targets()
-                if not targets:
-                    await asyncio.sleep(2)
-                    continue
-                index = next((r for r in targets if r.symbol == "t00"), None)
-                stocks = [r for r in targets if r.symbol != "t00"]
-                for start in range(0, max(1, len(stocks)), 49):
-                    batch = ([index] if index else []) + stocks[start:start+49]
-                    try:
-                        quotes = await fetch_batch(client, batch)
-                        now = self._utcnow()
-                        quotes = {s: official_market_data_provider.attach_order_book(q, now) for s, q in quotes.items()}
-                        with self._lock:
-                            self._cache_source("YAHOO_TW", quotes)
-                            self._state["yahooLastReceivedAt"] = now.isoformat()
-                            self._state["yahooLastError"] = None
-                        self._publish_selected()
-                        official_market_data_provider.ingest_verified_quotes(quotes)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:
-                        with self._lock:
-                            self._state["yahooLastError"] = type(exc).__name__
-                        logger.warning("Yahoo TW quote batch failed: %s", type(exc).__name__)
-                    # A failed batch must not starve the rest of the universe.
-                    await asyncio.sleep(1)
-                await asyncio.sleep(1)
+            async def run_lane(lane):
+                while True:
+                    started = self._monotonic()
+                    targets = self.yahoo_targets(lane)
+                    for offset in range(0, len(targets), FREE_QUOTE_BATCH_SIZE):
+                        await receive(targets[offset:offset + FREE_QUOTE_BATCH_SIZE], lane)
+                    await asyncio.sleep(max(.1, FREE_QUOTE_INTERVAL_SECONDS - (self._monotonic() - started)))
+
+            async def receive(batch, lane):
+                try:
+                    quotes = await fetch_batch(client, batch)
+                    now = self._utcnow()
+                    quotes = {s: official_market_data_provider.attach_order_book(q, now) for s, q in quotes.items()}
+                    with self._lock:
+                        self._cache_source("YAHOO_TW", quotes)
+                        self._state["yahooLastReceivedAt"] = now.isoformat()
+                        self._state["yahooLastError"] = None
+                    self._publish_selected()
+                    official_market_data_provider.ingest_verified_quotes(quotes)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    with self._lock:
+                        self._state["yahooLastError"] = type(exc).__name__
+                    logger.warning("Yahoo TW quote batch failed (%s): %s", lane, type(exc).__name__)
+            # Exactly two lanes; a slow baseline request never holds up priority.
+            # TaskGroup joins/cancels both lanes before closing their shared client.
+            async with asyncio.TaskGroup() as group:
+                group.create_task(run_lane("priority"))
+                group.create_task(run_lane("baseline"))
 
 
 day_trading_quote_pump = DayTradingQuotePump()

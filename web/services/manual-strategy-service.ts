@@ -52,11 +52,16 @@ export function isShortTermBullishAlignment(
   ma20: number | null,
   ma60: number | null,
 ): boolean {
-  return ma5 != null && ma10 != null && ma20 != null && ma60 != null
-    && price > ma5
-    && price > ma60
-    && ma5 > ma10
-    && ma10 > ma20;
+  return (
+    ma5 != null &&
+    ma10 != null &&
+    ma20 != null &&
+    ma60 != null &&
+    price > ma5 &&
+    price > ma60 &&
+    ma5 > ma10 &&
+    ma10 > ma20
+  );
 }
 
 /**
@@ -68,28 +73,44 @@ export function calculateMultiMovingAverageUpSignal(
   candles: DailyPrice[],
   asOfDate?: string | null,
 ): MultiMovingAverageUpSignal | null {
-  const effective = asOfDate ? candles.filter((candle) => candle.date <= asOfDate) : candles;
+  const effective = asOfDate
+    ? candles.filter((candle) => candle.date <= asOfDate)
+    : candles;
   if (effective.length < 21) return null;
-  if (effective.some((candle) => !Number.isFinite(candle.close) || candle.close <= 0)) return null;
+  if (
+    effective.some(
+      (candle) => !Number.isFinite(candle.close) || candle.close <= 0,
+    )
+  )
+    return null;
   const indicators = calculateIndicators(effective);
   const current = indicators.at(-1);
   const previous = indicators.at(-2);
   const latestClose = effective.at(-1)?.close;
   if (
-    latestClose == null || latestClose <= 0
-    || current?.ma5 == null || current.ma10 == null || current.ma20 == null
-    || previous?.ma5 == null || previous.ma10 == null || previous.ma20 == null
-  ) return null;
+    latestClose == null ||
+    latestClose <= 0 ||
+    current?.ma5 == null ||
+    current.ma10 == null ||
+    current.ma20 == null ||
+    previous?.ma5 == null ||
+    previous.ma10 == null ||
+    previous.ma20 == null
+  )
+    return null;
 
   const periods = [5, 10, 20] as const;
   const currentMas = [current.ma5, current.ma10, current.ma20] as const;
   const previousMas = [previous.ma5, previous.ma10, previous.ma20] as const;
-  const outgoingCloses = periods.map((period) => effective[effective.length - period].close);
-  const slopes = currentMas.map((value, index) => round(((value - previousMas[index]) / previousMas[index]) * 100, 4));
-  const projected = currentMas.map((value, index) => round(
-    value + (latestClose - outgoingCloses[index]) / periods[index],
-    4,
-  ));
+  const outgoingCloses = periods.map(
+    (period) => effective[effective.length - period].close,
+  );
+  const slopes = currentMas.map((value, index) =>
+    round(((value - previousMas[index]) / previousMas[index]) * 100, 4),
+  );
+  const projected = currentMas.map((value, index) =>
+    round(value + (latestClose - outgoingCloses[index]) / periods[index], 4),
+  );
   const nextDayUpMinimumClose = Math.max(...outgoingCloses);
   const continuationBufferPercent = round(
     ((latestClose - nextDayUpMinimumClose) / nextDayUpMinimumClose) * 100,
@@ -115,8 +136,9 @@ export function calculateMultiMovingAverageUpSignal(
       current.ma20,
       current.ma60,
     ),
-    matches: currentMas.every((value, index) => value > previousMas[index])
-      && outgoingCloses.every((outgoingClose) => latestClose > outgoingClose),
+    matches:
+      currentMas.every((value, index) => value > previousMas[index]) &&
+      outgoingCloses.every((outgoingClose) => latestClose > outgoingClose),
   };
 }
 
@@ -149,7 +171,8 @@ export function detectSingleKdBullishDivergence(
     .filter(({ point }) => point?.k != null && point?.d != null);
   if (!recentCandidates.length) return null;
   const recent = recentCandidates.reduce((lowest, item) =>
-    item.candle.low < lowest.candle.low ? item : lowest);
+    item.candle.low < lowest.candle.low ? item : lowest,
+  );
   const priorEnd = recent.index - 4;
   const priorStart = Math.max(8, recent.index - lookback);
   if (priorEnd < priorStart) return null;
@@ -159,15 +182,19 @@ export function detectSingleKdBullishDivergence(
     .filter(({ point }) => point?.k != null && point?.d != null);
   if (!priorCandidates.length) return null;
   const prior = priorCandidates.reduce((lowest, item) =>
-    item.candle.low < lowest.candle.low ? item : lowest);
+    item.candle.low < lowest.candle.low ? item : lowest,
+  );
   const previousK = prior.point.k!;
   const previousD = prior.point.d!;
   const currentK = recent.point.k!;
   const currentD = recent.point.d!;
   const priceMadeLowerLow = recent.candle.low < prior.candle.low * 0.999;
-  const bothInLowZone = Math.max(previousK, previousD, currentK, currentD) <= 30;
-  const oscillatorMadeHigherLow = currentK >= previousK + 2 && currentD > previousD;
-  if (!priceMadeLowerLow || !bothInLowZone || !oscillatorMadeHigherLow) return null;
+  const bothInLowZone =
+    Math.max(previousK, previousD, currentK, currentD) <= 30;
+  const oscillatorMadeHigherLow =
+    currentK >= previousK + 2 && currentD > previousD;
+  if (!priceMadeLowerLow || !bothInLowZone || !oscillatorMadeHigherLow)
+    return null;
   return {
     previousDate: prior.candle.date,
     currentDate: recent.candle.date,
@@ -177,7 +204,9 @@ export function detectSingleKdBullishDivergence(
     previousD,
     currentK,
     currentD,
-    strength: Math.round((((currentK - previousK) + (currentD - previousD)) / 2) * 100) / 100,
+    strength:
+      Math.round(((currentK - previousK + (currentD - previousD)) / 2) * 100) /
+      100,
   };
 }
 
@@ -187,27 +216,37 @@ export function detectDoubleKdBullishDivergence(
   lookback = 45,
 ): KdBullishDivergenceResult | null {
   if (candles.length < 18 || kd.length !== candles.length) return null;
-  const candidates = candles.map((candle, index) => ({ candle, point: kd[index], index }));
-  const recentCandidates = candidates.slice(Math.max(8, candles.length - 3))
+  const candidates = candles.map((candle, index) => ({
+    candle,
+    point: kd[index],
+    index,
+  }));
+  const recentCandidates = candidates
+    .slice(Math.max(8, candles.length - 3))
     .filter(({ point }) => point?.k != null && point?.d != null);
   if (!recentCandidates.length) return null;
   const recent = recentCandidates.reduce((lowest, item) =>
-    item.candle.low < lowest.candle.low ? item : lowest);
+    item.candle.low < lowest.candle.low ? item : lowest,
+  );
   const sequenceStart = Math.max(8, recent.index - lookback);
   const middleEnd = recent.index - 4;
   if (middleEnd < sequenceStart) return null;
-  const middleCandidates = candidates.slice(sequenceStart, middleEnd + 1)
+  const middleCandidates = candidates
+    .slice(sequenceStart, middleEnd + 1)
     .filter(({ point }) => point?.k != null && point?.d != null);
   if (!middleCandidates.length) return null;
   const middle = middleCandidates.reduce((lowest, item) =>
-    item.candle.low < lowest.candle.low ? item : lowest);
+    item.candle.low < lowest.candle.low ? item : lowest,
+  );
   const previousEnd = middle.index - 4;
   if (previousEnd < sequenceStart) return null;
-  const previousCandidates = candidates.slice(sequenceStart, previousEnd + 1)
+  const previousCandidates = candidates
+    .slice(sequenceStart, previousEnd + 1)
     .filter(({ point }) => point?.k != null && point?.d != null);
   if (!previousCandidates.length) return null;
   const previous = previousCandidates.reduce((lowest, item) =>
-    item.candle.low < lowest.candle.low ? item : lowest);
+    item.candle.low < lowest.candle.low ? item : lowest,
+  );
 
   const previousK = previous.point.k!;
   const previousD = previous.point.d!;
@@ -215,11 +254,16 @@ export function detectDoubleKdBullishDivergence(
   const middleD = middle.point.d!;
   const currentK = recent.point.k!;
   const currentD = recent.point.d!;
-  const priceThreeLowerLows = previous.candle.low > middle.candle.low * 1.001
-    && middle.candle.low > recent.candle.low * 1.001;
-  const allInLowZone = Math.max(previousK, previousD, middleK, middleD, currentK, currentD) <= 30;
-  const kdThreeHigherLows = middleK >= previousK + 2 && middleD > previousD
-    && currentK >= middleK + 2 && currentD > middleD;
+  const priceThreeLowerLows =
+    previous.candle.low > middle.candle.low * 1.001 &&
+    middle.candle.low > recent.candle.low * 1.001;
+  const allInLowZone =
+    Math.max(previousK, previousD, middleK, middleD, currentK, currentD) <= 30;
+  const kdThreeHigherLows =
+    middleK >= previousK + 2 &&
+    middleD > previousD &&
+    currentK >= middleK + 2 &&
+    currentD > middleD;
   if (!priceThreeLowerLows || !allInLowZone || !kdThreeHigherLows) return null;
   return {
     previousDate: previous.candle.date,
@@ -234,47 +278,91 @@ export function detectDoubleKdBullishDivergence(
     middleD,
     currentK,
     currentD,
-    strength: Math.round((((currentK - previousK) + (currentD - previousD)) / 2) * 100) / 100,
+    strength:
+      Math.round(((currentK - previousK + (currentD - previousD)) / 2) * 100) /
+      100,
   };
 }
 
-export function estimateMacdBarsToPositive(values: Pick<StrategySignalValues,
-  "twoPreviousHistogram" | "previousHistogram" | "currentHistogram"
->): number | null {
+export function estimateMacdBarsToPositive(
+  values: Pick<
+    StrategySignalValues,
+    "twoPreviousHistogram" | "previousHistogram" | "currentHistogram"
+  >,
+): number | null {
   const older = values.twoPreviousHistogram;
   const previous = values.previousHistogram;
   const current = values.currentHistogram;
-  if (older == null || previous == null || current == null || older >= 0 || previous >= 0 || current >= 0) return null;
+  if (
+    older == null ||
+    previous == null ||
+    current == null ||
+    older >= 0 ||
+    previous >= 0 ||
+    current >= 0
+  )
+    return null;
 
   const olderImprovement = previous - older;
   const currentImprovement = current - previous;
-  if (olderImprovement <= 0 || currentImprovement <= 0 || currentImprovement < olderImprovement * 0.5) return null;
+  if (
+    olderImprovement <= 0 ||
+    currentImprovement <= 0 ||
+    currentImprovement < olderImprovement * 0.5
+  )
+    return null;
 
   const averageImprovement = (olderImprovement + currentImprovement) / 2;
   if (averageImprovement <= 0) return null;
   return Math.round((Math.abs(current) / averageImprovement) * 10) / 10;
 }
 
-export function matchesManualStrategy(strategy: ManualStrategy, values: StrategySignalValues): boolean {
+export function matchesManualStrategy(
+  strategy: ManualStrategy,
+  values: StrategySignalValues,
+): boolean {
   if (strategy.deductionDirection) return false;
-  if (strategy.signalMode === "kd-bullish-divergence" || strategy.signalMode === "kd-double-bullish-divergence") return false;
+  if (
+    strategy.signalMode === "kd-bullish-divergence" ||
+    strategy.signalMode === "kd-double-bullish-divergence"
+  )
+    return false;
   if (strategy.signalMode === "ma-multi-up") return false;
+  if (strategy.signalMode === "ma-seasonal") return false;
   if (strategy.signalMode === "kd-below") {
     const threshold = strategy.kdThreshold ?? 8;
-    return values.currentK != null && values.currentD != null
-      && values.currentK < threshold && values.currentD < threshold;
+    return (
+      values.currentK != null &&
+      values.currentD != null &&
+      values.currentK < threshold &&
+      values.currentD < threshold
+    );
   }
-  const macdFirstPositive = values.previousHistogram != null && values.currentHistogram != null
-    && values.previousHistogram < 0 && values.currentHistogram > 0;
+  const macdFirstPositive =
+    values.previousHistogram != null &&
+    values.currentHistogram != null &&
+    values.previousHistogram < 0 &&
+    values.currentHistogram > 0;
   const estimatedBarsToCross = estimateMacdBarsToPositive(values);
-  const macdForecastPositive = estimatedBarsToCross != null && estimatedBarsToCross <= 2;
-  const kdGoldenCrossBelow50 = values.previousK != null && values.previousD != null
-    && values.currentK != null && values.currentD != null
-    && values.previousK < values.previousD && values.currentK > values.currentD && values.currentK < 50;
-  const matchesMacd = strategy.signalMode === "forecast" ? macdForecastPositive : macdFirstPositive;
-  return matchesMacd
-    && values.dailyVolumeShares > strategy.volumeThreshold
-    && (!strategy.requiresKD || kdGoldenCrossBelow50);
+  const macdForecastPositive =
+    estimatedBarsToCross != null && estimatedBarsToCross <= 2;
+  const kdGoldenCrossBelow50 =
+    values.previousK != null &&
+    values.previousD != null &&
+    values.currentK != null &&
+    values.currentD != null &&
+    values.previousK < values.previousD &&
+    values.currentK > values.currentD &&
+    values.currentK < 50;
+  const matchesMacd =
+    strategy.signalMode === "forecast"
+      ? macdForecastPositive
+      : macdFirstPositive;
+  return (
+    matchesMacd &&
+    values.dailyVolumeShares > strategy.volumeThreshold &&
+    (!strategy.requiresKD || kdGoldenCrossBelow50)
+  );
 }
 
 export function evaluateManualStrategy(
@@ -284,7 +372,9 @@ export function evaluateManualStrategy(
   signalStatus: "temporary" | "confirmed" = "confirmed",
   asOfDate?: string | null,
 ): ManualScreenRow | null {
-  const effectivePrices = asOfDate ? prices.filter((price) => price.date <= asOfDate) : prices;
+  const effectivePrices = asOfDate
+    ? prices.filter((price) => price.date <= asOfDate)
+    : prices;
   const dailyLatest = effectivePrices.at(-1);
   const dailyPrevious = effectivePrices.at(-2);
   const candles = resampleCandles(effectivePrices, strategy.timeframe);
@@ -296,36 +386,85 @@ export function evaluateManualStrategy(
   const twoPreviousIndicator = indicators.at(-3);
   const kdPoint = kd.at(-1);
   const previousKdPoint = kd.at(-2);
-  const divergence = strategy.signalMode === "kd-bullish-divergence"
-    ? detectSingleKdBullishDivergence(candles, kd, strategy.divergenceLookback ?? 30)
-    : strategy.signalMode === "kd-double-bullish-divergence"
-      ? detectDoubleKdBullishDivergence(candles, kd, strategy.divergenceLookback ?? 45)
+  const divergence =
+    strategy.signalMode === "kd-bullish-divergence"
+      ? detectSingleKdBullishDivergence(
+          candles,
+          kd,
+          strategy.divergenceLookback ?? 30,
+        )
+      : strategy.signalMode === "kd-double-bullish-divergence"
+        ? detectDoubleKdBullishDivergence(
+            candles,
+            kd,
+            strategy.divergenceLookback ?? 45,
+          )
+        : null;
+  const multiMaUp =
+    strategy.signalMode === "ma-multi-up"
+      ? calculateMultiMovingAverageUpSignal(candles)
       : null;
-  const multiMaUp = strategy.signalMode === "ma-multi-up"
-    ? calculateMultiMovingAverageUpSignal(candles)
-    : null;
   if (!dailyLatest || !dailyPrevious || !latest) return null;
   if (strategy.signalMode === "ma-multi-up" && !multiMaUp?.matches) return null;
+  const seasonalIndicators =
+    strategy.signalMode === "ma-seasonal"
+      ? calculateIndicators(effectivePrices).at(-1)
+      : null;
+  const seasonalValues =
+    seasonalIndicators &&
+    seasonalIndicators.ma5 != null &&
+    seasonalIndicators.ma10 != null &&
+    seasonalIndicators.ma20 != null &&
+    seasonalIndicators.ma60 != null
+      ? {
+          ma5: seasonalIndicators.ma5,
+          ma10: seasonalIndicators.ma10,
+          ma20: seasonalIndicators.ma20,
+          ma60: seasonalIndicators.ma60,
+        }
+      : null;
+  const seasonalMatches =
+    seasonalValues != null &&
+    dailyLatest.close > seasonalValues.ma60 &&
+    (strategy.id === "season-above-ma60" ||
+      (strategy.id === "season-ma20-above-ma60" &&
+        seasonalValues.ma20 > seasonalValues.ma60) ||
+      (strategy.id === "season-ma10-above-ma20-above-ma60" &&
+        seasonalValues.ma10 > seasonalValues.ma20 &&
+        seasonalValues.ma20 > seasonalValues.ma60) ||
+      (strategy.id === "season-full-bullish-stack" &&
+        seasonalValues.ma5 > seasonalValues.ma10 &&
+        seasonalValues.ma10 > seasonalValues.ma20 &&
+        seasonalValues.ma20 > seasonalValues.ma60));
+  if (strategy.signalMode === "ma-seasonal" && !seasonalMatches) return null;
   const deduction = strategy.deductionDirection
     ? calculateThreePeriodDeductionSignal(
-      candles.map((candle) => candle.close),
-      strategy.maPeriod ?? 20,
-    )
+        candles.map((candle) => candle.close),
+        strategy.maPeriod ?? 20,
+      )
     : null;
-  const deductionMatches = strategy.deductionDirection === "low"
-    ? deduction?.matchesLow
-    : strategy.deductionDirection === "high"
-      ? deduction?.matchesHigh
-      : false;
+  const deductionMatches =
+    strategy.deductionDirection === "low"
+      ? deduction?.matchesLow
+      : strategy.deductionDirection === "high"
+        ? deduction?.matchesHigh
+        : false;
   if (strategy.deductionDirection && !deductionMatches) return null;
   const kdThresholdStrategy = strategy.signalMode === "kd-below";
-  const kdDivergenceStrategy = strategy.signalMode === "kd-bullish-divergence"
-    || strategy.signalMode === "kd-double-bullish-divergence";
+  const kdDivergenceStrategy =
+    strategy.signalMode === "kd-bullish-divergence" ||
+    strategy.signalMode === "kd-double-bullish-divergence";
   if (kdThresholdStrategy && !kdPoint) return null;
   if (kdDivergenceStrategy && !divergence) return null;
-  if (!strategy.deductionDirection && !kdThresholdStrategy && !kdDivergenceStrategy
-    && strategy.signalMode !== "ma-multi-up"
-    && (!indicator || !previousIndicator || !kdPoint || !previousKdPoint)) return null;
+  if (
+    !strategy.deductionDirection &&
+    !kdThresholdStrategy &&
+    !kdDivergenceStrategy &&
+    strategy.signalMode !== "ma-multi-up" &&
+    strategy.signalMode !== "ma-seasonal" &&
+    (!indicator || !previousIndicator || !kdPoint || !previousKdPoint)
+  )
+    return null;
   const signalValues = {
     twoPreviousHistogram: twoPreviousIndicator?.histogram ?? null,
     previousHistogram: previousIndicator?.histogram ?? null,
@@ -336,25 +475,41 @@ export function evaluateManualStrategy(
     currentD: kdPoint?.d ?? null,
     dailyVolumeShares: dailyLatest.volume,
   };
-  if (!strategy.deductionDirection && !kdDivergenceStrategy
-    && strategy.signalMode !== "ma-multi-up"
-    && !matchesManualStrategy(strategy, signalValues)) return null;
+  if (
+    !strategy.deductionDirection &&
+    !kdDivergenceStrategy &&
+    strategy.signalMode !== "ma-multi-up" &&
+    strategy.signalMode !== "ma-seasonal" &&
+    !matchesManualStrategy(strategy, signalValues)
+  )
+    return null;
   return {
-    rank: 0, symbol: meta.symbol, name: meta.name, market: meta.market,
-    price: dailyLatest.close, changePercent: ((dailyLatest.close - dailyPrevious.close) / dailyPrevious.close) * 100,
-    volume: dailyLatest.volume, timeframe: strategy.timeframe,
-    dif: indicator?.dif ?? null, signal: indicator?.signal ?? null, histogram: indicator?.histogram ?? null,
+    rank: 0,
+    symbol: meta.symbol,
+    name: meta.name,
+    market: meta.market,
+    price: dailyLatest.close,
+    changePercent:
+      ((dailyLatest.close - dailyPrevious.close) / dailyPrevious.close) * 100,
+    volume: dailyLatest.volume,
+    timeframe: strategy.timeframe,
+    dif: indicator?.dif ?? null,
+    signal: indicator?.signal ?? null,
+    histogram: indicator?.histogram ?? null,
     signalMode: strategy.signalMode,
-    estimatedBarsToCross: strategy.signalMode === "forecast" ? estimateMacdBarsToPositive(signalValues) : null,
+    estimatedBarsToCross:
+      strategy.signalMode === "forecast"
+        ? estimateMacdBarsToPositive(signalValues)
+        : null,
     maPeriod: deduction?.maPeriod,
     deductionValues: deduction?.deductionValues,
     deductionAverage: deduction?.deductionAverage,
     deductionGapPercent: deduction?.deductionGapPercent,
     projectedMaValues: deduction?.projectedMaValues,
-    ma5: multiMaUp?.ma5,
-    ma10: multiMaUp?.ma10,
-    ma20: multiMaUp?.ma20,
-    ma60: multiMaUp?.ma60,
+    ma5: multiMaUp?.ma5 ?? seasonalValues?.ma5,
+    ma10: multiMaUp?.ma10 ?? seasonalValues?.ma10,
+    ma20: multiMaUp?.ma20 ?? seasonalValues?.ma20,
+    ma60: multiMaUp?.ma60 ?? seasonalValues?.ma60,
     ma5SlopePercent: multiMaUp?.ma5SlopePercent,
     ma10SlopePercent: multiMaUp?.ma10SlopePercent,
     ma20SlopePercent: multiMaUp?.ma20SlopePercent,
@@ -377,34 +532,62 @@ export function evaluateManualStrategy(
   } satisfies ManualScreenRow;
 }
 
-export async function screenStocksByStrategy(strategyId: string): Promise<ManualScreenRow[]> {
+export async function screenStocksByStrategy(
+  strategyId: string,
+): Promise<ManualScreenRow[]> {
   const strategy = MANUAL_STRATEGIES.find((item) => item.id === strategyId);
   if (!strategy) throw new Error("不存在的選股策略");
   const quotes = await getOfficialQuotes(stockCatalog);
-  const results = await Promise.all(stockCatalog.map(async (meta): Promise<ManualScreenRow | null> => {
-    try {
-      const stock = await buildOfficialStockPayload(meta, quotes.get(meta.symbol) ?? null);
-      return evaluateManualStrategy(
-        meta,
-        stock.prices,
-        strategy,
-        stock.dataQuality?.status === "official_close" ? "confirmed" : "temporary",
-      );
-    } catch {
-      return null;
-    }
-  }));
-  return results.filter((row): row is ManualScreenRow => row !== null)
-    .sort((a, b) => strategy.signalMode === "ma-multi-up"
-      ? (b.continuationBufferPercent ?? -Infinity) - (a.continuationBufferPercent ?? -Infinity)
-        || Math.min(b.ma5SlopePercent ?? -Infinity, b.ma10SlopePercent ?? -Infinity, b.ma20SlopePercent ?? -Infinity)
-        - Math.min(a.ma5SlopePercent ?? -Infinity, a.ma10SlopePercent ?? -Infinity, a.ma20SlopePercent ?? -Infinity)
-      : strategy.deductionDirection
-      ? Math.abs(b.deductionGapPercent ?? 0) - Math.abs(a.deductionGapPercent ?? 0)
-      : strategy.signalMode === "kd-below"
-        ? Math.max(a.k ?? Infinity, a.d ?? Infinity) - Math.max(b.k ?? Infinity, b.d ?? Infinity)
-      : strategy.signalMode === "kd-bullish-divergence" || strategy.signalMode === "kd-double-bullish-divergence"
-        ? (b.divergenceStrength ?? -Infinity) - (a.divergenceStrength ?? -Infinity)
-      : (b.histogram ?? -Infinity) - (a.histogram ?? -Infinity))
+  const results = await Promise.all(
+    stockCatalog.map(async (meta): Promise<ManualScreenRow | null> => {
+      try {
+        const stock = await buildOfficialStockPayload(
+          meta,
+          quotes.get(meta.symbol) ?? null,
+        );
+        return evaluateManualStrategy(
+          meta,
+          stock.prices,
+          strategy,
+          stock.dataQuality?.status === "official_close"
+            ? "confirmed"
+            : "temporary",
+        );
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return results
+    .filter((row): row is ManualScreenRow => row !== null)
+    .sort((a, b) =>
+      strategy.signalMode === "ma-seasonal"
+        ? (b.price - (b.ma60 ?? b.price)) / (b.ma60 ?? b.price) -
+          (a.price - (a.ma60 ?? a.price)) / (a.ma60 ?? a.price)
+        : strategy.signalMode === "ma-multi-up"
+          ? (b.continuationBufferPercent ?? -Infinity) -
+              (a.continuationBufferPercent ?? -Infinity) ||
+            Math.min(
+              b.ma5SlopePercent ?? -Infinity,
+              b.ma10SlopePercent ?? -Infinity,
+              b.ma20SlopePercent ?? -Infinity,
+            ) -
+              Math.min(
+                a.ma5SlopePercent ?? -Infinity,
+                a.ma10SlopePercent ?? -Infinity,
+                a.ma20SlopePercent ?? -Infinity,
+              )
+          : strategy.deductionDirection
+            ? Math.abs(b.deductionGapPercent ?? 0) -
+              Math.abs(a.deductionGapPercent ?? 0)
+            : strategy.signalMode === "kd-below"
+              ? Math.max(a.k ?? Infinity, a.d ?? Infinity) -
+                Math.max(b.k ?? Infinity, b.d ?? Infinity)
+              : strategy.signalMode === "kd-bullish-divergence" ||
+                  strategy.signalMode === "kd-double-bullish-divergence"
+                ? (b.divergenceStrength ?? -Infinity) -
+                  (a.divergenceStrength ?? -Infinity)
+                : (b.histogram ?? -Infinity) - (a.histogram ?? -Infinity),
+    )
     .map((row, index) => ({ ...row, rank: index + 1 }));
 }

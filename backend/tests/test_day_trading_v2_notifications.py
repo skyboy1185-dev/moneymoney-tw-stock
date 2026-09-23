@@ -180,6 +180,38 @@ def test_disabled_hourly_email_is_explicitly_handled_without_delivery(notificati
         assert row.title == "當沖機器人2"
 
 
+def test_trade_fill_email_is_disabled_by_default_and_queue_is_drained(notification_queue, monkeypatch):
+    sessions, current = notification_queue
+    current[0] = datetime(2026, 9, 8, 1, 0, tzinfo=UTC)
+    notification_id = add_notification(sessions, current, event_id="fill:order-1", event_type="BUY_FILLED")
+    dispatcher = FakeDispatcher()
+    monkeypatch.setattr(automation, "gmail_notification_dispatcher", dispatcher)
+
+    assert asyncio.run(automation.DayTradingV2Coordinator().dispatch_pending()) == 0
+    assert dispatcher.calls == []
+    with sessions() as db:
+        row = db.get(DayTradeV2Notification, notification_id)
+        assert row.email_sent
+        assert json.loads(row.payload_json)["emailDeliveryStatus"] == "SKIPPED_DISABLED"
+
+
+def test_trade_fill_email_can_be_enabled_explicitly(notification_queue, monkeypatch):
+    sessions, current = notification_queue
+    current[0] = datetime(2026, 9, 8, 1, 0, tzinfo=UTC)
+    notification_id = add_notification(sessions, current, event_id="fill:order-2", event_type="BUY_FILLED")
+    with sessions() as db:
+        setting = db.get(DayTradeV2Setting, "notification-user")
+        setting.config_json = json.dumps({"emailTradeFills": True})
+        db.commit()
+    dispatcher = FakeDispatcher()
+    dispatcher.completed.add("dtv2-email:fill:order-2")
+    monkeypatch.setattr(automation, "gmail_notification_dispatcher", dispatcher)
+
+    assert asyncio.run(automation.DayTradingV2Coordinator().dispatch_pending()) == 1
+    with sessions() as db:
+        assert db.get(DayTradeV2Notification, notification_id).email_sent
+
+
 def test_delivery_exception_does_not_block_following_notification(notification_queue, monkeypatch):
     sessions, current = notification_queue
     add_notification(sessions, current, "bad")

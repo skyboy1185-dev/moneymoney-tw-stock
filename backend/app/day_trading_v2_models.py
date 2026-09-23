@@ -234,6 +234,8 @@ class DayTradeV2Notification(Base):
     payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     email_sent: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    email_delivery_status: Mapped[str] = mapped_column(String(30), nullable=False, default="PENDING")
+    email_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     email_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 

@@ -81,6 +81,7 @@ DEFAULT_CONFIG: dict[str, object] = {
     "emailOpeningRange": True,
     "emailHourlySummary": False,
     "emailCloseReport": True,
+    "emailTradeFills": False,
     "controllerMinimumScore": "80",
     "controllerMinimumRiskReward": "2",
     "controllerMinLiquidityScore": "70",
@@ -171,6 +172,28 @@ def merged_config(custom: Mapping[str, object] | None = None) -> dict[str, objec
     result = dict(DEFAULT_CONFIG)
     if custom:
         result.update({key: value for key, value in custom.items() if key in result})
+    return result
+
+
+def strict_execution_config(custom: Mapping[str, object] | None = None) -> dict[str, object]:
+    """Apply non-negotiable paper/live risk floors without altering research backtests."""
+    result = merged_config(custom)
+    floors = {
+        "minimumConfidence": Decimal("85"), "minimumRiskReward": Decimal("2.0"),
+        "controllerMinimumScore": Decimal("85"), "controllerMinimumRiskReward": Decimal("2.0"),
+        "controllerMinLiquidityScore": Decimal("80"), "riskGateThreshold": Decimal("85"),
+    }
+    ceilings = {
+        "maxRiskPerTrade": Decimal("3000"), "dailyReduceLoss": Decimal("6000"),
+        "dailyStopLoss": Decimal("9000"), "maximumSpreadPct": Decimal("0.3"),
+        "maximumVwapDeviationPct": Decimal("1.0"),
+    }
+    for key, floor in floors.items():result[key] = str(max(dec(result[key]), floor))
+    for key, ceiling in ceilings.items():result[key] = str(min(dec(result[key]), ceiling))
+    result["maxOpenPositions"] = min(int(result["maxOpenPositions"]), 1)
+    result["maxSectorPositions"] = min(int(result["maxSectorPositions"]), 1)
+    result["maxConsecutiveLosses"] = min(int(result["maxConsecutiveLosses"]), 2)
+    if time.fromisoformat(str(result["latestEntryTime"])) > time(12, 0):result["latestEntryTime"] = "12:00:00"
     return result
 
 
@@ -789,7 +812,8 @@ def market_gate_reasons(
         (market_crashing, "大盤急跌"), (not quote_reliable, "即時行情不可靠"),
         (volume < int(cfg["minimumVolume"]), "成交量不足"),
         (dec(turnover) < dec(cfg["minimumTurnover"]), "成交金額不足"),
-        (dec(spread_pct) > dec(cfg["maximumSpreadPct"]), "買賣價差過大"),
+        (spread_pct is None, "五檔行情缺失或逾時"),
+        (spread_pct is not None and dec(spread_pct) > dec(cfg["maximumSpreadPct"]), "買賣價差過大"),
         (abs(dec(vwap_deviation_pct)) > dec(cfg["maximumVwapDeviationPct"]), "偏離VWAP過遠"),
         (blocked, "股票位於禁止名單"), (not connection_ok, "系統或券商連線異常"),
         (dec(available_capital) <= 0, "可用資金不足"),

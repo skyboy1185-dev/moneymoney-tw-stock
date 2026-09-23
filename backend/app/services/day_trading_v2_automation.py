@@ -21,20 +21,19 @@ from ..day_trading_v2_models import (
     DayTradeV2RuntimeState, DayTradeV2ScheduleEvent, DayTradeV2Setting, DayTradeV2Trade,
 )
 from .worker_supervision import supervise
-from .day_trading_v2 import merged_config
+from .day_trading_v2 import strict_execution_config
 from .day_trading_v2_schedule import at_time, event_schedule, is_trading_day, trading_phase
 from .day_trading import day_trading_engine
 from .gmail_messaging import gmail_notification_dispatcher
+from .day_trading_email_policy import CRITICAL_EVENTS, email_is_deliverable
 from .popular_stock_universe import OfficialPopularStockProvider, merge_momentum_stocks
 
 
 logger = logging.getLogger(__name__)
 TAIPEI = ZoneInfo("Asia/Taipei")
 EMAIL_EVENT_TYPES = {
-    "QUOTE_SOURCE_SWITCHED", "QUOTE_SOURCE_RECOVERED",
-    "BUY_FILLED", "SELL_FILLED", "ROBOT_HALTED", "EMERGENCY_STOP",
-    "MARKET_DATA_INTERRUPTED", "BROKER_DISCONNECTED", "RISK_REDUCED", "DAILY_LOSS_LIMIT",
-    "SYSTEM_HEARTBEAT_INTERRUPTED", "PREOPEN_READY", "OPENING_RANGE_READY", "HOURLY_SUMMARY", "DAILY_REPORT",
+    "BUY_FILLED", "SELL_FILLED", "PREOPEN_READY", "OPENING_RANGE_READY",
+    "HOURLY_SUMMARY", "DAILY_REPORT", *CRITICAL_EVENTS,
 }
 
 
@@ -79,6 +78,7 @@ class DayTradingV2Coordinator:
         self._task: asyncio.Task | None = None
         self._optimization_task: asyncio.Task | None = None
         self._backtest_task: asyncio.Task | None = None
+        self._notification_task: asyncio.Task | None = None
         self._learning_task: asyncio.Task | None = None
         self._stop = asyncio.Event()
         self.supervision = {}
@@ -89,12 +89,15 @@ class DayTradingV2Coordinator:
             return
         self._stop.clear()
         self._task = asyncio.create_task(supervise(self._run, self.supervision, stopping=self._stop.is_set), name="day-trading-v2-coordinator")
+        self._notification_task = asyncio.create_task(self._run_notifications(), name="day-trading-v2-notifications")
         self._learning_task = asyncio.create_task(self._run_learning(), name="day-trading-v2-learning")
 
     async def stop(self) -> None:
         self._stop.set()
         if self._task:
             await self._task
+        if self._notification_task:
+            await self._notification_task
         if self._optimization_task:
             await self._optimization_task
         if self._backtest_task:
@@ -102,8 +105,21 @@ class DayTradingV2Coordinator:
         if self._learning_task:
             await self._learning_task
         self._task = None
+        self._notification_task = None
         self._optimization_task = None
         self._backtest_task = None
+
+    async def _run_notifications(self) -> None:
+        # Delivery retries must never delay scanning or its liveness heartbeat.
+        while not self._stop.is_set():
+            try:
+                await self.dispatch_pending()
+            except Exception:
+                logger.exception("day-trading-v2 notification worker failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=1)
+            except TimeoutError:
+                pass
 
     async def _run_learning(self) -> None:
         from .day_trading_v2_learning import process_learning_cycle
@@ -123,7 +139,6 @@ class DayTradingV2Coordinator:
         while not self._stop.is_set():
             try:
                 await asyncio.to_thread(self.run_cycle)
-                await self.dispatch_pending()
                 if self._backtest_task is None or self._backtest_task.done():
                     from .day_trading_v2_backtests import process_next_backtest_job
                     self._backtest_task = asyncio.create_task(asyncio.to_thread(process_next_backtest_job))
@@ -192,11 +207,14 @@ class DayTradingV2Coordinator:
                     setting = db.get(DayTradeV2Setting, user_id)
                     if setting is None:
                         continue
-                    config = merged_config(_json(setting.config_json, {}))
+                    config = strict_execution_config(_json(setting.config_json, {}))
                     try:
                         self._refresh_calendar(db, local.year)
                     except Exception as exc:
                         logger.warning("TWSE calendar refresh failed; using cached/configured holidays: %s", exc)
+                    # Earlier users and calendar I/O may have consumed the cycle timestamp.
+                    current = now or datetime.now(UTC)
+                    local = current.astimezone(TAIPEI)
                     holidays = _configured_holidays(db)
                     runtime = self._runtime(db, user_id, "PAPER", local.date(), config, current)
                     previous_heartbeat = _aware(runtime.heartbeat_at)
@@ -256,7 +274,7 @@ class DayTradingV2Coordinator:
                     db.commit()
                 if should_scan:
                     with SessionLocal() as db:
-                        _scan_now(user_id, db, coordinator_now=current)
+                        _scan_now(user_id, db, coordinator_now=now)
                 processed += 1
             except RuntimeError:
                 continue
@@ -395,9 +413,18 @@ class DayTradingV2Coordinator:
                     db.rollback()
                     continue
                 setting = db.get(DayTradeV2Setting, row.user_id)
-                config = merged_config(_json(setting.config_json, {})) if setting else merged_config()
+                config = strict_execution_config(_json(setting.config_json, {})) if setting else strict_execution_config()
                 db.commit()
-            enabled = bool(config["emailHourlySummary"]) if row.event_type == "HOURLY_SUMMARY" else bool(config["emailReady"]) if row.event_type == "PREOPEN_READY" else bool(config["emailOpeningRange"]) if row.event_type == "OPENING_RANGE_READY" else bool(config["emailCloseReport"]) if row.event_type == "DAILY_REPORT" else True
+            if not email_is_deliverable(row.event_type, row.created_at, attempted_at):
+                with SessionLocal() as db:
+                    db.execute(update(DayTradeV2Notification).where(
+                        DayTradeV2Notification.id == row.id,
+                        DayTradeV2Notification.email_sent.is_(False),
+                        DayTradeV2Notification.email_attempted_at == attempted_at,
+                    ).values(email_sent=True, email_delivery_status="SKIPPED_EXPIRED"))
+                    db.commit()
+                continue
+            enabled = bool(config["emailTradeFills"]) if row.event_type in {"BUY_FILLED","SELL_FILLED"} else bool(config["emailHourlySummary"]) if row.event_type == "HOURLY_SUMMARY" else bool(config["emailReady"]) if row.event_type == "PREOPEN_READY" else bool(config["emailOpeningRange"]) if row.event_type == "OPENING_RANGE_READY" else bool(config["emailCloseReport"]) if row.event_type == "DAILY_REPORT" else True
             values: dict[str, object] = {}
             if not enabled:
                 # email_sent historically also marks deliberately suppressed events
@@ -405,6 +432,7 @@ class DayTradingV2Coordinator:
                 payload = _json(row.payload_json, {})
                 payload["emailDeliveryStatus"] = "SKIPPED_DISABLED"
                 values["payload_json"] = json.dumps(payload, ensure_ascii=False)
+                values["email_delivery_status"] = "SKIPPED_DISABLED"
                 complete = True
             else:
                 dedupe_key = f"dtv2-email:{row.event_id}"
@@ -415,13 +443,17 @@ class DayTradingV2Coordinator:
                 try:
                     await gmail_notification_dispatcher.dispatch(
                         event_type=email_event_type, action=row.event_type,
-                        message=f"{row.title}\n\n{row.message}", dedupe_key=dedupe_key,
+                        message=f"事件時間：{row.created_at.astimezone(TAIPEI).strftime('%H:%M:%S')}\n{row.title}\n\n{row.message}", dedupe_key=dedupe_key,
                         signal_id=row.event_id, channel_name="超強AI當沖系統",
+                        event_time=row.created_at.astimezone(TAIPEI).strftime("%H:%M:%S"),
                     )
                     complete = gmail_notification_dispatcher.delivery_complete(dedupe_key)
                 except Exception:
                     logger.exception("day-trading-v2 email dispatch failed for notification %s", row.id)
                     complete = False
+                values["email_delivery_status"] = "SENT" if complete else "PENDING_RETRY"
+                if complete:
+                    values["email_sent_at"] = datetime.now(UTC)
             with SessionLocal() as db:
                 stored = db.execute(update(DayTradeV2Notification).where(
                     DayTradeV2Notification.id == row.id,

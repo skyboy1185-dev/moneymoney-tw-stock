@@ -51,18 +51,8 @@ class AIStockLineNotificationDispatcher:
         return sent
 
     async def _dispatch(self, event: LineNotificationEvent) -> int:
-        try:
-            await gmail_notification_dispatcher.dispatch(
-                event_type=event.event_type,
-                action=event.action,
-                message=event.message,
-                dedupe_key=event.dedupe_key,
-                signal_id=event.signal_id,
-                symbol=event.symbol,
-                channel_name=AI_STOCK_OFFICIAL_ACCOUNT_NAME,
-            )
-        except Exception:
-            logger.exception("AI stock Gmail notification failed for %s", event.dedupe_key)
+        # Candidate and recommendation events remain on LINE and in the UI.
+        # Email is sent only after an automation persists an actual fill.
         if not get_settings().ai_stock_line_notifications_enabled:
             return 0
         successful = 0

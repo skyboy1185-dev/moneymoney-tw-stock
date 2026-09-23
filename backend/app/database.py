@@ -156,6 +156,7 @@ def create_tables() -> None:
     from . import models  # noqa: F401
     from . import day_trading_v2_models  # noqa: F401
     from . import strong_stock_models  # noqa: F401
+    from . import prepost_models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
     # create_all does not add columns to an existing PostgreSQL table. Keep the
@@ -187,6 +188,34 @@ def create_tables() -> None:
                 "ADD COLUMN IF NOT EXISTS holding_period VARCHAR(20) NOT NULL DEFAULT 'intraday'"
             ))
             connection.execute(text(
+                "ALTER TABLE prepost_analysis_days "
+                "ADD COLUMN IF NOT EXISTS market_snapshot_json TEXT NOT NULL DEFAULT '{}'"
+            ))
+            connection.execute(text(
+                "ALTER TABLE prepost_analysis_days "
+                "ADD COLUMN IF NOT EXISTS score_breakdown_json TEXT NOT NULL DEFAULT '{}'"
+            ))
+            connection.execute(text(
+                "ALTER TABLE prepost_analysis_days "
+                "ADD COLUMN IF NOT EXISTS pre_market_prediction_json TEXT NOT NULL DEFAULT '{}'"
+            ))
+            connection.execute(text(
+                "ALTER TABLE super_ai_daytrade_notifications "
+                "ADD COLUMN IF NOT EXISTS email_delivery_status VARCHAR(30) NOT NULL DEFAULT 'PENDING'"
+            ))
+            connection.execute(text(
+                "ALTER TABLE super_ai_daytrade_notifications "
+                "ADD COLUMN IF NOT EXISTS email_sent_at TIMESTAMPTZ"
+            ))
+            connection.execute(text(
+                "ALTER TABLE day_trade_v2_notifications "
+                "ADD COLUMN IF NOT EXISTS email_delivery_status VARCHAR(30) NOT NULL DEFAULT 'PENDING'"
+            ))
+            connection.execute(text(
+                "ALTER TABLE day_trade_v2_notifications "
+                "ADD COLUMN IF NOT EXISTS email_sent_at TIMESTAMPTZ"
+            ))
+            connection.execute(text(
                 "ALTER TABLE day_trading_positions "
                 "ADD COLUMN IF NOT EXISTS entry_confidence DOUBLE PRECISION NOT NULL DEFAULT 0"
             ))
@@ -194,6 +223,9 @@ def create_tables() -> None:
                 "ALTER TABLE day_trading_positions "
                 "ADD COLUMN IF NOT EXISTS strategy_confidence DOUBLE PRECISION NOT NULL DEFAULT 0"
             ))
+            connection.execute(text("ALTER TABLE strong_stock_orders ADD COLUMN IF NOT EXISTS execution_json TEXT NOT NULL DEFAULT '{}'"))
+            connection.execute(text("ALTER TABLE strong_stock_positions ADD COLUMN IF NOT EXISTS execution_json TEXT NOT NULL DEFAULT '{}'"))
+            connection.execute(text("ALTER TABLE strong_stock_trades ADD COLUMN IF NOT EXISTS execution_json TEXT NOT NULL DEFAULT '{}'"))
             connection.execute(text(
                 "ALTER TABLE adaptive_paper_trades "
                 "ADD COLUMN IF NOT EXISTS side VARCHAR(10) NOT NULL DEFAULT 'LONG'"

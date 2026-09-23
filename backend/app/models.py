@@ -964,6 +964,8 @@ class SuperAIDaytradeNotification(Base):
     risk_reward: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     dedupe_key: Mapped[str] = mapped_column(String(220), nullable=False)
     email_sent: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    email_delivery_status: Mapped[str] = mapped_column(String(30), nullable=False, default="PENDING")
+    email_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     popup_shown: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

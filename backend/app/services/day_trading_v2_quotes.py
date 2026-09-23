@@ -15,12 +15,21 @@ def fresh_quote(quote, now: datetime, timeout: int) -> bool:
     return trusted_quote(quote, now, timeout)
 
 
+def entry_spread(quote, now: datetime, timeout: int):
+    """Missing/stale books are not a measured 999-percent spread."""
+    if not trusted_quote(quote, now, timeout, require_book=True):
+        return None
+    return (quote.best_ask - quote.best_bid) / quote.price * 100
+
+
 def quote_health(quotes: dict, now: datetime, timeout: int, diagnostics: dict | None = None) -> dict:
     diagnostics = diagnostics or {}
     fresh = sum(fresh_quote(quote, now, timeout) for quote in quotes.values())
+    fresh_books = sum(trusted_quote(quote, now, timeout, require_book=True) for quote in quotes.values())
     tracked = max(len(quotes), int(diagnostics.get("trackedCount") or 0))
     result = {"observedAt": now.isoformat(), "lastReceivedAt": diagnostics.get("lastReceivedAt"),
             "trackedCount": tracked, "freshCount": fresh, "staleCount": tracked - fresh,
+            "freshBookCount": fresh_books,
             "overCapacity": diagnostics.get("overCapacity", False)}
     # Public projection is an explicit allowlist: never expose adapter errors,
     # endpoint URLs, headers, or credentials from its internal diagnostics.

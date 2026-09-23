@@ -13,14 +13,16 @@ export type StrongPosition = {
   currentPrice: string; investedCapital: string; marketValue: string; unrealizedPnl: string; returnPct: string;
   initialStop: string; trailingStop: string; nextAddPrice: string | null; currentScore: string;
   entryType: string; strategyVersion: string; tranches: Array<Record<string, unknown>>; reasons: string[];
-  warnings: string[]; status: string; entryAt: string;
+  warnings: string[]; status: string; entryAt: string; executionModel: string;
+  execution: { quoteTime?: string; quoteSource?: string; bestAsk?: string; observedPrice?: string; availableQuantity?: number; fillStatus?: string; legacy?: boolean };
 };
 
 export type StrongTrade = {
   id: string; symbol: string; name: string; industry: string; entryType: string; quantity: number;
   entryPrice: string; exitPrice: string; entryAt: string; exitAt: string; grossPnl: string;
   buyFee: string; sellFee: string; tax: string; slippage: string; netPnl: string; returnPct: string;
-  strategyVersion: string; entryReason: string; exitReason: string;
+  strategyVersion: string; entryReason: string; exitReason: string; executionModel: string;
+  execution: Record<string, unknown>;
 };
 
 export type StrongDashboard = {
@@ -32,7 +34,7 @@ export type StrongDashboard = {
   rankings: StrongRanking[];
   industries: Array<{ rank: number; industry: string; score: string; percentile: string; memberCount: number; details: Record<string, unknown> }>;
   positions: StrongPosition[]; trades: StrongTrade[];
-  pendingOrders: Array<{ id: string; symbol: string; name: string; limitPrice: string; quantity: number; validDate: string; entryType: string; status: string; reason: string }>;
+  pendingOrders: Array<{ id: string; symbol: string; name: string; limitPrice: string; quantity: number; filledQuantity: number; remainingQuantity: number; validDate: string; entryType: string; status: string; reason: string; execution: Record<string, unknown> }>;
   equityCurve: Array<{ date: string; cash: string; marketValue: string; totalEquity: string; dailyPnl: string; drawdownPct: string }>;
   notifications: Array<{ id: number; eventType: string; title: string; message: string; priority: string; read: boolean; createdAt: string }>;
   dataStatus: { status: string; latestTradeDate: string | null; lastSuccessfulUpdate: string | null; sources: unknown; missing: string[]; error: string; historicalBacktestReady: boolean;

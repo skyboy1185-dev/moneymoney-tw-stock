@@ -24,7 +24,7 @@ def active_version(db, user_id: str, strategy_id: str) -> str:
         DayTradeV2StrategyDeployment.strategy_id == strategy_id,
         DayTradeV2StrategyDeployment.role == "CHAMPION",
         DayTradeV2StrategyDeployment.status == "ACTIVE",
-    ).order_by(DayTradeV2StrategyDeployment.activated_at.desc()))
+    ).order_by(DayTradeV2StrategyDeployment.activated_at.desc()).limit(1))
     return deployment.version if deployment else "2.0.0"
 
 
@@ -33,7 +33,7 @@ def health_for_strategy(db, user_id: str, mode: str, strategy_id: str) -> DayTra
         DayTradeV2StrategyHealthSnapshot.user_id == user_id,
         DayTradeV2StrategyHealthSnapshot.mode == mode,
         DayTradeV2StrategyHealthSnapshot.strategy_id == strategy_id,
-    ).order_by(DayTradeV2StrategyHealthSnapshot.diagnosis_date.desc()))
+    ).order_by(DayTradeV2StrategyHealthSnapshot.diagnosis_date.desc()).limit(1))
 
 
 def run_health_diagnosis(db, user_id: str, mode: str, config: dict[str, object], now: datetime | None = None) -> list[DayTradeV2StrategyHealthSnapshot]:
@@ -77,7 +77,7 @@ def run_health_diagnosis(db, user_id: str, mode: str, config: dict[str, object],
             DayTradeV2StrategyHealthSnapshot.mode == mode,
             DayTradeV2StrategyHealthSnapshot.strategy_id == strategy_id,
             DayTradeV2StrategyHealthSnapshot.diagnosis_date < day,
-        ).order_by(DayTradeV2StrategyHealthSnapshot.diagnosis_date.desc()))
+        ).order_by(DayTradeV2StrategyHealthSnapshot.diagnosis_date.desc()).limit(1))
         consecutive_alerts = 1 if previous and previous.status == "ALERT" else 0
         diagnosis = diagnose_health(
             recent, trading_day_pnls=list(daily.values()), baseline=baseline,
@@ -173,7 +173,7 @@ def apply_pending_deployments(db, user_id: str, trading_date, now: datetime) -> 
             DayTradeV2ChallengerRun.strategy_id == deployment.strategy_id,
             DayTradeV2ChallengerRun.challenger_version == deployment.version,
             DayTradeV2ChallengerRun.status == "APPROVED_PENDING_ACTIVATION",
-        ).order_by(DayTradeV2ChallengerRun.started_at.desc()))
+        ).order_by(DayTradeV2ChallengerRun.started_at.desc()).limit(1))
         if challenger_run:
             challenger_run.status = "PROMOTED"
             challenger_run.completed_at = now
@@ -200,7 +200,7 @@ def _ensure_optimization_job(db, user_id: str, strategy_id: str, champion_versio
     dataset = db.scalar(select(DayTradeV2OptimizationDataset).where(
         DayTradeV2OptimizationDataset.user_id == user_id,
         DayTradeV2OptimizationDataset.quality_status == "READY",
-    ).order_by(DayTradeV2OptimizationDataset.created_at.desc()))
+    ).order_by(DayTradeV2OptimizationDataset.created_at.desc()).limit(1))
     versions = list(db.scalars(select(DayTradeV2StrategyVersion.version).where(
         DayTradeV2StrategyVersion.strategy_id == strategy_id,
     )).all())
@@ -247,7 +247,7 @@ def handle_strategy_runtime_error(
             DayTradeV2StrategyDeployment.user_id == user_id,
             DayTradeV2StrategyDeployment.strategy_id == strategy_id,
             DayTradeV2StrategyDeployment.status == "SUPERSEDED",
-        ).order_by(DayTradeV2StrategyDeployment.disabled_at.desc()))
+        ).order_by(DayTradeV2StrategyDeployment.disabled_at.desc()).limit(1))
         pending = db.scalar(select(DayTradeV2StrategyDeployment).where(
             DayTradeV2StrategyDeployment.user_id == user_id,
             DayTradeV2StrategyDeployment.strategy_id == strategy_id,
@@ -294,7 +294,7 @@ def _auto_rollback_if_needed(db, user_id, mode, strategy_id, version, trades, co
         DayTradeV2StrategyDeployment.user_id == user_id,
         DayTradeV2StrategyDeployment.strategy_id == strategy_id,
         DayTradeV2StrategyDeployment.status == "SUPERSEDED",
-    ).order_by(DayTradeV2StrategyDeployment.disabled_at.desc()))
+    ).order_by(DayTradeV2StrategyDeployment.disabled_at.desc()).limit(1))
     if not previous:
         return
     version_trades = [row for row in trades if row.strategy_version == version]

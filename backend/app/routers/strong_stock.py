@@ -47,6 +47,7 @@ def latest_trade_date(db: Session) -> date | None:
 
 
 def position_payload(row: StrongStockPosition) -> dict[str, object]:
+    execution = parse_json(row.execution_json, {})
     market_value = row.current_price * row.quantity
     unrealized = market_value - row.average_cost * row.quantity
     return {
@@ -59,10 +60,12 @@ def position_payload(row: StrongStockPosition) -> dict[str, object]:
         "currentScore": str(row.current_score), "entryType": row.entry_type, "strategyVersion": row.strategy_version,
         "tranches": parse_json(row.tranches_json, []), "reasons": parse_json(row.reasons_json, []),
         "warnings": parse_json(row.warnings_json, []), "status": row.status, "entryAt": row.entry_at,
+        "execution": execution, "executionModel": execution.get("executionModel", "LEGACY_LAST_TRADE"),
     }
 
 
 def trade_payload(row: StrongStockTrade) -> dict[str, object]:
+    execution = parse_json(row.execution_json, {})
     return {
         "id": row.id, "positionId": row.position_id, "symbol": row.symbol, "name": row.name,
         "industry": row.industry, "entryType": row.entry_type, "quantity": row.quantity,
@@ -71,6 +74,7 @@ def trade_payload(row: StrongStockTrade) -> dict[str, object]:
         "sellFee": str(row.sell_fee), "tax": str(row.tax), "slippage": str(row.slippage),
         "netPnl": str(row.net_pnl), "returnPct": str(row.return_pct),
         "strategyVersion": row.strategy_version, "entryReason": row.entry_reason, "exitReason": row.exit_reason,
+        "execution": execution, "executionModel": execution.get("executionModel", "LEGACY_LAST_TRADE"),
     }
 
 
@@ -82,7 +86,7 @@ def dashboard_payload(db: Session, uid: str) -> dict[str, object]:
     industries = list(db.scalars(select(StrongStockIndustryRanking).where(StrongStockIndustryRanking.trade_date == trading_date).order_by(StrongStockIndustryRanking.rank).limit(5)).all()) if trading_date else []
     positions = list(db.scalars(select(StrongStockPosition).where(StrongStockPosition.user_id == uid, StrongStockPosition.status == "OPEN").order_by(StrongStockPosition.entry_at.desc())).all())
     trades = list(db.scalars(select(StrongStockTrade).where(StrongStockTrade.user_id == uid).order_by(StrongStockTrade.exit_at.desc()).limit(30)).all())
-    pending_orders = list(db.scalars(select(StrongStockOrder).where(StrongStockOrder.user_id == uid, StrongStockOrder.status == "PENDING").order_by(StrongStockOrder.created_at)).all())
+    pending_orders = list(db.scalars(select(StrongStockOrder).where(StrongStockOrder.user_id == uid, StrongStockOrder.status.in_(("PENDING", "PARTIALLY_FILLED"))).order_by(StrongStockOrder.created_at)).all())
     latest_run = db.scalar(select(StrongStockDataRun).order_by(StrongStockDataRun.started_at.desc()).limit(1))
     notifications = list(db.scalars(select(StrongStockNotification).where(StrongStockNotification.user_id == uid).order_by(StrongStockNotification.created_at.desc()).limit(30)).all())
     equity = list(db.scalars(select(StrongStockEquitySnapshot).where(StrongStockEquitySnapshot.user_id == uid).order_by(StrongStockEquitySnapshot.trade_date).limit(400)).all())
@@ -98,7 +102,10 @@ def dashboard_payload(db: Session, uid: str) -> dict[str, object]:
         "performance": performance(db, uid), "strategyHealth": strategy_health(db, uid), "rankings": [ranking_payload(row) for row in rankings],
         "industries": [{"rank": row.rank, "industry": row.industry, "score": str(row.score), "percentile": str(row.percentile), "memberCount": row.member_count, "details": parse_json(row.details_json, {})} for row in industries],
         "positions": [position_payload(row) for row in positions], "trades": [trade_payload(row) for row in trades],
-        "pendingOrders": [{"id": row.id, "symbol": row.symbol, "name": row.name, "limitPrice": str(row.limit_price), "quantity": row.quantity, "validDate": row.valid_date, "entryType": row.entry_type, "status": row.status, "reason": row.reason} for row in pending_orders],
+        "pendingOrders": [{"id": row.id, "symbol": row.symbol, "name": row.name, "limitPrice": str(row.limit_price),
+            "quantity": row.quantity, "filledQuantity": row.filled_quantity, "remainingQuantity": row.quantity-row.filled_quantity,
+            "validDate": row.valid_date, "entryType": row.entry_type, "status": row.status, "reason": row.reason,
+            "execution": parse_json(row.execution_json, {})} for row in pending_orders],
         "equityCurve": [{"date": row.trade_date, "cash": str(row.cash), "marketValue": str(row.market_value), "totalEquity": str(row.total_equity), "dailyPnl": str(row.daily_pnl), "drawdownPct": str(row.drawdown_pct)} for row in equity],
         "notifications": [{"id": row.id, "eventType": row.event_type, "title": row.title, "message": row.message, "priority": row.priority, "read": row.read, "createdAt": row.created_at} for row in notifications],
         "dataStatus": {

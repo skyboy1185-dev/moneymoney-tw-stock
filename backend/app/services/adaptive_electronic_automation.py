@@ -36,6 +36,7 @@ from .line_messaging import (
     format_personal_strategy_simulation,
 )
 from .gmail_messaging import gmail_notification_dispatcher
+from .day_trading_email_policy import email_is_deliverable
 from .official_market_data import StockQuoteRequest, official_market_data_provider
 from .super_ai_daytrade_service import (
     SYSTEM_NAME,
@@ -308,20 +309,33 @@ class AdaptiveElectronicAutomation:
                 SuperAIDaytradeNotification.category.in_(TRADE_EMAIL_CATEGORIES),
             ).order_by(SuperAIDaytradeNotification.created_at).limit(20)).all())
         for row in rows:
+            now = datetime.now(UTC)
+            if not email_is_deliverable(row.category, row.created_at, now):
+                with SessionLocal() as db:
+                    stored = db.get(SuperAIDaytradeNotification, row.id)
+                    if stored and not stored.email_sent:
+                        stored.email_sent = True
+                        stored.email_delivery_status = "SKIPPED_EXPIRED"
+                        db.commit()
+                continue
+            event_time = row.created_at.astimezone(TAIPEI).strftime("%H:%M:%S")
             sent = await gmail_notification_dispatcher.dispatch(
                 event_type=f"super_ai_daytrade_{row.category.lower()}",
                 action=row.category,
-                message=row.message,
+                message=f"事件時間：{event_time}\n{row.message}",
                 dedupe_key=f"email:{row.dedupe_key}",
                 signal_id=row.dedupe_key,
                 symbol=row.symbol,
                 channel_name=SYSTEM_NAME,
+                event_time=event_time,
             )
             if sent:
                 with SessionLocal() as db:
                     stored = db.get(SuperAIDaytradeNotification, row.id)
                     if stored:
                         stored.email_sent = True
+                        stored.email_delivery_status = "SENT"
+                        stored.email_sent_at = datetime.now(UTC)
                         db.commit()
 
     async def _send_pending_signals(self, signal_keys: list[str]) -> None:

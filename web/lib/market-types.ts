@@ -1,12 +1,20 @@
 import type { DailyPrice, Market, StockPayload, StockTheme } from "./types";
 
 export type Timeframe = "day" | "week" | "month";
-export type MarketDirection = "strong_bull" | "bull" | "sideways" | "bear" | "strong_bear" | "transition";
+export type MarketDirection =
+  "strong_bull" | "bull" | "sideways" | "bear" | "strong_bear" | "transition";
 export type MarketRegime = "wave_up" | "range" | "wave_down" | "transition";
 export type SignalStatus = "temporary" | "confirmed" | "cancelled";
 export type ManualMacdSignalMode = "confirmed" | "forecast";
 export type ManualDeductionSignalMode = "deduction-low" | "deduction-high";
-export type ManualSignalMode = ManualMacdSignalMode | ManualDeductionSignalMode | "kd-below" | "kd-bullish-divergence" | "kd-double-bullish-divergence" | "ma-multi-up";
+export type ManualSignalMode =
+  | ManualMacdSignalMode
+  | ManualDeductionSignalMode
+  | "kd-below"
+  | "kd-bullish-divergence"
+  | "kd-double-bullish-divergence"
+  | "ma-multi-up"
+  | "ma-seasonal";
 
 export interface KDPoint {
   date: string;
@@ -167,6 +175,7 @@ export interface RankingRow {
   industry: string;
   themes: StockTheme[];
   price: number;
+  previousClose: number;
   changePercent: number;
   volume: number;
   strategyId: string;
@@ -216,6 +225,9 @@ export interface RankingRow {
   priceDate?: string;
   priceTime?: string;
   isOfficialPrice?: boolean;
+  threeGate: { sourceDate: string; upper: number; middle: number; lower: number } | null;
+  threeGateSignal: "middle_breakout" | "upper_breakout" | "lower_breakdown" | null;
+  threeGateDistancePct: number | null;
 }
 
 export interface TimelinePoint {
@@ -260,7 +272,8 @@ export interface SystemEvent {
   reasons: string[];
 }
 
-export type WatchStatus = "剛加入觀察" | "持續強勢" | "回檔轉強" | "動能轉弱" | "出場警戒";
+export type WatchStatus =
+  "剛加入觀察" | "持續強勢" | "回檔轉強" | "動能轉弱" | "出場警戒";
 
 export interface WatchlistItem {
   id: number;
@@ -309,13 +322,27 @@ export interface HoldingItem {
 export interface MarketDataProvider {
   getQuote(symbol: string): Promise<DailyPrice | null>;
   getQuotes(symbols: string[]): Promise<DailyPrice[]>;
-  getHistoricalCandles(symbol: string, timeframe: Timeframe): Promise<DailyPrice[]>;
+  getHistoricalCandles(
+    symbol: string,
+    timeframe: Timeframe,
+  ): Promise<DailyPrice[]>;
   getStockList(): Promise<{ symbol: string; name: string; market: Market }[]>;
-  getMarketStatus(): Promise<{ open: boolean; label: string; updatedAt: string }>;
+  getMarketStatus(): Promise<{
+    open: boolean;
+    label: string;
+    updatedAt: string;
+  }>;
 }
 
 export interface MarketDirectionProvider {
-  getMarketIndex(): Promise<{ price: number; change: number; changePercent: number; source?: string; quoteAt?: string; isOfficial?: boolean }>;
+  getMarketIndex(): Promise<{
+    price: number;
+    change: number;
+    changePercent: number;
+    source?: string;
+    quoteAt?: string;
+    isOfficial?: boolean;
+  }>;
   getIndexFutures(): Promise<{
     price: number;
     change: number;
@@ -330,7 +357,12 @@ export interface MarketDirectionProvider {
     change3m?: number;
     change10m?: number;
   }>;
-  getTradeTicks(): Promise<{ price: number; amount: number; side: "buy" | "sell" }[]>;
+  getTradeTicks(): Promise<
+    { price: number; amount: number; side: "buy" | "sell" }[]
+  >;
   getMarketBreadth(): Promise<{ up: number; down: number; flat: number }>;
-  getOrderStatistics(): Promise<{ largeOrderNet: number; smallOrderNet: number }>;
+  getOrderStatistics(): Promise<{
+    largeOrderNet: number;
+    smallOrderNet: number;
+  }>;
 }

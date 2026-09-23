@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Bot, CircleDollarSign, ShieldAlert, TrendingDown, TrendingUp, X } from "lucide-react";
+import { Bell, Bot, CheckCheck, CircleDollarSign, ShieldAlert, TrendingDown, TrendingUp, X } from "lucide-react";
 import { usePathname } from "next/navigation";
 import type { DayTradingAlert, DayTradingSignal, TradingAutomationState } from "@/lib/day-trading-types";
 import type { LongTermTradeMessage } from "@/lib/long-term-types";
@@ -9,9 +9,12 @@ import type { RocketNotification } from "@/lib/rocket-radar-types";
 import { getBrowserUserId } from "@/lib/browser-user-id";
 import { selectDayTradingV2Notifications } from "@/lib/day-trading-v2-notifications";
 import { dayTradingV2Client, DayTradingV2RequestError } from "@/services/day-trading-v2-client";
+import { compactNotificationTitle, IN_APP_NOTIFICATION_EVENT, type InAppNotification } from "@/lib/in-app-notifications";
 
 const AUTOMATION_USER_ID = "system-automation";
 const STORAGE_KEY = "day-trading-robot-web-notifications";
+const READ_STORAGE_KEY = "day-trading-robot-read-notifications";
+const INBOX_STORAGE_KEY = "day-trading-robot-notification-inbox";
 type RobotTarget = "day-trading-v2" | "day-trading" | "adaptive-electronic" | "rocket-radar" | "long-term";
 
 type RobotToastKind = "activation" | "buy" | "short" | "reduce" | "sell" | "cover" | "stop" | "skip";
@@ -25,6 +28,7 @@ interface RobotToast {
   message: string;
   reason: string;
   timestamp: string;
+  href?: string;
 }
 
 interface AdaptiveNotification {
@@ -140,30 +144,69 @@ function ToastIcon({ kind }: { kind: RobotToastKind }) {
 export function DayTradingRobotNotifier({ onOpen }: { onOpen?: (target: RobotTarget) => void }) {
   const pathname = usePathname();
   const [toasts, setToasts] = useState<RobotToast[]>([]);
+  const [inbox, setInbox] = useState<RobotToast[]>([]);
+  const [readEvents, setReadEvents] = useState<Set<string>>(new Set());
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const [loginExpired, setLoginExpired] = useState(false);
   const seenEvents = useRef(new Set<string>());
   const timers = useRef<number[]>([]);
+  const inboxHydrated = useRef(false);
 
   const show = useCallback((items: RobotToast[]) => {
+    setInbox((current) => [...items, ...current.filter((old) => !items.some((item) => item.id === old.id))]
+      .sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp)).slice(0, 100));
     const fresh = items.filter((item) => !seenEvents.current.has(item.id));
     if (!fresh.length) return;
     fresh.forEach((item) => seenEvents.current.add(item.id));
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(Array.from(seenEvents.current).slice(-300))); } catch { /* storage is optional */ }
-    setToasts((current) => [...fresh, ...current].slice(0, 8));
-    fresh.forEach((item) => {
-      const duration = item.kind === "activation" ? 8_000 : item.kind === "stop" ? 15_000 : 12_000;
-      timers.current.push(window.setTimeout(() => {
-        setToasts((current) => current.filter((toast) => toast.id !== item.id));
-      }, duration));
-    });
+    const critical = fresh.filter((item) => item.kind === "stop");
+    const selected = critical[0] ?? fresh[0];
+    const count = critical.length || fresh.length;
+    const visible = count > 1 ? {
+      ...selected,
+      id: `notification-burst:${Date.now()}`,
+      title: compactNotificationTitle(count, critical.length > 0),
+      stock: "訊息已完整保留在通知中心",
+      message: selected.title,
+      reason: "點擊查看全部通知",
+    } : selected;
+    timers.current.forEach((timer) => window.clearTimeout(timer));
+    timers.current = [];
+    setToasts([visible]);
+    const duration = visible.kind === "stop" ? 10_000 : 4_000;
+    timers.current.push(window.setTimeout(() => setToasts([]), duration));
   }, []);
+
+  const persistRead = useCallback((next: Set<string>) => {
+    setReadEvents(new Set(next));
+    try { localStorage.setItem(READ_STORAGE_KEY, JSON.stringify(Array.from(next).slice(-500))); } catch { /* storage is optional */ }
+  }, []);
+
+  const openItem = useCallback((item: RobotToast) => {
+    persistRead(new Set(readEvents).add(item.id));
+    setDrawerOpen(false);
+    if (item.href) window.location.assign(item.href);
+    else if (onOpen) onOpen(item.target);
+    else window.location.assign(`/?view=${item.target}`);
+  }, [onOpen, persistRead, readEvents]);
 
   useEffect(() => {
     if (pathname === "/login") return;
     try {
       const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]") as string[];
       seenEvents.current = new Set(stored);
+      const storedRead = JSON.parse(localStorage.getItem(READ_STORAGE_KEY) ?? "[]") as string[];
+      setReadEvents(new Set(storedRead));
+      const storedInbox = JSON.parse(localStorage.getItem(INBOX_STORAGE_KEY) ?? "[]") as RobotToast[];
+      if (Array.isArray(storedInbox)) {
+        const today = taipeiDate(new Date().toISOString());
+        setInbox(storedInbox.filter((item) => (
+          item && typeof item.id === "string" && typeof item.title === "string"
+          && typeof item.timestamp === "string" && taipeiDate(item.timestamp) === today
+        )).slice(0, 500));
+      }
     } catch { /* start with an empty browser-local deduplication set */ }
+    queueMicrotask(() => { inboxHydrated.current = true; });
 
     let stopped = false;
 
@@ -353,10 +396,15 @@ export function DayTradingRobotNotifier({ onOpen }: { onOpen?: (target: RobotTar
     };
 
     const syncSeenEvents = (event: StorageEvent) => {
-      if (event.key !== STORAGE_KEY || !event.newValue) return;
+      if (!event.newValue) return;
       try {
         const stored = JSON.parse(event.newValue) as string[];
-        stored.forEach((id) => seenEvents.current.add(id));
+        if (event.key === STORAGE_KEY) stored.forEach((id) => seenEvents.current.add(id));
+        if (event.key === READ_STORAGE_KEY) setReadEvents(new Set(stored));
+        if (event.key === INBOX_STORAGE_KEY) {
+          const today = taipeiDate(new Date().toISOString());
+          setInbox((stored as unknown as RobotToast[]).filter((item) => item && taipeiDate(item.timestamp) === today).slice(0, 500));
+        }
       } catch { /* ignore malformed browser storage */ }
     };
 
@@ -371,6 +419,31 @@ export function DayTradingRobotNotifier({ onOpen }: { onOpen?: (target: RobotTar
       timers.current = [];
     };
   }, [pathname, show]);
+
+  useEffect(() => {
+    if (!inboxHydrated.current) return;
+    try { localStorage.setItem(INBOX_STORAGE_KEY, JSON.stringify(inbox.slice(0, 500))); } catch { /* storage is optional */ }
+  }, [inbox]);
+
+  useEffect(() => {
+    const receive = (event: Event) => {
+      const item = (event as CustomEvent<InAppNotification>).detail;
+      if (!item?.id || !item.title || !item.timestamp) return;
+      show([{
+        id: item.id,
+        kind: item.severity === "critical" ? "stop" : "activation",
+        target: "adaptive-electronic",
+        title: item.title,
+        stock: item.stock ?? "盤中訊息",
+        message: item.message,
+        reason: item.reason ?? "",
+        timestamp: item.timestamp,
+        href: item.href,
+      }]);
+    };
+    window.addEventListener(IN_APP_NOTIFICATION_EVENT, receive);
+    return () => window.removeEventListener(IN_APP_NOTIFICATION_EVENT, receive);
+  }, [show]);
 
   useEffect(() => {
     if (pathname === "/login") return;
@@ -407,8 +480,23 @@ export function DayTradingRobotNotifier({ onOpen }: { onOpen?: (target: RobotTar
     };
   }, [pathname, show]);
 
-  if (pathname === "/login" || (!toasts.length && !loginExpired)) return null;
-  return <div className="day-bot-toast-stack" aria-live="assertive">
+  if (pathname === "/login") return null;
+  const unread = inbox.filter((item) => !readEvents.has(item.id)).length;
+  return <>
+    <button className="notification-bell" type="button" aria-label={`通知中心，${unread} 則未讀`} aria-expanded={drawerOpen} onClick={() => setDrawerOpen((open) => !open)}>
+      <Bell />{unread > 0 && <b>{unread > 99 ? "99+" : unread}</b>}
+    </button>
+    {drawerOpen && <aside className="notification-drawer" aria-label="盤中通知中心">
+      <header><div><strong>盤中通知中心</strong><small>今日訊息都會保留在這裡</small></div><button type="button" aria-label="關閉通知中心" onClick={() => setDrawerOpen(false)}><X /></button></header>
+      <div className="notification-drawer-actions"><span>{unread} 則未讀</span><button type="button" onClick={() => persistRead(new Set(inbox.map((item) => item.id)))} disabled={!unread}><CheckCheck />全部標為已讀</button></div>
+      <div className="notification-inbox">
+        {inbox.map((item) => <button type="button" className={`${item.kind === "stop" ? "critical" : ""} ${readEvents.has(item.id) ? "read" : "unread"}`} key={item.id} onClick={() => openItem(item)}>
+          <span><ToastIcon kind={item.kind} /></span><div><strong>{item.title}</strong><h4>{item.stock}</h4><p>{item.message}</p><footer>{item.reason}<time>{time(item.timestamp)}</time></footer></div>
+        </button>)}
+        {!inbox.length && <p className="notification-inbox-empty">目前沒有盤中通知</p>}
+      </div>
+    </aside>}
+    {(toasts.length > 0 || loginExpired) && <div className="day-bot-toast-stack" aria-live="polite">
     {loginExpired && <article className="day-bot-toast stop" role="alert">
       <button className="day-bot-toast-body" type="button" onClick={() => {
         window.location.assign(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
@@ -416,11 +504,8 @@ export function DayTradingRobotNotifier({ onOpen }: { onOpen?: (target: RobotTar
         <span><ShieldAlert /></span><div><strong>登入已逾時，畫面通知已暫停</strong><p>請重新登入以恢復當沖機器人2通知。</p><h4>重新登入</h4></div>
       </button>
     </article>}
-    {toasts.map((item) => <article className={`day-bot-toast ${item.kind} ${item.target}`} key={item.id} role="alert">
-      <button className="day-bot-toast-body" type="button" onClick={() => {
-        if (onOpen) onOpen(item.target);
-        else window.location.assign(`/?view=${item.target}`);
-      }}>
+    {toasts.map((item) => <article className={`day-bot-toast ${item.kind} ${item.target}`} key={item.id} role={item.kind === "stop" ? "alert" : "status"}>
+      <button className="day-bot-toast-body" type="button" onClick={() => openItem(item)}>
         <span><ToastIcon kind={item.kind} /></span>
         <div>
           <strong>{item.title}</strong>
@@ -429,7 +514,7 @@ export function DayTradingRobotNotifier({ onOpen }: { onOpen?: (target: RobotTar
           <footer>{item.reason}<time>{time(item.timestamp)}</time></footer>
         </div>
       </button>
-      <button className="day-bot-toast-close" type="button" aria-label="關閉機器人通知" onClick={() => setToasts((current) => current.filter((toast) => toast.id !== item.id))}><X /></button>
     </article>)}
-  </div>;
+    </div>}
+  </>;
 }

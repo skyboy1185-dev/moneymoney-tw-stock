@@ -15,7 +15,7 @@ const market: MarketContext = {
 function row(symbol: string, score = 80, overrides: Partial<RankingRow> = {}): RankingRow {
   return {
     rank: 0, symbol, name: symbol, market: "上市", industry: "半導體", themes: ["AI"],
-    price: 100, changePercent: 1, volume: 2_000_000,
+    price: 100, previousClose: 99, changePercent: 1, volume: 2_000_000,
     strategyId: "trend-start", strategyName: "波段起漲 Bot",
     score, scoreBreakdown: {
       trend: 20, momentum: 16, volume: 12, keyPrice: 8, strategy: 16, market: 8, risk: 8,
@@ -30,7 +30,7 @@ function row(symbol: string, score = 80, overrides: Partial<RankingRow> = {}): R
     triggeredAt: "2026-07-27T09:10:00+08:00", reasons: ["MACD 翻紅", "站上 MA20", "成交量增加"],
     riskTags: [], movement: "new", updatedAt: "2026-07-27T09:10:00+08:00",
     priceSource: "TWSE MIS", priceDate: "2026-07-27", priceTime: "09:10:00",
-    isOfficialPrice: true, ...overrides,
+    isOfficialPrice: true, threeGate: null, threeGateSignal: null, threeGateDistancePct: null, ...overrides,
   };
 }
 

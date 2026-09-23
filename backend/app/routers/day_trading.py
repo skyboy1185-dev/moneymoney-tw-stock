@@ -31,6 +31,7 @@ from ..services.day_trading import (
     entry_allowed,
     evaluate_position,
     prioritize_events,
+    strict_entry_rejections,
 )
 from ..services.chip_flow_alerts import (
     electronic_chip_flow_alert_monitor,
@@ -991,6 +992,9 @@ def create_position(
     if signal is None:
         raise HTTPException(status_code=404, detail="訊號不存在")
     settings = _settings(db, user_id)
+    strict_failures = strict_entry_rejections(signal, settings, datetime.now(UTC))
+    if strict_failures:
+        raise HTTPException(status_code=409, detail="嚴格風控拒絕進場：" + "、".join(strict_failures))
     today_trades = db.scalars(select(DayTradingTrade).where(
         DayTradingTrade.user_id == user_id, DayTradingTrade.exit_time >= datetime.combine(date.today(), datetime.min.time(), UTC),
     )).all()

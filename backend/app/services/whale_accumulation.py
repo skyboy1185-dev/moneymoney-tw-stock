@@ -353,17 +353,31 @@ def _official_items(
     grouped: dict[tuple[str, date], list[ShareholderDistributionWeekly]] = defaultdict(list)
     for row in rows:
         grouped[(row.stock_code, row.report_date)].append(row)
-    metadata = {
-        item.stock_code: item for item in db.scalars(select(LargeHolderWeeklySummary).where(
-            LargeHolderWeeklySummary.report_date == actual_end,
-        )).all()
-    }
+    # A directory request can fail during one weekly TDCC sync.  Do not let that
+    # single failure erase names that were resolved successfully in another week.
+    metadata: dict[str, dict[str, str]] = {}
+    summaries = db.scalars(select(LargeHolderWeeklySummary).where(
+        LargeHolderWeeklySummary.report_date <= actual_end,
+    ).order_by(LargeHolderWeeklySummary.report_date.desc())).all()
+    for summary in summaries:
+        resolved = metadata.setdefault(summary.stock_code, {
+            "name": summary.stock_code, "market": UNKNOWN_MARKET, "industry": UNKNOWN_INDUSTRY,
+        })
+        name = (summary.stock_name or "").strip()
+        market = (summary.market or "").strip()
+        industry = (summary.industry or "").strip()
+        if resolved["name"] == summary.stock_code and name and name != summary.stock_code:
+            resolved["name"] = name
+        if resolved["market"] == UNKNOWN_MARKET and market in KNOWN_MARKETS:
+            resolved["market"] = market
+        if resolved["industry"] == UNKNOWN_INDUSTRY and industry and industry != UNKNOWN_INDUSTRY:
+            resolved["industry"] = industry
     start_stocks = {stock_code for stock_code, report_date in grouped if report_date == actual_start}
     end_stocks = {stock_code for stock_code, report_date in grouped if report_date == actual_end}
     stocks = sorted(stock_code for stock_code in start_stocks & end_stocks if _is_common_stock_code(stock_code))
     items = []
     for stock_code in stocks:
-        summary = metadata.get(stock_code)
+        summary = metadata.get(stock_code, {})
         points = []
         report_dates = sorted({report_date for code, report_date in grouped if code == stock_code})
         for report_date in report_dates:
@@ -379,9 +393,9 @@ def _official_items(
             continue
         items.append(_build_item(
             stock_code,
-            _summary_stock_name(summary, stock_code),
-            _summary_market(summary),
-            _summary_industry(summary),
+            str(summary.get("name") or stock_code),
+            str(summary.get("market") or UNKNOWN_MARKET),
+            str(summary.get("industry") or UNKNOWN_INDUSTRY),
             points,
             "TWSE／TPEx 實際比較日起迄收盤價；區間均價採可取得比較期價格平均",
         ))

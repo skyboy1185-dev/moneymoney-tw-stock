@@ -21,8 +21,10 @@ import { RocketRadarPage } from "@/components/RocketRadarPage";
 import { LimitUpAiPage } from "@/components/LimitUpAiPage";
 import { WhaleAccumulationPage } from "@/components/WhaleAccumulationPage";
 import { PatternRobotPage } from "@/components/PatternRobotPage";
+import { PrePostAnalysisPage } from "@/components/PrePostAnalysisPage";
 import { LegalTermsButton } from "@/components/LegalTermsGate";
 import { PrivateSiteLogoutButton } from "@/components/PrivateSiteLogoutButton";
+import { StrongSectorBar } from "@/components/StrongSectorBar";
 import type { MarketSnapshot } from "@/lib/market-types";
 import {
   futuresFlashDirection,
@@ -34,9 +36,9 @@ import {
 import type { StockPayload } from "@/lib/types";
 import { getBrowserUserId } from "@/lib/browser-user-id";
 
-type Tab = "analysis" | "screener" | "day-trading-v2" | "day-trading" | "limit-up-ai" | "pattern-robot" | "adaptive-electronic" | "rocket-radar" | "long-term" | "strong-stocks" | "whale-accumulation" | "institutional-investors" | "chip-flow" | "portfolio" | "industries" | "news";
+type Tab = "prepost-analysis" | "analysis" | "screener" | "day-trading-v2" | "day-trading" | "limit-up-ai" | "pattern-robot" | "adaptive-electronic" | "rocket-radar" | "long-term" | "strong-stocks" | "whale-accumulation" | "institutional-investors" | "chip-flow" | "portfolio" | "industries" | "news";
 type Connection = "connecting" | "connected" | "disconnected";
-const VIEW_TABS: Tab[] = ["analysis", "screener", "day-trading-v2", "day-trading", "limit-up-ai", "pattern-robot", "adaptive-electronic", "rocket-radar", "long-term", "strong-stocks", "whale-accumulation", "institutional-investors", "chip-flow", "portfolio", "industries", "news"];
+const VIEW_TABS: Tab[] = ["prepost-analysis", "analysis", "screener", "day-trading-v2", "day-trading", "limit-up-ai", "pattern-robot", "adaptive-electronic", "rocket-radar", "long-term", "strong-stocks", "whale-accumulation", "institutional-investors", "chip-flow", "portfolio", "industries", "news"];
 
 function viewUrl(symbol: string, view: Tab): string {
   const params = new URLSearchParams({ symbol });
@@ -47,7 +49,7 @@ function viewUrl(symbol: string, view: Tab): string {
 function resolveViewTab(view: string | null): Tab {
   if (view === "ai") return "adaptive-electronic";
   if (view === "limit-up-robot") return "limit-up-ai";
-  return view && VIEW_TABS.includes(view as Tab) ? view as Tab : "analysis";
+  return view && VIEW_TABS.includes(view as Tab) ? view as Tab : "prepost-analysis";
 }
 
 function formatFuturesNumber(value: number | null | undefined): string {
@@ -123,15 +125,17 @@ function FuturesLiveChip({ snapshot }: { snapshot: MarketSnapshot | null }) {
 }
 
 async function fetchStock(query: string): Promise<StockPayload> {
-  const response = await fetch(`/api/stocks?q=${encodeURIComponent(query)}`);
+  const response = await fetch(`/api/stocks?q=${encodeURIComponent(query)}`, {
+    signal: AbortSignal.timeout(45_000),
+  });
   const payload = await response.json();
   if (!response.ok) throw new Error(payload.error ?? "查詢失敗，請稍後再試。");
   return payload;
 }
 
 export default function Home() {
-  const [tab, setTab] = useState<Tab>("analysis");
-  const tabRef = useRef<Tab>("analysis");
+  const [tab, setTab] = useState<Tab>("prepost-analysis");
+  const tabRef = useRef<Tab>("prepost-analysis");
   const [query, setQuery] = useState("2330");
   const [stock, setStock] = useState<StockPayload | null>(null);
   const [loading, setLoading] = useState(true);
@@ -164,7 +168,9 @@ export default function Home() {
       tabRef.current = nextTab;
       window.history.replaceState(null, "", viewUrl(result.meta.symbol, nextTab));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "查詢失敗，請稍後再試。");
+      setError(reason instanceof Error && reason.name === "TimeoutError"
+        ? "個股資料來源回應逾時，請稍後重新查詢。"
+        : reason instanceof Error ? reason.message : "查詢失敗，請稍後再試。");
     } finally {
       setLoading(false);
     }
@@ -311,7 +317,7 @@ export default function Home() {
         }}
       />
       <header className="topbar enhanced">
-        <button className="brand" onClick={() => switchTab("analysis")} aria-label="回到個股分析">
+        <button className="brand" onClick={() => switchTab("prepost-analysis")} aria-label="回到盤前盤後分析">
           <span className="brand-icon"><BarChart3 size={20} /></span>
           <span><strong>Moneymoney</strong><small>台股分析</small></span>
         </button>
@@ -330,7 +336,16 @@ export default function Home() {
         </div>
       </header>
 
+      <StrongSectorBar
+        onOpenIndustries={() => switchTab("industries")}
+        onSelectStock={(symbol) => {
+          setQuery(symbol);
+          void loadStock(symbol);
+        }}
+      />
+
       <nav className="main-nav" aria-label="主要功能">
+        <button className={tab === "prepost-analysis" ? "active" : ""} onClick={() => switchTab("prepost-analysis")}><Newspaper size={17} />盤前盤後分析</button>
         <button className={tab === "analysis" ? "active" : ""} onClick={() => switchTab("analysis")}><Activity size={17} />個股分析</button>
         <button className={tab === "screener" ? "active" : ""} onClick={() => switchTab("screener")}><SlidersHorizontal size={17} />AI 選股</button>
         <button className={tab === "day-trading-v2" ? "active ai-nav" : "ai-nav"} onClick={() => switchTab("day-trading-v2")}><Bot size={17} />當沖機器人2<span>AI</span></button>
@@ -353,7 +368,9 @@ export default function Home() {
 
       <main className="main-content">
         {error && <div className="error-banner" role="alert">{error}</div>}
-        {tab === "analysis" ? (
+        {tab === "prepost-analysis" ? (
+          <PrePostAnalysisPage userId={userId} />
+        ) : tab === "analysis" ? (
           loading && !stock ? <div className="page-loading"><span className="spinner" /><p>正在整理個股資料與技術指標…</p></div>
           : stock ? (
             <StockAnalysis
@@ -365,7 +382,11 @@ export default function Home() {
           )
           : <div className="empty-state"><Search size={30} /><h2>找不到股票資料</h2><p>請嘗試輸入其他股票代號或名稱。</p></div>
         ) : tab === "screener" ? (
-          <Screener onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }} />
+          <Screener
+            rankings={snapshot?.rankings ?? []}
+            rankingsUpdatedAt={snapshot?.updatedAt ?? null}
+            onSelectStock={(symbol) => { setQuery(symbol); void loadStock(symbol); }}
+          />
         ) : tab === "day-trading-v2" ? (
           <DayTradingV2Page userId={userId} />
         ) : tab === "day-trading" ? (

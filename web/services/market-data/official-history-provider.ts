@@ -205,10 +205,10 @@ async function fetchFinMindHistory(
   return prices;
 }
 
-async function fetchYahooRecentHistory(meta: StockMeta): Promise<DailyPrice[]> {
+async function fetchYahooRecentHistory(meta: StockMeta, range = "1y", minimumTradingDays = 60): Promise<DailyPrice[]> {
   const suffix = meta.market === "上市" ? "TW" : "TWO";
   const response = await fetch(
-    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(meta.symbol)}.${suffix}?interval=1d&range=1y&events=history`,
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(meta.symbol)}.${suffix}?interval=1d&range=${range}&events=history`,
     {
       headers: {
         Accept: "application/json",
@@ -220,7 +220,7 @@ async function fetchYahooRecentHistory(meta: StockMeta): Promise<DailyPrice[]> {
   );
   if (!response.ok) throw new Error(`Yahoo Finance daily history ${response.status}`);
   const prices = parseYahooDailyHistory(await response.json() as YahooDailyPayload, meta);
-  validateOfficialHistoryContinuity(prices, 60);
+  validateOfficialHistoryContinuity(prices, minimumTradingDays);
   return prices;
 }
 
@@ -337,14 +337,20 @@ async function loadRecentOfficialHistory(meta: StockMeta): Promise<DailyPrice[]>
   return deduplicated;
 }
 
-async function loadOfficialHistory(meta: StockMeta): Promise<DailyPrice[]> {
+async function loadOfficialHistory(meta: StockMeta, minimumTradingDays = 240): Promise<DailyPrice[]> {
   try {
-    const prices = await fetchFinMindHistory(meta);
+    const prices = await fetchFinMindHistory(meta, HISTORY_CALENDAR_DAYS, minimumTradingDays);
     historySourceCache.set(meta.symbol, "FinMind TaiwanStockPrice（彙整市場日成交資料）");
     return prices;
   } catch {
-    // Use the exchange monthly endpoints when the range adapter is unavailable
-    // or returns an incomplete series.
+    // Try another complete range source before downloading 62 monthly reports.
+  }
+  try {
+    const prices = await fetchYahooRecentHistory(meta, "5y", minimumTradingDays);
+    historySourceCache.set(meta.symbol, "Yahoo Finance 台股日線（歷史備援）");
+    return prices;
+  } catch {
+    // Exchange monthly reports remain the final fallback. Never synthesize bars.
   }
   const months = recentMonths();
   const rows: DailyPrice[] = [];
@@ -360,7 +366,7 @@ async function loadOfficialHistory(meta: StockMeta): Promise<DailyPrice[]> {
   }
   const deduplicated = [...new Map(rows.map((row) => [row.date, row])).values()]
     .sort((left, right) => left.date.localeCompare(right.date));
-  validateOfficialHistoryContinuity(deduplicated);
+  validateOfficialHistoryContinuity(deduplicated, minimumTradingDays);
   if (failures.length && !deduplicated.length) throw new Error("所有官方歷史行情請求均失敗");
   historySourceCache.set(
     meta.symbol,
@@ -395,18 +401,19 @@ async function withScanHistoryConcurrency<T>(task: () => Promise<T>): Promise<T>
   }
 }
 
-export async function getOfficialHistory(meta: StockMeta): Promise<DailyPrice[]> {
-  const cached = historyCache.get(meta.symbol);
+export async function getOfficialHistory(meta: StockMeta, minimumTradingDays = 240): Promise<DailyPrice[]> {
+  const cacheKey = minimumTradingDays === 240 ? meta.symbol : `${meta.symbol}:display:${minimumTradingDays}`;
+  const cached = historyCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
-  const pending = inFlight.get(meta.symbol);
+  const pending = inFlight.get(cacheKey);
   if (pending) return pending;
-  const request = withHistoryConcurrency(() => loadOfficialHistory(meta))
+  const request = withHistoryConcurrency(() => loadOfficialHistory(meta, minimumTradingDays))
     .then((prices) => {
-      historyCache.set(meta.symbol, { value: prices, expiresAt: Date.now() + HISTORY_CACHE_MS });
+      historyCache.set(cacheKey, { value: prices, expiresAt: Date.now() + HISTORY_CACHE_MS });
       return prices;
     })
-    .finally(() => inFlight.delete(meta.symbol));
-  inFlight.set(meta.symbol, request);
+    .finally(() => inFlight.delete(cacheKey));
+  inFlight.set(cacheKey, request);
   return request;
 }
 
@@ -478,7 +485,7 @@ export function mergeOfficialHistoryWithQuote(
     .sort((a, b) => a.date.localeCompare(b.date));
 }
 
-function stockPayloadFromHistory(
+export function stockPayloadFromHistory(
   meta: StockMeta,
   quote: StockQuote | null,
   history: DailyPrice[],
@@ -513,7 +520,7 @@ function stockPayloadFromHistory(
       lastTradingDate: last.date,
       signalEligible: Boolean(marketQuote?.isRealtime),
     },
-    dataNotice: `日 K、成交量、均線與 MACD 由 ${historySource} 計算；${
+    dataNotice: `${history.length < 240 ? `目前有 ${history.length} 個交易日，資料不足的長期均線不顯示。` : ""}日 K、成交量、均線與 MACD 由 ${historySource} 計算；${
       marketQuote?.isRealtime
         ? `盤中當日 K 棒以 ${marketQuote.source} 更新，收盤後改用完整日成交資料`
         : marketQuote

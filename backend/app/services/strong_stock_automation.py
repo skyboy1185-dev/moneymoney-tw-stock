@@ -90,13 +90,17 @@ class StrongStockAutomation:
                         StrongStockDataRun.trade_date == local.date(),
                         StrongStockDataRun.status == "COMPLETED",
                     ).limit(1))
-                    archived = db.scalar(select(StrongStockScanArchive.id).where(
+                    archived = db.scalar(select(StrongStockScanArchive).where(
                         StrongStockScanArchive.trade_date == local.date(),
                         StrongStockScanArchive.observed_at >= datetime.combine(local.date(), time(13, 30), TAIPEI),
-                    ).limit(1))
+                    ).order_by(StrongStockScanArchive.observed_at.desc()).limit(1))
                     # A pre-close/legacy ranking is not a frozen close input. Let the
                     # normal scheduled scan capture it once before skipping this day.
                     completed = completed if archived else None
+                    if archived:
+                        financial_status = json.loads(archived.payload_json).get("market", {}).get("source_status", {}).get("strong_stock_fundamentals", "")
+                        if not financial_status or "failed=0;" not in financial_status:
+                            completed = None
                     if completed:
                         users = list(db.scalars(select(StrongStockSetting.user_id).where(StrongStockSetting.paper_enabled.is_(True))).all())
                         queued = {uid: queue_paper_orders(db, uid, local.date()) for uid in users}
@@ -118,6 +122,8 @@ class StrongStockAutomation:
             if not force and (payload.market.trade_date != local.date() or payload.market.market_open or len(payload.stocks) < 60):
                 result = {"status": "waiting_complete_close_data", "payloadTradeDate": payload.market.trade_date.isoformat()}
             else:
+                from .strong_stock_fundamentals import enrich_strong_stock_fundamentals
+                await enrich_strong_stock_fundamentals(payload)
                 with SessionLocal() as db:
                     settings = list(db.scalars(select(StrongStockSetting).where(StrongStockSetting.paper_enabled.is_(True))).all())
                     users = [row.user_id for row in settings]
@@ -148,7 +154,9 @@ class StrongStockAutomation:
                 from .strong_stock import dec
                 with SessionLocal() as db:
                     users = list(db.scalars(select(StrongStockSetting.user_id).where(StrongStockSetting.paper_enabled.is_(True))).all())
-                    pending = list(db.scalars(select(StrongStockOrder).where(StrongStockOrder.status == "PENDING")).all())
+                    pending = list(db.scalars(select(StrongStockOrder).where(
+                        StrongStockOrder.status.in_(("PENDING", "PARTIALLY_FILLED"))
+                    )).all())
                     positions = list(db.scalars(select(StrongStockPosition).where(StrongStockPosition.status == "OPEN")).all())
                     names = {row.symbol: row.name for row in [*pending, *positions]}
                     requests: list[StockQuoteRequest] = []
@@ -164,11 +172,13 @@ class StrongStockAutomation:
                 execution_at = datetime.now(UTC) if now is None else current
                 decimal_prices = {symbol: dec(quote.price) for symbol, quote in quotes.items()
                                   if trusted_quote(quote, execution_at, MAX_QUOTE_AGE_SECONDS)}
+                executable_quotes = {symbol: quote for symbol, quote in quotes.items()
+                                     if trusted_quote(quote, execution_at, MAX_QUOTE_AGE_SECONDS, require_book=True)}
                 quote_health["unresolvedSymbols"] = sorted(set(names) - {r.symbol for r in requests})
                 self._state["quoteHealth"] = quote_health
                 with SessionLocal() as db:
-                    fills = {uid: fill_pending_orders(db, uid, decimal_prices, execution_at.astimezone(TAIPEI)) for uid in users}
-                    exits = {uid: monitor_positions(db, uid, decimal_prices, execution_at.astimezone(TAIPEI)) for uid in users}
+                    fills = {uid: fill_pending_orders(db, uid, executable_quotes, execution_at.astimezone(TAIPEI)) for uid in users}
+                    exits = {uid: monitor_positions(db, uid, executable_quotes, execution_at.astimezone(TAIPEI)) for uid in users}
                 self._last_intraday_quote_at = current
                 result = {"status": "intraday_monitor", "users": len(users), "fills": fills, "exits": exits}
         else:
@@ -180,7 +190,10 @@ class StrongStockAutomation:
         if not gmail_notification_dispatcher.configured:
             return
         with SessionLocal() as db:
-            rows = list(db.scalars(select(StrongStockNotification).where(StrongStockNotification.email_sent.is_(False)).order_by(StrongStockNotification.created_at).limit(20)).all())
+            rows = list(db.scalars(select(StrongStockNotification).where(
+                StrongStockNotification.email_sent.is_(False),
+                StrongStockNotification.event_type.in_({"PAPER_BUY_FILLED","PAPER_SELL_FILLED","PAPER_ADD_FILLED"}),
+            ).order_by(StrongStockNotification.created_at).limit(20)).all())
         for row in rows:
             sent = await gmail_notification_dispatcher.dispatch(
                 event_type=f"strong_stock_{row.event_type.lower()}", action=row.title,

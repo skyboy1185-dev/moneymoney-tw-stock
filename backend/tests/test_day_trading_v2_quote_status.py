@@ -122,3 +122,58 @@ def test_expired_quote_is_rechecked_before_automatic_entry(runtime_db):
     with pytest.raises(HTTPException) as exc:
         router._verify_automatic_entry_quote(db, "quote-user", "2330", router.merged_config(), NOW + timedelta(seconds=16))
     assert "該股票即時行情逾時" in exc.value.detail
+
+
+def test_widened_book_is_rechecked_before_automatic_entry(runtime_db, monkeypatch):
+    from dataclasses import replace
+    db, _runtime = runtime_db
+    widened = replace(quote(), best_bid=99, best_ask=101)
+    monkeypatch.setattr(router.day_trading_engine, "official_quotes_snapshot", lambda symbols=None: {"2330": widened})
+    with pytest.raises(HTTPException) as exc:
+        router._verify_automatic_entry_quote(db, "quote-user", "2330", router.merged_config(), NOW)
+    assert "下單前買賣價差過大" in exc.value.detail
+
+
+def test_live_observation_uses_time_after_signal_calculation(monkeypatch):
+    later = NOW + timedelta(seconds=20)
+    monkeypatch.setattr(router, "_now", lambda: later)
+    monkeypatch.setattr(router.day_trading_engine, "market_regime", lambda: {})
+    monkeypatch.setattr(router.day_trading_engine, "signals", lambda: [])
+    monkeypatch.setattr(router.day_trading_engine, "official_quotes_snapshot", lambda: {"2330": quote(later)})
+    observed = router._quote_observation(NOW, router.merged_config(), refresh_clock=True)
+    assert observed["fresh"] is True
+    assert observed["latestQuote"] == later
+    assert observed["observedAt"] == later
+    # Explicit replay time remains deterministic and cannot accept future ticks.
+    assert router._quote_observation(NOW, router.merged_config())["fresh"] is False
+
+
+def test_signal_identity_is_account_scoped_and_recognizes_legacy_fills():
+    user = "a" * 80
+    strategy = "OPENING_RANGE_BREAKOUT"
+    key = router._paper_signal_key(user, "2330", NOW, strategy)
+    assert len(key) <= 80
+    assert key != router._paper_signal_key("other-user", "2330", NOW, strategy)
+    assert key == router._paper_signal_key(user, "2330", NOW.astimezone(router.TAIPEI), strategy)
+    old_key = f"v2:2330:{NOW.isoformat()}:{strategy}"
+    rows = {old_key: SimpleNamespace(user_id=user, mode="PAPER", status="EXECUTED")}
+    db = SimpleNamespace(get=lambda model, ident: rows.get(ident))
+    assert router._signal_executed(db, user, "2330", NOW, strategy)
+    assert not router._signal_executed(db, "other-user", "2330", NOW, strategy)
+    rows[old_key].status = "SKIPPED"
+    assert not router._signal_executed(db, user, "2330", NOW, strategy)
+
+
+def test_missing_book_is_not_reported_as_a_measured_wide_spread():
+    from app.services.day_trading_v2 import market_gate_reasons
+    from app.services.day_trading_v2_quotes import entry_spread
+    from dataclasses import replace
+    args = dict(now=NOW, market_crashing=False, quote_reliable=True, volume=5000000,
+                turnover=500000000, vwap_deviation_pct=0, blocked=False, connection_ok=True,
+                available_capital=3000000, open_positions=0, sector_positions=0, realized_pnl=0)
+    missing = replace(quote(), book_timestamp=None, best_bid=None, best_ask=None)
+    reasons = market_gate_reasons(spread_pct=entry_spread(missing, NOW, 15), **args)
+    assert "五檔行情缺失或逾時" in reasons and "買賣價差過大" not in reasons
+    locked = replace(quote(), best_bid=100, best_ask=100)
+    assert entry_spread(locked, NOW, 15) == 0
+    assert market_gate_reasons(spread_pct=entry_spread(locked, NOW, 15), **args) == []

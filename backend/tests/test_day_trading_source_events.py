@@ -116,7 +116,9 @@ def test_all_dead_event_is_ui_only_and_recovery_respects_existing_guards(harness
     assert rows[0].event_type == "QUOTE_SOURCE_UNAVAILABLE"
     assert rows[2].event_type == "QUOTE_SOURCE_RECOVERED" and "風控" in rows[2].message
     assert "QUOTE_SOURCE_UNAVAILABLE" not in EMAIL_EVENT_TYPES
-    assert {"QUOTE_SOURCE_SWITCHED", "QUOTE_SOURCE_RECOVERED"} <= EMAIL_EVENT_TYPES
+    assert "QUOTE_SOURCE_SWITCHED" not in EMAIL_EVENT_TYPES
+    assert "QUOTE_SOURCE_RECOVERED" not in EMAIL_EVENT_TYPES
+    assert {"BUY_FILLED", "SELL_FILLED", "DAILY_REPORT"}.issubset(EMAIL_EVENT_TYPES)
 
 
 @pytest.mark.parametrize("changes", [

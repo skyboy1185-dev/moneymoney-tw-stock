@@ -31,6 +31,7 @@ import {
 import { buildDingSelectionRows, type DingSelectionRow } from "@/lib/ding-selection";
 import { buildTaiwanIndexKeyLevels, formatIndexLevel } from "@/lib/taiwan-index-key-levels";
 import { futuresFlashDirection, type FuturesFlashDirection } from "@/lib/market-snapshot-refresh";
+import { publishInAppNotification } from "@/lib/in-app-notifications";
 
 interface ElectronicChipFlowTickerProps {
   onSelectStock?: (symbol: string) => void;
@@ -1184,6 +1185,39 @@ export function ElectronicChipFlowTicker({ onSelectStock, marketSnapshot }: Elec
   const closeThreeGateToast = (id: string) => {
     setThreeGateToasts((current) => current.filter((item) => item.id !== id));
   };
+
+  useEffect(() => {
+    if (!momentumToasts.length) return;
+    momentumToasts.forEach((item) => {
+      const rankChange = item.rankChange;
+      publishInAppNotification({
+        id: `chip-momentum:${item.id}`,
+        severity: "normal",
+        title: rankChange ? rankChangeToastTitle(rankChange) : "盤中大單動能",
+        stock: `${item.alert.symbol} ${item.alert.name}`,
+        message: rankChange ? rankChangeToastMessage(rankChange) : item.alert.message,
+        reason: `近 ${data?.windowMinutes ?? 5} 分鐘盤中籌碼變化`,
+        timestamp: new Date().toISOString(),
+        href: `/?symbol=${encodeURIComponent(item.alert.symbol)}&view=analysis`,
+      });
+    });
+    setMomentumToasts([]);
+  }, [momentumToasts, data?.windowMinutes]);
+
+  useEffect(() => {
+    if (!threeGateToasts.length) return;
+    threeGateToasts.forEach((item) => publishInAppNotification({
+      id: `three-gate:${item.id}`,
+      severity: "normal",
+      title: "三關價突破提醒",
+      stock: `${item.symbol} ${item.name}`,
+      message: `${item.position === "crossed-above" ? "今日站上" : "今日跌破"}${item.levelLabel} ${formatPrice(item.levelPrice)}，目前股價 ${formatPrice(item.currentPrice)}`,
+      reason: `依 ${item.sourceDate} 高低價計算`,
+      timestamp: new Date().toISOString(),
+      href: `/?symbol=${encodeURIComponent(item.symbol)}&view=analysis`,
+    }));
+    setThreeGateToasts([]);
+  }, [threeGateToasts]);
 
   useEffect(() => {
     let controller: AbortController | null = null;

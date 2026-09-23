@@ -280,6 +280,8 @@ def _buy_signal(
         signal.processed_at = at
         return None
     trade_action = requested_action or detection.action
+    if 0 < float(detection.target_price) <= stock.current_price:
+        return None
     if trade_action not in {"PROBE_BUY", "BUY", "ADD"}:
         return None
     if trade_action == "PROBE_BUY" and not settings.allow_probe:
@@ -758,7 +760,11 @@ def process_pattern_scan(db: Session, payload: PatternScanPayload, *, force: boo
 
 
 def detection_dict(item: PatternDetection) -> dict:
+    target_reached = 0 < float(item.target_price) <= float(item.current_price)
+    source = _loads(item.source_json, {})
     return {
+        "targetReached": target_reached,
+        "quoteTime": source.get("quoteTime"), "quoteSource": source.get("quote"),
         "id": item.id, "tradeDate": item.trade_date.isoformat(), "stockCode": item.stock_code,
         "stockName": item.stock_name, "marketType": item.market_type, "sectorName": item.sector_name,
         "patternType": item.pattern_type, "patternLabel": PATTERN_LABELS.get(item.pattern_type, item.pattern_type),
@@ -774,8 +780,9 @@ def detection_dict(item: PatternDetection) -> dict:
         "trailingStopPrice": float(item.trailing_stop_price or 0), "volumeRatio": float(item.volume_ratio),
         "volumeConfirmed": item.volume_confirmed, "distanceToBreakoutPct": float(item.distance_to_breakout_pct),
         "riskRewardRatio": float(item.risk_reward_ratio), "completionPct": float(item.completion_pct),
-        "action": item.action, "actionLabel": item.action_label,
-        "suggestedPositionPct": float(item.suggested_position_pct), "suggestedQuantity": item.suggested_quantity,
+        "action": "NO_TRADE" if target_reached and item.action not in {"STOP_LOSS", "EXIT"} else item.action,
+        "actionLabel": "目標已達，不再進場" if target_reached and item.action not in {"STOP_LOSS", "EXIT"} else item.action_label,
+        "suggestedPositionPct": 0 if target_reached else float(item.suggested_position_pct), "suggestedQuantity": 0 if target_reached else item.suggested_quantity,
         "marketRegime": item.market_regime, "sectorStrength": float(item.sector_strength),
         "keyPoints": _loads(item.key_points_json, []), "scoreBreakdown": _loads(item.score_breakdown_json, {}),
         "operationReasons": _loads(item.reasons_json, []), "missingConditions": _loads(item.missing_conditions_json, []),

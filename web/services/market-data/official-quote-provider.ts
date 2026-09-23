@@ -9,7 +9,7 @@ const lastTradeCache = new Map<string, StockQuote>();
 const LIVE_QUOTE_CACHE_MS = 2_000;
 const MIS_POLL_INTERVAL_MS = 850;
 const MIS_POLL_ATTEMPTS = 8;
-const MIS_BATCH_SIZE = 40;
+const MIS_BATCH_SIZE = 5;
 const BACKEND_QUOTE_BATCH_SIZE = 50;
 
 interface BackendOfficialQuote {
@@ -251,6 +251,22 @@ async function fetchMisRowBatch(metas: QuoteStockMeta[]): Promise<Record<string,
   return Array.isArray(payload.msgArray) ? payload.msgArray : [];
 }
 
+async function fetchMisRowBatchAdaptive(metas: QuoteStockMeta[]): Promise<Record<string, unknown>[]> {
+  const rows = await fetchMisRowBatch(metas);
+  if (metas.length <= 1) return rows;
+  const received = new Set(rows.map((row) => String(row.c ?? "")));
+  const missing = metas.filter((meta) => !received.has(meta.symbol));
+  if (!missing.length) return rows;
+  const midpoint = Math.ceil(missing.length / 2);
+  const retried = [
+    await fetchMisRowBatchAdaptive(missing.slice(0, midpoint)),
+    await fetchMisRowBatchAdaptive(missing.slice(midpoint)),
+  ];
+  const merged = new Map(rows.map((row) => [String(row.c ?? ""), row]));
+  for (const row of retried.flat()) merged.set(String(row.c ?? ""), row);
+  return [...merged.values()];
+}
+
 async function fetchMisRows(metas: QuoteStockMeta[]): Promise<Record<string, unknown>[]> {
   const batches: QuoteStockMeta[][] = [];
   for (let index = 0; index < metas.length; index += MIS_BATCH_SIZE) {
@@ -260,7 +276,7 @@ async function fetchMisRows(metas: QuoteStockMeta[]): Promise<Record<string, unk
   const concurrency = 2;
   for (let index = 0; index < batches.length; index += concurrency) {
     const wave = await Promise.allSettled(
-      batches.slice(index, index + concurrency).map((batch) => fetchMisRowBatch(batch)),
+      batches.slice(index, index + concurrency).map((batch) => fetchMisRowBatchAdaptive(batch)),
     );
     rows.push(...wave.flatMap((result) => result.status === "fulfilled" ? result.value : []));
   }
@@ -299,17 +315,41 @@ async function fetchFallbackQuotes(
  */
 export async function getOfficialSnapshotQuotes(metas: QuoteStockMeta[]): Promise<Map<string, StockQuote>> {
   const results = new Map<string, StockQuote>();
-  const metaBySymbol = new Map(metas.map((meta) => [meta.symbol, meta]));
-  const rows = await fetchMisRows(metas);
-  for (const row of rows) {
-    const symbol = String(row.c ?? "");
-    const meta = metaBySymbol.get(symbol);
-    if (!meta) continue;
-    const quote = parseMisStockQuote(row, meta, lastTradeCache.get(symbol));
-    if (!quote) continue;
-    results.set(symbol, quote);
-    const matchedPrice = number(row.z);
-    if (matchedPrice != null && matchedPrice > 0) lastTradeCache.set(symbol, quote);
+  // Railway receives empty MIS payloads for multi-channel URLs even though
+  // single-symbol requests succeed. Keep this broad snapshot bounded and use
+  // small concurrent waves of single-symbol requests.
+  const concurrency = 4;
+  for (let index = 0; index < metas.length; index += concurrency) {
+    const wave = await Promise.allSettled(
+      metas.slice(index, index + concurrency).map(async (meta) => ({
+        meta, rows: await fetchMisRowBatch([meta]),
+      })),
+    );
+    for (const item of wave) {
+      if (item.status !== "fulfilled") continue;
+      const row = item.value.rows.find((candidate) => String(candidate.c ?? "") === item.value.meta.symbol);
+      if (!row) continue;
+      const quote = parseMisStockQuote(row, item.value.meta, lastTradeCache.get(item.value.meta.symbol));
+      if (!quote) continue;
+      results.set(item.value.meta.symbol, quote);
+      const matchedPrice = number(row.z);
+      if (matchedPrice != null && matchedPrice > 0) lastTradeCache.set(item.value.meta.symbol, quote);
+    }
+  }
+  return results;
+}
+
+export async function getOfficialRelaySnapshotQuotes(metas: QuoteStockMeta[]): Promise<Map<string, StockQuote>> {
+  if (!metas.length) return new Map();
+  const payload = await backendJson<{ items: BackendOfficialQuote[] }>(
+    "/market-data/quotes/snapshot",
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items: metas }) },
+    15_000,
+  );
+  const results = new Map<string, StockQuote>();
+  for (const item of payload.items) {
+    const quote = parseBackendOfficialQuote(item);
+    if (quote) results.set(quote.symbol, quote);
   }
   return results;
 }
@@ -326,11 +366,13 @@ async function fetchMisQuotes(metas: QuoteStockMeta[]): Promise<Map<string, Stoc
       if (!row) continue;
       const previousTrade = lastTradeCache.get(symbol);
       const quote = parseMisStockQuote(row, meta, previousTrade);
-      if (quote) results.set(symbol, quote);
+      if (quote) {
+        results.set(symbol, quote);
+        unresolved.delete(symbol);
+      }
       const matchedPrice = number(row.z);
       if (quote && matchedPrice != null && matchedPrice > 0) {
         lastTradeCache.set(symbol, quote);
-        unresolved.delete(symbol);
       }
     }
     if (unresolved.size && attempt < attempts - 1) {
@@ -487,6 +529,16 @@ export async function getOfficialQuotes(metas: QuoteStockMeta[]): Promise<Map<st
 export async function getOfficialQuote(meta: QuoteStockMeta): Promise<StockQuote | null> {
   const quotes = await getOfficialQuotes([meta]);
   return quotes.get(meta.symbol) ?? null;
+}
+
+/** Fetch one official MIS quote without accepting a cached fallback source. */
+export async function getOfficialLiveQuote(meta: QuoteStockMeta): Promise<StockQuote | null> {
+  const quotes = await fetchMisQuotes([meta]);
+  const quote = quotes.get(meta.symbol) ?? null;
+  if (quote) {
+    quoteCache.set(meta.symbol, { value: quote, expiresAt: Date.now() + LIVE_QUOTE_CACHE_MS });
+  }
+  return quote;
 }
 
 export function resetOfficialQuoteCacheForTests() {

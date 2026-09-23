@@ -27,7 +27,7 @@ export function StockAnalysis({
   const [customStart, setCustomStart] = useState("");
   const [customEnd, setCustomEnd] = useState("");
   const latest = data.prices.at(-1)!;
-  const previous = data.prices.at(-2)!;
+  const previous = data.prices.at(-2) ?? latest;
   const change = latest.close - previous.close;
   const changePercent = (change / previous.close) * 100;
   const powerScore = useMemo(

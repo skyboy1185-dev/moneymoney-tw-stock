@@ -5,6 +5,10 @@ from datetime import UTC, datetime
 import hashlib
 import hmac
 from pathlib import Path
+import threading
+import time
+import httpx
+from zoneinfo import ZoneInfo
 from pydantic import BaseModel, Field
 
 from ..services.official_market_data import (
@@ -18,6 +22,47 @@ from ..services.day_trading import day_trading_engine
 router = APIRouter(prefix="/market-data", tags=["market-data"])
 
 RELAY_DIGEST_PATH = Path("/app/data/quote-relay.sha256")
+INDUSTRY_UNIVERSE_TTL_SECONDS = 6 * 60 * 60
+_industry_universe_cache: tuple[float, list[StockQuoteRequest]] = (0.0, [])
+_industry_universe_lock = threading.Lock()
+
+
+def _text(row: dict, *keys: str) -> str:
+    for key in keys:
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _industry_universe() -> list[StockQuoteRequest]:
+    global _industry_universe_cache
+    now = time.monotonic()
+    if _industry_universe_cache[0] > now:
+        return _industry_universe_cache[1]
+    with _industry_universe_lock:
+        if _industry_universe_cache[0] > time.monotonic():
+            return _industry_universe_cache[1]
+        try:
+            with httpx.Client(timeout=15) as client:
+                listed = client.get("https://openapi.twse.com.tw/v1/opendata/t187ap03_L").json()
+                otc = client.get("https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O").json()
+            rows: list[StockQuoteRequest] = []
+            for row in listed:
+                symbol = _text(row, "公司代號")
+                industry = _text(row, "產業別")
+                if symbol.isdigit() and len(symbol) == 4 and industry:
+                    rows.append(StockQuoteRequest(symbol, _text(row, "公司簡稱") or symbol, "上市"))
+            for row in otc:
+                symbol = _text(row, "SecuritiesCompanyCode")
+                industry = _text(row, "SecuritiesIndustryCode")
+                if symbol.isdigit() and len(symbol) == 4 and industry:
+                    rows.append(StockQuoteRequest(symbol, _text(row, "CompanyAbbreviation") or symbol, "上櫃"))
+            if rows:
+                _industry_universe_cache = (time.monotonic() + INDUSTRY_UNIVERSE_TTL_SECONDS, rows)
+        except (httpx.HTTPError, ValueError, TypeError):
+            pass
+        return _industry_universe_cache[1]
 
 
 def relay_authorized(authorization: str = Header(default="")) -> None:
@@ -31,25 +76,34 @@ def relay_authorized(authorization: str = Header(default="")) -> None:
 
 
 class RelayBatch(BaseModel):
-    rows: list[dict[str, str]] = Field(min_length=1, max_length=60)
+    rows: list[dict[str, object]] = Field(min_length=1, max_length=60)
 
 
-def _relay_requests():
+def _relay_held_requests():
     from sqlalchemy import select
     from ..database import SessionLocal
     from ..models import LongTermPosition
-    from ..services.day_trading_quote_pump import day_trading_quote_pump
     with SessionLocal() as db:
         positions = list(db.scalars(select(LongTermPosition).where(LongTermPosition.status == "open")))
         held = [StockQuoteRequest(p.stock_code, p.stock_name, p.market_type) for p in positions]
-    return list({r.symbol: r for r in [*held, *day_trading_quote_pump.relay_targets()]}.values())
+    return held
+
+
+def _relay_requests():
+    from ..services.day_trading_quote_pump import day_trading_quote_pump
+    return list({r.symbol: r for r in [*_industry_universe(), *_relay_held_requests(), *day_trading_quote_pump.relay_targets()]}.values())
 
 
 @router.get("/relay/targets", dependencies=[Depends(relay_authorized)])
 def relay_targets():
     from ..services.day_trading_quote_pump import day_trading_quote_pump
-    return {"items": [{"symbol": r.symbol, "name": r.name, "market": r.market}
-                      for r in _relay_requests()]}
+    held = _relay_held_requests()
+    priority = day_trading_quote_pump.priority_symbols() | {r.symbol for r in held}
+    targets = {r.symbol: r for r in [*held, *day_trading_quote_pump.relay_targets()]}
+    return {"priorityRefreshSeconds": 5, "baselineBatchSize": 200,
+            "items": [{"symbol": r.symbol, "name": r.name, "market": r.market,
+                       "priority": r.symbol in priority}
+                      for r in targets.values()]}
 
 
 @router.post("/relay/quotes", dependencies=[Depends(relay_authorized)])
@@ -63,15 +117,21 @@ def relay_quotes(body: RelayBatch):
     quotes = {}
     books = {}
     for raw in body.rows:
-        symbol = raw.get("c", "")
-        if symbol not in targets:
+        symbol = str(raw.get("c") or "")
+        if not (symbol.isdigit() and len(symbol) == 4):
             continue
-        quote = parse_mis_quote(raw, targets[symbol], previous.get(symbol), now=now)
+        fallback = targets.get(symbol) or StockQuoteRequest(
+            symbol,
+            str(raw.get("n") or symbol),
+            "上市" if str(raw.get("ex") or "").lower() == "tse" else "上櫃",
+        )
+        quote = parse_mis_quote(raw, fallback, previous.get(symbol), now=now)
         if quote is not None:
             books[symbol] = quote
         if trusted_quote(quote, now=now, max_age_seconds=15):
             quotes[symbol] = quote
     official_market_data_provider.ingest_order_books(books)
+    official_market_data_provider.ingest_market_snapshots(books)
     official_market_data_provider.ingest_verified_quotes(quotes)
     day_trading_quote_pump.ingest_mis_relay(quotes)
     accepted = len(quotes)
@@ -86,6 +146,10 @@ class OfficialQuoteRequestItem(BaseModel):
 
 class OfficialQuoteBatchRequest(BaseModel):
     items: list[OfficialQuoteRequestItem] = Field(min_length=1, max_length=60)
+
+
+class OfficialSnapshotRequest(BaseModel):
+    items: list[OfficialQuoteRequestItem] = Field(min_length=1, max_length=2500)
 
 
 def _quote_payload(quote: OfficialStockQuote) -> dict[str, object]:
@@ -122,6 +186,26 @@ async def get_official_quotes(body: OfficialQuoteBatchRequest) -> dict[str, obje
             if item.symbol in quotes
         ],
     }
+
+
+@router.post("/quotes/snapshot")
+def get_official_quote_snapshot(body: OfficialSnapshotRequest) -> dict[str, object]:
+    """Return the relay's current shared snapshot without issuing new MIS requests."""
+    requests = [StockQuoteRequest(item.symbol, item.name, item.market) for item in body.items]
+    quotes = official_market_data_provider.cached_market_snapshots(requests)
+    now = datetime.now(UTC)
+    taipei_now = now.astimezone(ZoneInfo("Asia/Taipei"))
+    cash_session = taipei_now.weekday() < 5 and (9, 0) <= (taipei_now.hour, taipei_now.minute) <= (13, 30)
+    fresh: dict[str, OfficialStockQuote] = {}
+    for symbol, quote in quotes.items():
+        try:
+            received = datetime.fromisoformat(quote.received_at or quote.quote_timestamp)
+            age = (now - received.astimezone(UTC)).total_seconds()
+        except ValueError:
+            continue
+        if quote.quote_timestamp[:10] == taipei_now.date().isoformat() and (not cash_session or 0 <= age <= 180):
+            fresh[symbol] = quote
+    return {"items": [_quote_payload(fresh[item.symbol]) for item in body.items if item.symbol in fresh]}
 
 
 @router.post("/quote-history")

@@ -532,17 +532,8 @@ class LineNotificationDispatcher:
             if not line_setting_allows(notification_settings, event.event_type):
                 return 0
             group_ids = self._active_group_ids(db)
-        try:
-            await gmail_notification_dispatcher.dispatch(
-                event_type=event.event_type,
-                action=event.action,
-                message=event.message,
-                dedupe_key=event.dedupe_key,
-                signal_id=event.signal_id,
-                symbol=event.symbol,
-            )
-        except Exception:
-            logger.exception("Gmail notification dispatch failed for %s", event.dedupe_key)
+        # Recommendations and status events remain on LINE. Email is reserved
+        # for persisted fills in the trading automation services.
         if not get_settings().line_notifications_enabled:
             return 0
         daily_limit = max(0, get_settings().line_daily_trade_message_limit)

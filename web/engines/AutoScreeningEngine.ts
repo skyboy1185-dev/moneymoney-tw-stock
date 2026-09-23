@@ -5,6 +5,7 @@ import { getOfficialQuotes } from "@/services/market-data/official-quote-provide
 import { buildOfficialRecentStockPayload } from "@/services/market-data/official-history-provider";
 import { calculateRSI } from "@/lib/technical";
 import { assessKeyPrice } from "@/lib/key-price";
+import { calculateThreeGatePrice, classifyThreeGateSignal } from "@/lib/three-gate-price";
 
 function taipeiDate() {
   return new Intl.DateTimeFormat("en-CA", {
@@ -34,6 +35,19 @@ export class AutoScreeningEngine {
       if (stock.prices.length < 240 || stock.dataMode !== "official_history") return null;
       const latest = stock.prices.at(-1)!;
       const previous = stock.prices.at(-2)!;
+      // Always classify the latest session against levels derived from the
+      // preceding completed session. This also avoids using today's range to
+      // explain today's own breakout after the close.
+      const threeGate = calculateThreeGatePrice(stock.prices, true);
+      const threeGateSignal = threeGate
+        ? classifyThreeGateSignal(latest.close, previous.close, threeGate)
+        : null;
+      const signalLevel = threeGateSignal === "upper_breakout" ? threeGate?.upper
+        : threeGateSignal === "middle_breakout" ? threeGate?.middle
+          : threeGateSignal === "lower_breakdown" ? threeGate?.lower : null;
+      const threeGateDistancePct = signalLevel
+        ? round((latest.close / signalLevel - 1) * 100)
+        : null;
       const indicator = stock.indicators.at(-1)!;
       const rsi = calculateRSI(stock.prices).at(-1) ?? null;
       const evaluations = active.map((robot) => ({ robot, result: robot.analyze(stock, market) }))
@@ -118,7 +132,7 @@ export class AutoScreeningEngine {
       ].filter((item, index, array) => array.indexOf(item) === index).slice(0, 5);
       return {
         rank: 0, symbol: meta.symbol, name: meta.name, market: meta.market,
-        industry: meta.industry, themes: meta.themes ?? [], price: latest.close,
+        industry: meta.industry, themes: meta.themes ?? [], price: latest.close, previousClose: previous.close,
         changePercent: ((latest.close - previous.close) / previous.close) * 100,
         volume: latest.volume, strategyId: evaluated.robot.id, strategyName: evaluated.robot.name,
         score: total, scoreBreakdown, strategyFit: evaluated.result.score,
@@ -145,6 +159,7 @@ export class AutoScreeningEngine {
           officialQuote
           && ["TWSE MIS", "TWSE OpenAPI", "TPEx OpenAPI"].includes(officialQuote.source),
         ),
+        threeGate, threeGateSignal, threeGateDistancePct,
       } satisfies RankingRow;
     }));
     return candidates.filter((row): row is RankingRow => row !== null)

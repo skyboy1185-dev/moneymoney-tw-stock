@@ -179,7 +179,7 @@ export type RuntimeState = {
   dataReason?: string; executionError?: string;
   quoteHealth?: {
     observedAt: string; lastReceivedAt: string | null; trackedCount: number;
-    freshCount: number; staleCount: number; overCapacity: boolean;
+    freshCount: number; staleCount: number; overCapacity: boolean; freshBookCount?: number;
     activeSource?: string; providerMode?: string; ready?: boolean;
     entitlementReady?: boolean; entitlementReason?: string | null; lastSourceSwitchAt?: string | null;
     sourceSwitchCount?: number; subscriptionCount?: number; subscriptionLimit?: number;

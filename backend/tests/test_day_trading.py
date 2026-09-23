@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from app.services.day_trading import (
@@ -10,6 +11,7 @@ from app.services.day_trading import (
     long_signal_score,
     prioritize_events,
     short_signal_score,
+    strict_entry_rejections,
 )
 from app.services.official_market_data import OfficialStockQuote
 from app.services.popular_stock_universe import merge_momentum_stocks
@@ -44,6 +46,27 @@ def test_long_and_short_scores_use_multiple_conditions() -> None:
         "active_sell": True, "large_sell": True, "short_trend": True,
         "market_fit": False, "industry_fit": False,
     }) == 90
+
+
+def test_strict_entry_gate_requires_confirmed_fresh_high_quality_signal() -> None:
+    settings = SimpleNamespace(
+        minimum_confidence=75, minimum_risk_reward=1.5, maximum_spread=.5,
+        minimum_volume=1_000_000, minimum_turnover=100_000_000,
+    )
+    signal = {
+        "status":"confirmed", "dataMode":"official", "quoteIsRealtime":True,
+        "chaseBlocked":False, "dailyChaseBlocked":False, "confidenceScore":82,
+        "healthScore":72, "confirmationScore":60, "riskRewardRatio":2.2,
+        "spreadPercentage":.2, "stopDistancePercent":1.2, "volume":2_000_000,
+        "turnover":200_000_000, "marketAlignment":50,
+    }
+    at = datetime(2026, 9, 17, 2, 0, tzinfo=UTC)  # 10:00 Taipei
+    assert strict_entry_rejections(signal, settings, at) == []
+    signal.update(status="temporary", confidenceScore=70, stopDistancePercent=2.0)
+    failures = strict_entry_rejections(signal, settings, at)
+    assert "訊號尚未完成確認" in failures
+    assert "信心分數不足" in failures
+    assert "停損距離過寬" in failures
 
 
 def test_entry_timing_blocks_lighton_chase_high_and_intraday_low_short() -> None:
@@ -1194,3 +1217,26 @@ def test_hourly_quota_keeps_retention_but_allows_high_confidence_after_retention
     assert {item["id"] for item in too_soon} == {"a", "b", "c"}
     assert {item["id"] for item in still_capped} == {"a", "b", "d"}
     assert {item["id"] for item in reset} == {"a", "b", "d"}
+
+
+def test_live_metrics_cache_invalidates_corrected_history_and_returns_independent_result():
+    from dataclasses import replace
+    stamp = datetime(2026, 9, 10, 1, 0, tzinfo=UTC)
+    history = [OfficialStockQuote("2330", "test", 100+i, 100, 100, 120, 99,
+        1000*(i+1), i, i, (stamp+timedelta(minutes=i)).isoformat(), "TWSE MIS", True)
+        for i in range(20)]
+    cached = MockDayTradingEngine._cached_live_metrics
+    cached.cache_clear()
+    first = MockDayTradingEngine._live_metrics(history)
+    expected = dict(first)
+    first["vwap"] = -1
+    assert MockDayTradingEngine._live_metrics(list(history)) == expected
+    assert cached.cache_info().hits == 1
+    corrected = [*history]
+    corrected[2] = replace(corrected[2], price=110)
+    result = MockDayTradingEngine._live_metrics(corrected)
+    assert cached.cache_info().misses == 2
+    assert result == cached.__wrapped__(tuple(corrected))
+    changed_source = [replace(q, source="Yahoo ????") for q in history]
+    MockDayTradingEngine._live_metrics(changed_source)
+    assert cached.cache_info().misses == 3

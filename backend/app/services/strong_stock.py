@@ -21,7 +21,7 @@ from ..strong_stock_models import (
 
 
 STRATEGY_ID = "STRONG_STOCK"
-STRATEGY_VERSION = "1.0.0"
+STRATEGY_VERSION = "1.1.0"
 ZERO = Decimal("0")
 CENT = Decimal("0.01")
 
@@ -367,7 +367,7 @@ def queue_paper_orders(db: Session, user_id: str, signal_date: date) -> int:
         return 0
     existing_positions = list(db.scalars(select(StrongStockPosition).where(StrongStockPosition.user_id == user_id, StrongStockPosition.status == "OPEN")).all())
     pending_orders = list(db.scalars(select(StrongStockOrder).where(
-        StrongStockOrder.user_id == user_id, StrongStockOrder.status == "PENDING",
+        StrongStockOrder.user_id == user_id, StrongStockOrder.status.in_(("PENDING", "PARTIALLY_FILLED")),
     )).all())
     pending_symbols = {order.symbol for order in pending_orders}
     capacity = max(0, int(str(config["maximumOpenPositions"])) - len(existing_positions) - len(pending_orders))
@@ -378,7 +378,7 @@ def queue_paper_orders(db: Session, user_id: str, signal_date: date) -> int:
     if regime:
         exposure_limit *= dec(regime.suggested_exposure_pct) / 100
     invested = sum((position.invested_capital for position in existing_positions), ZERO)
-    reserved = sum((order.limit_price * order.quantity for order in pending_orders), ZERO)
+    reserved = sum((order.limit_price * (order.quantity - order.filled_quantity) for order in pending_orders), ZERO)
     available_exposure = max(ZERO, exposure_limit - invested - reserved)
     available_cash = max(ZERO, account.cash - reserved)
     rows = list(db.scalars(select(StrongStockRanking).where(
@@ -419,46 +419,104 @@ def queue_paper_orders(db: Session, user_id: str, signal_date: date) -> int:
     return queued
 
 
-def fill_pending_orders(db: Session, user_id: str, prices: dict[str, Decimal], at: datetime) -> dict[str, int]:
+def _paper_buy_fill(order: StrongStockOrder, observation: object, at: datetime, config: dict[str, object]):
+    """Return a conservative fill from a fresh executable ask, or None.
+
+    Version 1.0 orders retain their historical last-trade simulator so old replays
+    remain reproducible. Version 1.1+ requires a timestamped five-level book.
+    """
+    if isinstance(observation, Decimal):
+        # Decimal observations are reserved for deterministic historical replay;
+        # the live automation hands this function full OfficialStockQuote objects.
+        if observation > order.limit_price:
+            return None
+        return observation, order.quantity - order.filled_quantity, {
+            "executionModel": "HISTORICAL_REPLAY_TRADE", "observedPrice": str(observation),
+            "fillStatus": "FULL", "legacy": order.strategy_version == "1.0.0",
+        }
+    from .quote_quality import trusted_quote
+    if not trusted_quote(observation, at, 15, require_book=True):
+        return None
+    ask = dec(getattr(observation, "best_ask", 0))
+    if ask <= 0 or ask > order.limit_price:
+        return None
+    ask_sizes = getattr(observation, "ask_volumes", ()) or ()
+    available = int(ask_sizes[0]) if ask_sizes else 0
+    remaining = order.quantity - order.filled_quantity
+    quantity = min(remaining, available)
+    if quantity <= 0:
+        return None
+    raw_with_slippage = ask * (Decimal("1") + dec(config["slippageBps"]) / Decimal("10000"))
+    execution_price = min(order.limit_price, raw_with_slippage).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+    details = {
+        "executionModel": "FRESH_BEST_ASK_DEPTH_V1", "quoteTime": getattr(observation, "quote_timestamp", None),
+        "bookTime": getattr(observation, "book_timestamp", None), "quoteSource": getattr(observation, "source", ""),
+        "observedPrice": str(getattr(observation, "price", "")), "bestAsk": str(ask),
+        "availableQuantity": available, "slippageBps": str(config["slippageBps"]),
+        "fillStatus": "FULL" if quantity == remaining else "PARTIAL", "legacy": False,
+    }
+    return execution_price, quantity, details
+
+
+def fill_pending_orders(db: Session, user_id: str, prices: dict[str, object], at: datetime) -> dict[str, int]:
     _setting, account, config = ensure_defaults(db, user_id)
     today = at.date()
     filled = expired = 0
-    orders = list(db.scalars(select(StrongStockOrder).where(StrongStockOrder.user_id == user_id, StrongStockOrder.status == "PENDING")).all())
+    orders = list(db.scalars(select(StrongStockOrder).where(
+        StrongStockOrder.user_id == user_id, StrongStockOrder.status.in_(("PENDING", "PARTIALLY_FILLED"))
+    )).all())
     for order in orders:
         if order.valid_date < today:
             order.status = "EXPIRED"; order.completed_at = at; expired += 1; continue
-        if order.valid_date != today or order.symbol not in prices or prices[order.symbol] > order.limit_price:
+        if order.valid_date != today or order.symbol not in prices:
             continue
-        price = prices[order.symbol]
-        notional = money(price * order.quantity)
+        proposed = _paper_buy_fill(order, prices[order.symbol], at, config)
+        if proposed is None:
+            continue
+        price, fill_quantity, details = proposed
+        notional = money(price * fill_quantity)
         fee = commission(notional, config)
-        slippage = money(notional * dec(config["slippageBps"]) / Decimal("10000"))
-        if notional + fee + slippage > account.cash:
+        separate_slippage = ZERO if details["executionModel"] == "FRESH_BEST_ASK_DEPTH_V1" else money(notional * dec(config["slippageBps"]) / Decimal("10000"))
+        if notional + fee + separate_slippage > account.cash:
             order.status = "REJECTED_INSUFFICIENT_CASH"; order.completed_at = at; continue
         ranking = db.scalar(select(StrongStockRanking).where(StrongStockRanking.symbol == order.symbol).order_by(StrongStockRanking.trade_date.desc()).limit(1))
         if ranking is None or ranking.stop_price is None:
             order.status = "REJECTED_DATA"; order.completed_at = at; continue
         position = db.scalar(select(StrongStockPosition).where(StrongStockPosition.user_id == user_id, StrongStockPosition.symbol == order.symbol, StrongStockPosition.status == "OPEN"))
-        if position is not None:
+        if position is not None and order.filled_quantity == 0:
             order.status = "REJECTED_DUPLICATE_POSITION"; order.completed_at = at; continue
-        position = StrongStockPosition(
-            id=str(uuid4()), user_id=user_id, symbol=order.symbol, name=order.name,
-            industry=ranking.industry, quantity=order.quantity, average_cost=price, current_price=price,
-            initial_stop=ranking.stop_price, trailing_stop=ranking.stop_price, next_add_price=ranking.add_price,
-            invested_capital=notional, initial_risk=money((price - ranking.stop_price) * order.quantity),
-            current_score=ranking.total_score, entry_type=order.entry_type, strategy_version=order.strategy_version,
-            tranches_json=json.dumps([{"pct": order.tranche_pct, "quantity": order.quantity, "price": str(price), "filledAt": at.isoformat()}]),
-            reasons_json=ranking.reasons_json, entry_at=at,
-        )
-        db.add(position)
-        account.cash = money(account.cash - notional - fee - slippage)
-        order.filled_quantity = order.quantity; order.status = "FILLED"; order.completed_at = at; filled += 1
-        notify(db, user_id, f"fill:{order.id}", "PAPER_BUY_FILLED", "【強勢股策略｜模擬買進成交】", f"{order.symbol} {order.name}，{order.quantity}股，成交價 {price} 元。")
+        tranche = {"pct": order.tranche_pct, "quantity": fill_quantity, "price": str(price), "filledAt": at.isoformat(), **details}
+        if position is None:
+            position = StrongStockPosition(
+                id=str(uuid4()), user_id=user_id, symbol=order.symbol, name=order.name,
+                industry=ranking.industry, quantity=fill_quantity, average_cost=price, current_price=price,
+                initial_stop=ranking.stop_price, trailing_stop=ranking.stop_price, next_add_price=ranking.add_price,
+                invested_capital=notional, initial_risk=money((price - ranking.stop_price) * fill_quantity),
+                current_score=ranking.total_score, entry_type=order.entry_type, strategy_version=order.strategy_version,
+                tranches_json=json.dumps([tranche]), reasons_json=ranking.reasons_json,
+                execution_json=json.dumps(details), entry_at=at,
+            )
+            db.add(position)
+        else:
+            old_quantity = position.quantity
+            position.quantity += fill_quantity
+            position.average_cost = money((position.average_cost * old_quantity + price * fill_quantity) / position.quantity)
+            position.invested_capital = money(position.average_cost * position.quantity)
+            position.initial_risk = money(position.initial_risk + (price - position.initial_stop) * fill_quantity)
+            position.tranches_json = json.dumps([*_json(position.tranches_json, []), tranche])
+            position.execution_json = json.dumps(details)
+        account.cash = money(account.cash - notional - fee - separate_slippage)
+        order.filled_quantity += fill_quantity
+        order.execution_json = json.dumps(details)
+        order.status = "FILLED" if order.filled_quantity >= order.quantity else "PARTIALLY_FILLED"
+        order.completed_at = at if order.status == "FILLED" else None
+        filled += 1
+        notify(db, user_id, f"fill:{order.id}:{order.filled_quantity}", "PAPER_BUY_FILLED", "【強勢股策略｜模擬買進成交】", f"{order.symbol} {order.name}，本次 {fill_quantity} 股，累計 {order.filled_quantity}/{order.quantity} 股，模擬成交價 {price} 元。")
     db.commit()
     return {"filled": filled, "expired": expired}
 
 
-def close_position(db: Session, position: StrongStockPosition, price: Decimal, at: datetime, reason: str, quantity: int | None = None) -> StrongStockTrade:
+def close_position(db: Session, position: StrongStockPosition, price: Decimal, at: datetime, reason: str, quantity: int | None = None, *, slippage_in_price: bool = False) -> StrongStockTrade:
     _setting, account, config = ensure_defaults(db, position.user_id)
     sell_quantity = min(position.quantity, quantity or position.quantity)
     entry_notional = money(position.average_cost * sell_quantity)
@@ -466,7 +524,7 @@ def close_position(db: Session, position: StrongStockPosition, price: Decimal, a
     buy_fee = commission(entry_notional, config)
     sell_fee = commission(exit_notional, config)
     tax = money(exit_notional * dec(config["taxRate"]))
-    slippage = money((entry_notional + exit_notional) * dec(config["slippageBps"]) / Decimal("10000"))
+    slippage = ZERO if slippage_in_price else money((entry_notional + exit_notional) * dec(config["slippageBps"]) / Decimal("10000"))
     gross = money((price - position.average_cost) * sell_quantity)
     net = money(gross - buy_fee - sell_fee - tax - slippage)
     trade = StrongStockTrade(
@@ -476,6 +534,7 @@ def close_position(db: Session, position: StrongStockPosition, price: Decimal, a
         entry_at=position.entry_at, exit_at=at, gross_pnl=gross, buy_fee=buy_fee, sell_fee=sell_fee,
         tax=tax, slippage=slippage, net_pnl=net,
         return_pct=money(net / entry_notional * 100) if entry_notional else ZERO,
+        execution_json=position.execution_json,
         strategy_version=position.strategy_version, entry_reason="、".join(_json(position.reasons_json, [])), exit_reason=reason,
     )
     db.add(trade)
@@ -490,14 +549,32 @@ def close_position(db: Session, position: StrongStockPosition, price: Decimal, a
     return trade
 
 
-def monitor_positions(db: Session, user_id: str, prices: dict[str, Decimal], at: datetime) -> dict[str, int]:
+def monitor_positions(db: Session, user_id: str, prices: dict[str, object], at: datetime) -> dict[str, int]:
     positions = list(db.scalars(select(StrongStockPosition).where(StrongStockPosition.user_id == user_id, StrongStockPosition.status == "OPEN")).all())
     _setting, account, config = ensure_defaults(db, user_id)
     closed = reduced = added = 0
     for position in positions:
-        price = prices.get(position.symbol)
-        if price is None:
+        observation = prices.get(position.symbol)
+        if observation is None:
             continue
+        if isinstance(observation, Decimal):
+            price = buy_price = sell_price = observation
+            buy_capacity = sell_capacity = 10_000_000
+            priced_slippage = False
+        else:
+            price = dec(getattr(observation, "price", 0))
+            ask = dec(getattr(observation, "best_ask", 0))
+            bid = dec(getattr(observation, "best_bid", 0))
+            if min(price, ask, bid) <= 0:
+                continue
+            slip = dec(config["slippageBps"]) / Decimal("10000")
+            buy_price = (ask * (1 + slip)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+            sell_price = (bid * (1 - slip)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+            buy_sizes = getattr(observation, "ask_volumes", ()) or ()
+            sell_sizes = getattr(observation, "bid_volumes", ()) or ()
+            buy_capacity = int(buy_sizes[0]) if buy_sizes else 0
+            sell_capacity = int(sell_sizes[0]) if sell_sizes else 0
+            priced_slippage = True
         position.current_price = price
         latest_ranking = db.scalar(select(StrongStockRanking).where(
             StrongStockRanking.symbol == position.symbol,
@@ -508,14 +585,18 @@ def monitor_positions(db: Session, user_id: str, prices: dict[str, Decimal], at:
                 position.trailing_stop = max(position.trailing_stop, latest_ranking.stop_price)
         initial_r_per_share = position.average_cost - position.initial_stop
         if price <= position.trailing_stop:
-            close_position(db, position, price, at, "觸及技術停損或移動停利")
-            closed += 1
+            sell_quantity = min(position.quantity, sell_capacity)
+            if sell_quantity > 0:
+                close_position(db, position, sell_price, at, "觸及技術停損或移動停利", sell_quantity, slippage_in_price=priced_slippage)
+                closed += 1
         elif initial_r_per_share > 0 and price >= position.average_cost + initial_r_per_share * 2 and position.quantity >= 3 and "2R_REDUCED" not in _json(position.warnings_json, []):
             warnings = _json(position.warnings_json, []) + ["2R_REDUCED"]
             position.warnings_json = json.dumps(warnings, ensure_ascii=False)
-            close_position(db, position, price, at, "達到2R，減碼三分之一", max(1, position.quantity // 3))
-            position.trailing_stop = max(position.trailing_stop, position.average_cost)
-            reduced += 1
+            sell_quantity = min(max(1, position.quantity // 3), sell_capacity)
+            if sell_quantity > 0:
+                close_position(db, position, sell_price, at, "達到2R，減碼三分之一", sell_quantity, slippage_in_price=priced_slippage)
+                position.trailing_stop = max(position.trailing_stop, position.average_cost)
+                reduced += 1
         elif position.next_add_price is not None and price >= position.next_add_price and price > position.average_cost:
             tranches = _json(position.tranches_json, [])
             invested_pct = sum(int(row.get("pct", 0)) for row in tranches if isinstance(row, dict))
@@ -535,27 +616,27 @@ def monitor_positions(db: Session, user_id: str, prices: dict[str, Decimal], at:
                     max(ZERO, stock_limit - position.invested_capital),
                     max(ZERO, sector_limit - sector_invested),
                 )
-                add_quantity = int((add_capital / price).to_integral_value(rounding=ROUND_DOWN))
+                add_quantity = min(int((add_capital / buy_price).to_integral_value(rounding=ROUND_DOWN)), buy_capacity)
                 if not bool(config["allowOddLots"]):
                     add_quantity = add_quantity // 1000 * 1000
-                combined_risk = (price - position.initial_stop) * add_quantity + position.initial_risk
+                combined_risk = (buy_price - position.initial_stop) * add_quantity + position.initial_risk
                 if add_quantity > 0 and combined_risk <= dec(config["riskPerTrade"]):
-                    notional = money(price * add_quantity); fee = commission(notional, config)
-                    slippage = money(notional * dec(config["slippageBps"]) / Decimal("10000"))
-                    if notional + fee + slippage <= account.cash:
+                    notional = money(buy_price * add_quantity); fee = commission(notional, config)
+                    add_slippage = ZERO if priced_slippage else money(notional * dec(config["slippageBps"]) / Decimal("10000"))
+                    if notional + fee + add_slippage <= account.cash:
                         old_quantity = position.quantity
                         position.quantity += add_quantity
-                        position.average_cost = money((position.average_cost * old_quantity + price * add_quantity) / position.quantity)
+                        position.average_cost = money((position.average_cost * old_quantity + buy_price * add_quantity) / position.quantity)
                         position.invested_capital = money(position.average_cost * position.quantity)
                         position.initial_risk = money(combined_risk)
-                        tranches.append({"pct": add_pct, "quantity": add_quantity, "price": str(price), "filledAt": at.isoformat()})
+                        tranches.append({"pct": add_pct, "quantity": add_quantity, "price": str(buy_price), "filledAt": at.isoformat(), "executionModel": "FRESH_BEST_ASK_DEPTH_V1" if priced_slippage else "HISTORICAL_REPLAY_TRADE"})
                         position.tranches_json = json.dumps(tranches, ensure_ascii=False)
-                        position.next_add_price = money(price + max(Decimal("0.01"), price - position.initial_stop)) if invested_pct + add_pct < 100 else None
-                        account.cash = money(account.cash - notional - fee - slippage)
+                        position.next_add_price = money(buy_price + max(Decimal("0.01"), buy_price - position.initial_stop)) if invested_pct + add_pct < 100 else None
+                        account.cash = money(account.cash - notional - fee - add_slippage)
                         order = StrongStockOrder(
                             id=str(uuid4()), user_id=user_id,
                             signal_key=f"add:{position.id}:{invested_pct + add_pct}", symbol=position.symbol,
-                            name=position.name, limit_price=price, quantity=add_quantity, filled_quantity=add_quantity,
+                            name=position.name, limit_price=buy_price, quantity=add_quantity, filled_quantity=add_quantity,
                             status="FILLED", entry_type="ADD", tranche_pct=add_pct,
                             strategy_version=position.strategy_version, reason="原始理由仍成立且突破加碼位置",
                             valid_date=at.date(), completed_at=at,

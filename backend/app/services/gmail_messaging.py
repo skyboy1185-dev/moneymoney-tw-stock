@@ -153,13 +153,14 @@ class GmailNotificationDispatcher:
         signal_id: str | None = None,
         symbol: str | None = None,
         channel_name: str = "AI當沖機器人",
+        event_time: str | None = None,
     ) -> int:
         if not self.configured:
             return 0
         now_utc = datetime.now(UTC)
         if self._smtp_unavailable_until and now_utc < self._smtp_unavailable_until:
             return 0
-        subject = f"【{channel_name}｜{action}】"
+        subject = f"【{channel_name}｜{event_time + ' ' if event_time else ''}{action}】"
         if symbol:
             subject = f"{subject} {symbol}"
         sent = 0

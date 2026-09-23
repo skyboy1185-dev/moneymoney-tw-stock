@@ -1,5 +1,6 @@
 import math
 import threading
+from functools import lru_cache
 from datetime import UTC, datetime, time, timedelta
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo
@@ -29,6 +30,12 @@ TAIPEI = ZoneInfo("Asia/Taipei")
 LIVE_QUOTE_MAX_DELAY_SECONDS = 30
 DEGRADED_INDEX_DELAY_SECONDS = 60
 MIN_DEGRADED_POOL_COVERAGE_RATIO = 0.80
+STRICT_MIN_CONFIDENCE = 80
+STRICT_MIN_HEALTH = 70
+STRICT_MIN_CONFIRMATION = 55
+STRICT_MIN_RISK_REWARD = 2.0
+STRICT_MAX_SPREAD_PCT = 0.3
+STRICT_MAX_STOP_DISTANCE_PCT = 1.5
 SOURCE_INTERRUPTION_SECONDS = 300
 EXTREME_RANGE_EDGE_PERCENT = 10.0
 RETEST_RANGE_EDGE_PERCENT = 25.0
@@ -218,6 +225,26 @@ def is_signal_expired(expires_at: datetime, now: datetime | None = None) -> bool
 
 def entry_allowed(data_delay_seconds: float, daily_loss_reached: bool, consecutive_losses: int, limit: int) -> bool:
     return data_delay_seconds <= 8 and not daily_loss_reached and consecutive_losses < limit
+
+
+def strict_entry_rejections(signal: dict[str, Any], settings: Any, at: datetime) -> list[str]:
+    """Hard production gate shared by manual and automated paper entries."""
+    failures: list[str] = []
+    local_time = at.astimezone(TAIPEI).time()
+    if not time(9, 15) <= local_time < time(12, 0):failures.append("僅允許 09:15～12:00 建立新倉")
+    if signal.get("status") != "confirmed":failures.append("訊號尚未完成確認")
+    if signal.get("dataMode") != "official" or not signal.get("quoteIsRealtime"):failures.append("必須使用新鮮的官方即時成交行情")
+    if signal.get("chaseBlocked") or signal.get("dailyChaseBlocked"):failures.append("追價條件已觸發")
+    if float(signal.get("confidenceScore") or 0) < max(STRICT_MIN_CONFIDENCE, float(settings.minimum_confidence)):failures.append("信心分數不足")
+    if float(signal.get("healthScore") or 0) < STRICT_MIN_HEALTH:failures.append("訊號健康度不足")
+    if float(signal.get("confirmationScore") or 0) < STRICT_MIN_CONFIRMATION:failures.append("量價確認分數不足")
+    if float(signal.get("riskRewardRatio") or 0) < max(STRICT_MIN_RISK_REWARD, float(settings.minimum_risk_reward)):failures.append("風險報酬不足")
+    if float(signal.get("spreadPercentage") or 999) > min(STRICT_MAX_SPREAD_PCT, float(settings.maximum_spread)):failures.append("買賣價差過大")
+    if float(signal.get("stopDistancePercent") or 999) > STRICT_MAX_STOP_DISTANCE_PCT:failures.append("停損距離過寬")
+    if float(signal.get("volume") or 0) < float(settings.minimum_volume):failures.append("成交量不足")
+    if float(signal.get("turnover") or 0) < float(settings.minimum_turnover):failures.append("成交金額不足")
+    if float(signal.get("marketAlignment") or 0) < 35:failures.append("大盤方向一致度不足")
+    return failures
 
 
 def evaluate_position(
@@ -1018,6 +1045,13 @@ class MockDayTradingEngine:
 
     @staticmethod
     def _live_metrics(history: list[OfficialStockQuote]) -> dict[str, Any]:
+        # Immutable full-history key invalidates on corrections and source changes.
+        # Freshness and order-book checks remain outside this pure calculation.
+        return dict(MockDayTradingEngine._cached_live_metrics(tuple(history)))
+
+    @staticmethod
+    @lru_cache(maxsize=512)
+    def _cached_live_metrics(history: tuple[OfficialStockQuote, ...]) -> dict[str, Any]:
         history = latest_quote_segment(history)
         if not history:
             return {

@@ -241,6 +241,9 @@ class TwseMisMarketDataProvider:
 
     def attach_order_book(self, quote, now):
         from dataclasses import replace
+        from .quote_quality import trusted_quote
+        if trusted_quote(quote, now, 15, require_book=True):
+            return quote
         book = self._books.get(quote.symbol)
         if book and 0 <= (now-datetime.fromisoformat(book.book_timestamp)).total_seconds() <= 15:
             return replace(quote, best_bid=book.best_bid, best_ask=book.best_ask,
@@ -266,11 +269,22 @@ class TwseMisMarketDataProvider:
 
     def __init__(self) -> None:
         self._books: dict[str, OfficialStockQuote] = {}
+        self._market_snapshots: dict[str, OfficialStockQuote] = {}
         self._cache: dict[str, tuple[OfficialStockQuote, datetime]] = {}
         self._last_trades: dict[str, OfficialStockQuote] = {}
         self._lock = asyncio.Lock()
         self._lock_loop: asyncio.AbstractEventLoop | None = None
         self._intraday_client: httpx.AsyncClient | None = None
+
+    def ingest_market_snapshots(self, quotes: dict[str, OfficialStockQuote]) -> None:
+        """Store same-day relay observations separately from trade-safe quotes."""
+        today = datetime.now(UTC).astimezone(TAIPEI).date().isoformat()
+        for symbol, quote in quotes.items():
+            if quote.quote_timestamp[:10] == today and quote.source.startswith("TWSE MIS"):
+                self._market_snapshots[symbol] = quote
+
+    def cached_market_snapshots(self, requests: list[StockQuoteRequest]) -> dict[str, OfficialStockQuote]:
+        return {r.symbol: self._market_snapshots[r.symbol] for r in requests if r.symbol in self._market_snapshots}
 
     def _refresh_lock(self) -> asyncio.Lock:
         """Return a refresh lock owned by the active asyncio event loop.

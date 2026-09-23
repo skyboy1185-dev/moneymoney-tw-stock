@@ -363,25 +363,30 @@ def test_newer_mis_beats_recently_received_old_yahoo_and_ties_stay_stable():
 
 def test_failed_yahoo_batch_does_not_skip_remaining_symbols(monkeypatch):
     import httpx
-    from app.services import yahoo_tw_live_quotes
+    from app.services import yahoo_tw_live_quotes, day_trading_quote_pump as pump_module
     pump, clock, adapter, mis, published = fixture(publish=False)
     targets = [StockQuoteRequest(str(1000 + i), "test", "listed") for i in range(60)]
-    monkeypatch.setattr(pump, "relay_targets", lambda: targets)
+    pump.update_targets([], targets)
+    monkeypatch.setattr(pump_module, "FREE_QUOTE_INTERVAL_SECONDS", .01)
     calls = []
+    continued = asyncio.Event()
     async def fetch(client, batch):
         calls.append([row.symbol for row in batch])
         if len(calls) == 1:
             raise httpx.ReadTimeout("test")
-        raise asyncio.CancelledError()
-    async def sleep(seconds):
-        pass
+        continued.set()
+        return {}
     monkeypatch.setattr(yahoo_tw_live_quotes, "fetch_batch", fetch)
-    monkeypatch.setattr(asyncio, "sleep", sleep)
     async def run():
+        task = asyncio.create_task(pump._run_yahoo())
         try:
-            await pump._run_yahoo()
-        except asyncio.CancelledError:
-            pass
+            await asyncio.wait_for(continued.wait(), 2)
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
     asyncio.run(run())
-    assert calls[0] == [row.symbol for row in targets[:49]]
-    assert calls[1] == [row.symbol for row in targets[49:]]
+    assert calls[0] == [row.symbol for row in targets[:50]]
+    assert {row.symbol for row in targets[50:]} <= set(calls[1])

@@ -121,6 +121,40 @@ def test_official_accumulation_keeps_raw_rows_when_summary_metadata_missing() ->
     assert "部分股票名稱／市場別待補" in payload["dataNotice"]
 
 
+def test_official_accumulation_reuses_known_metadata_from_an_earlier_week() -> None:
+    engine = _engine()
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        for report_date in (date(2026, 7, 24), date(2026, 8, 7)):
+            _add_raw_period(session, report_date, {
+                1: ("10", 500, 100_000), 12: ("4", 20, 100_000),
+                13: ("4", 15, 100_000), 14: ("4", 10, 100_000), 15: ("12", 5, 100_000),
+            })
+        session.add(LargeHolderWeeklySummary(
+            stock_code="2330", stock_name="台積電", market="上市", industry="半導體",
+            report_date=date(2026, 7, 24), holders_over_400_count=20, shares_over_400=400_000,
+            ratio_over_400=Decimal("20"), holders_over_1000_count=5,
+            shares_over_1000=200_000, ratio_over_1000=Decimal("10"),
+            total_shareholders=550, total_shares=500_000, updated_at=datetime(2026, 8, 7),
+        ))
+        session.add(LargeHolderWeeklySummary(
+            stock_code="2330", stock_name="2330", market="未知", industry="未分類",
+            report_date=date(2026, 8, 7), holders_over_400_count=20, shares_over_400=400_000,
+            ratio_over_400=Decimal("20"), holders_over_1000_count=5,
+            shares_over_1000=200_000, ratio_over_1000=Decimal("10"),
+            total_shareholders=550, total_shares=500_000, updated_at=datetime(2026, 8, 7),
+        ))
+        session.commit()
+        payload = get_whale_accumulation(
+            session, date(2026, 7, 24), date(2026, 8, 7), prices={"2330": 50},
+        )
+
+    item = payload["items"][0]
+    assert item["stockName"] == "台積電"
+    assert item["market"] == "上市"
+    assert item["industry"] == "半導體"
+
+
 def test_demo_accumulation_supports_filters_and_top_limit() -> None:
     engine = _engine()
     Base.metadata.create_all(engine)

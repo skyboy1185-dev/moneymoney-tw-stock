@@ -31,19 +31,19 @@ DEFAULT_MAX_STOP_DISTANCE_PCT = Decimal("1.0")
 MIN_CONFIGURABLE_STOP_DISTANCE_PCT = Decimal("0.3")
 MAX_CONFIGURABLE_STOP_DISTANCE_PCT = Decimal("10.0")
 INTRADAY_BULL_BREAKOUT_BONUS = Decimal("8")
-PRECISION_MIN_AI_SCORE = Decimal("60")
-PRECISION_MIN_TOTAL_SCORE = Decimal("58")
+PRECISION_MIN_AI_SCORE = Decimal("75")
+PRECISION_MIN_TOTAL_SCORE = Decimal("70")
 PRECISION_PROBE_MIN_TOTAL_SCORE = Decimal("54")
 PRECISION_PROBE_MIN_HEALTH_SCORE = Decimal("52")
-PRECISION_MIN_HEALTH_SCORE = Decimal("55")
-PRECISION_MIN_INDUSTRY_STRENGTH = Decimal("15")
-PRECISION_MIN_RISK_REWARD = Decimal("1.8")
-PRECISION_MAX_STOP_DISTANCE_PCT = Decimal("8.0")
-PRECISION_MAX_NEW_TRADES_PER_DAY = 5
-PRECISION_MAX_PROBE_TRADES_PER_DAY = 2
-PRECISION_MAX_DAILY_LOSS_PCT = Decimal("0.8")
-PRECISION_RISK_PER_TRADE_PCT = Decimal("0.25")
-PRECISION_MAX_FALSE_BREAKOUT_RISK = Decimal("35")
+PRECISION_MIN_HEALTH_SCORE = Decimal("68")
+PRECISION_MIN_INDUSTRY_STRENGTH = Decimal("55")
+PRECISION_MIN_RISK_REWARD = Decimal("2.2")
+PRECISION_MAX_STOP_DISTANCE_PCT = Decimal("1.5")
+PRECISION_MAX_NEW_TRADES_PER_DAY = 2
+PRECISION_MAX_PROBE_TRADES_PER_DAY = 0
+PRECISION_MAX_DAILY_LOSS_PCT = Decimal("0.4")
+PRECISION_RISK_PER_TRADE_PCT = Decimal("0.15")
+PRECISION_MAX_FALSE_BREAKOUT_RISK = Decimal("25")
 SHORT_MIN_AI_SCORE = Decimal("75")
 SHORT_MIN_TOTAL_SCORE = Decimal("65")
 SHORT_MIN_HEALTH_SCORE = Decimal("60")
@@ -51,7 +51,7 @@ SHORT_MAX_INDUSTRY_STRENGTH = Decimal("40")
 SHORT_MAX_RELATIVE_STRENGTH = Decimal("-3")
 SHORT_MIN_RISK_REWARD = Decimal("2.0")
 SHORT_MAX_FALSE_BREAKOUT_RISK = Decimal("45")
-MAX_STOP_LOSSES_PER_DAY = 2
+MAX_STOP_LOSSES_PER_DAY = 1
 MAX_ENTRY_QUOTE_AGE_SECONDS = 8
 
 MARKET_WEIGHTS: dict[str, dict[str, float | str]] = {
@@ -63,7 +63,7 @@ MARKET_WEIGHTS: dict[str, dict[str, float | str]] = {
 }
 
 TRADE_EMAIL_CATEGORIES = {
-    "BUY", "SHORT", "ADD", "REDUCE", "STOP_LOSS", "TAKE_PROFIT", "EXIT", "RISK", "ERROR",
+    "BUY", "SHORT", "ADD", "REDUCE", "STOP_LOSS", "TAKE_PROFIT", "EXIT",
 }
 
 def _money(value: Decimal | float | int) -> Decimal:
@@ -510,15 +510,15 @@ def trading_gate(
 
         formal_failures = list(hard_failures)
         if Decimal(candidate.total_score) < PRECISION_MIN_TOTAL_SCORE:
-            formal_failures.append("long_total_score_below_58")
+            formal_failures.append("long_total_score_below_70")
         if Decimal(candidate.health_score) < PRECISION_MIN_HEALTH_SCORE:
-            formal_failures.append("long_health_score_below_55")
+            formal_failures.append("long_health_score_below_68")
         if Decimal(candidate.industry_strength) < PRECISION_MIN_INDUSTRY_STRENGTH:
-            formal_failures.append("long_industry_strength_below_15")
+            formal_failures.append("long_industry_strength_below_55")
         if score < PRECISION_MIN_AI_SCORE:
-            formal_failures.append("long_ai_score_below_60")
+            formal_failures.append("long_ai_score_below_75")
         if rr < PRECISION_MIN_RISK_REWARD:
-            formal_failures.append("long_risk_reward_below_1_8")
+            formal_failures.append("long_risk_reward_below_2_2")
 
         if formal_failures:
             probe_failures = list(hard_failures)
@@ -534,12 +534,9 @@ def trading_gate(
                 probe_failures.append("probe_risk_reward_below_1_5")
             if int(risk.get("openedProbeTradesToday", 0)) >= PRECISION_MAX_PROBE_TRADES_PER_DAY:
                 probe_failures.append("probe_daily_trade_limit")
-            if probe_failures:
-                failures = probe_failures
-            else:
-                warnings.extend(formal_failures)
-                failures = []
-                entry_mode = "PROBE"
+            # Losing regimes must be repaired with evidence, never by relaxing
+            # the production gate into a lower-quality probe trade.
+            failures = formal_failures + ["probe_entries_disabled_by_strict_risk_policy"]
         else:
             failures = []
     else:
@@ -678,6 +675,8 @@ def notification_payload(row: SuperAIDaytradeNotification) -> dict[str, Any]:
         "aiScore": float(row.ai_score) if row.ai_score is not None else None,
         "riskReward": float(row.risk_reward) if row.risk_reward is not None else None,
         "emailSent": row.email_sent,
+        "deliveryStatus": "SENT" if row.email_sent and row.email_delivery_status == "PENDING" else row.email_delivery_status,
+        "emailSentAt": row.email_sent_at.isoformat() if row.email_sent_at else None,
         "popupShown": row.popup_shown,
         "read": row.is_read,
         "timestamp": row.created_at.isoformat(),

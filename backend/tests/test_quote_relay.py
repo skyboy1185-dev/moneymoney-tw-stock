@@ -24,7 +24,7 @@ def test_relay_requires_configured_secret(tmp_path, monkeypatch):
     router.relay_authorized("Bearer secret")
 
 
-def test_relay_uses_exchange_time_and_rejects_unknown_stale_future(monkeypatch):
+def test_relay_uses_exchange_time_and_accepts_full_market_symbols_but_rejects_stale_future(monkeypatch):
     from app.services import day_trading_quote_pump as module
     now = datetime(2026, 9, 9, 1, 10, 0, tzinfo=UTC)
     monkeypatch.setattr(router, "datetime", SimpleNamespace(now=lambda tz: now))
@@ -36,7 +36,7 @@ def test_relay_uses_exchange_time_and_rejects_unknown_stale_future(monkeypatch):
     raw = {"c": "2330", "d": "20260909", "t": "09:09:55", "z": "100", "y": "99", "v": "100"}
     for changes in ({}, {"t": "09:09:00"}, {"t": "09:10:01"}, {"c": "9999"}):
         router.relay_quotes(router.RelayBatch(rows=[{**raw, **changes}]))
-    assert [len(rows) for rows in received] == [1, 0, 0, 0]
+    assert [len(rows) for rows in received] == [1, 0, 0, 1]
     assert received[0]["2330"].quote_timestamp == "2026-09-09T09:09:55+08:00"
 
 
@@ -52,3 +52,17 @@ def test_relay_publication_cannot_regress_or_repeat_trade():
     pump.ingest_mis_relay({"2330": replace(quote, quote_timestamp=(now-timedelta(seconds=5)).isoformat(), price=90)})
     assert len(published) == 1
     assert published[0]["2330"].price == 100
+
+
+def test_relay_targets_mark_long_term_holdings_even_when_in_baseline(monkeypatch):
+    from app.services import day_trading_quote_pump as module
+    held = StockQuoteRequest("2330", "held", "上市")
+    candidate = StockQuoteRequest("2317", "candidate", "上市")
+    general = StockQuoteRequest("2303", "general", "上市")
+    pump = DayTradingQuotePump(provider=object())
+    pump.update_targets([candidate], [held, general])
+    monkeypatch.setattr(module, "day_trading_quote_pump", pump)
+    monkeypatch.setattr(router, "_relay_held_requests", lambda: [held])
+    payload = router.relay_targets()
+    assert {r["symbol"] for r in payload["items"] if r["priority"]} == {"2330", "2317"}
+    assert payload["priorityRefreshSeconds"] == 5

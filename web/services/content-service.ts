@@ -1,13 +1,26 @@
 import { stockCatalog, stockService } from "@/services/stock-service";
-import { getOfficialSnapshotQuotes } from "@/services/market-data/official-quote-provider";
+import { getOfficialRelaySnapshotQuotes } from "@/services/market-data/official-quote-provider";
 import type { Market } from "@/lib/types";
 
 export interface IndustryHotspot {
   industry: string;
   changePercent: number;
+  medianChangePercent: number;
+  advanceRatio: number;
+  leaderBreadth: number;
+  strengthScore: number;
   momentum: number;
   stockCount: number;
-  leaders: { symbol: string; name: string; changePercent: number }[];
+  leaders: {
+    symbol: string;
+    name: string;
+    changePercent: number;
+    close: number;
+    change: number;
+    previousClose: number;
+    tradeDate: string;
+    source: string;
+  }[];
   status: "強勢" | "偏多" | "整理" | "偏弱";
 }
 
@@ -29,8 +42,61 @@ export interface IndustryHotspotResponse {
   tradeDate: string;
   dataMode: "official";
   dataSource: string;
-  quoteStatus: "intraday" | "official_close";
+  quoteStatus: "intraday" | "official_close" | "stale_intraday";
+  rankingStatus: "live" | "collecting" | "closed";
   coverageRatio: number;
+  coverageCount: number;
+  targetCount: number;
+  validQuoteTime: string;
+  rankingMethod: string;
+}
+
+export interface IndustryStrengthMember {
+  symbol: string;
+  name: string;
+  changePercent: number;
+}
+
+function clamp(value: number) {
+  return Math.min(100, Math.max(0, value));
+}
+
+export function calculateIndustryStrength(members: IndustryStrengthMember[]) {
+  const changes = members.map((item) => item.changePercent).sort((a, b) => a - b);
+  if (!changes.length) return {
+    changePercent: 0, medianChangePercent: 0, advanceRatio: 0, leaderBreadth: 0, strengthScore: 0,
+  };
+  const trim = changes.length >= 10 ? Math.floor(changes.length * .1) : 0;
+  const trimmed = changes.slice(trim, changes.length - trim || undefined);
+  const average = trimmed.reduce((sum, value) => sum + value, 0) / trimmed.length;
+  const middle = Math.floor(changes.length / 2);
+  const median = changes.length % 2 ? changes[middle] : (changes[middle - 1] + changes[middle]) / 2;
+  const advanceRatio = changes.filter((value) => value > 0).length / changes.length * 100;
+  const leaderBreadth = changes.filter((value) => value >= 2).length / changes.length * 100;
+  const strengthScore = clamp(
+    clamp(50 + average * 10) * .4
+    + clamp(50 + median * 10) * .2
+    + advanceRatio * .3
+    + leaderBreadth * .1,
+  );
+  return {
+    changePercent: Number(average.toFixed(2)),
+    medianChangePercent: Number(median.toFixed(2)),
+    advanceRatio: Number(advanceRatio.toFixed(1)),
+    leaderBreadth: Number(leaderBreadth.toFixed(1)),
+    strengthScore: Number(strengthScore.toFixed(1)),
+  };
+}
+
+export function latestCommonTradeDate(listedDates: string[], otcDates: string[]) {
+  const otc = new Set(otcDates.filter(Boolean));
+  return listedDates.filter((value) => value && otc.has(value)).sort().at(-1) ?? null;
+}
+
+export function topIndustryHotspots(items: IndustryHotspot[], limit = 3) {
+  return [...items]
+    .sort((a, b) => b.strengthScore - a.strengthScore || b.changePercent - a.changePercent)
+    .slice(0, limit);
 }
 
 export interface NewsResponse {
@@ -108,63 +174,80 @@ export async function buildOfficialIndustryHotspots(): Promise<IndustryHotspotRe
     const symbol=text(row,["SecuritiesCompanyCode"]), code=text(row,["SecuritiesIndustryCode"]);
     if (/^\d{4}$/.test(symbol) && INDUSTRY_NAMES[code]) companyMap.set(symbol,{name:text(row,["CompanyAbbreviation"]),industry:INDUSTRY_NAMES[code],market:"上櫃"});
   }
-  const quotes: { symbol:string; name:string; industry:string; changePercent:number; date:string; volume:number }[] = [];
+  const allQuotes: { symbol:string; name:string; industry:string; market:Market; close:number; change:number; previousClose:number; changePercent:number; date:string; volume:number; source:string }[] = [];
   const append = (row: OfficialRow, listed: boolean) => {
     const symbol=text(row,listed?["Code"]:["SecuritiesCompanyCode"]), company=companyMap.get(symbol);
     if (!company) return;
     const close=numberValue(row[listed?"ClosingPrice":"Close"]), change=numberValue(row.Change);
     const previous=close-change, volume=numberValue(row[listed?"TradeVolume":"TradingShares"]);
     if (close<=0 || previous<=0 || volume<=0) return;
-    quotes.push({symbol,name:company.name,industry:company.industry,changePercent:change/previous*100,date:rocDate(text(row,["Date"])),volume});
+    allQuotes.push({symbol,name:company.name,industry:company.industry,market:company.market,close,change,previousClose:previous,changePercent:change/previous*100,date:rocDate(text(row,["Date"])),volume,source:listed?"TWSE 官方每日行情":"TPEx 官方每日行情"});
   };
   listedQuotes.forEach((row)=>append(row,true)); otcQuotes.forEach((row)=>append(row,false));
+  const commonTradeDate=latestCommonTradeDate(
+    allQuotes.filter((item)=>item.market==="上市").map((item)=>item.date),
+    allQuotes.filter((item)=>item.market==="上櫃").map((item)=>item.date),
+  );
+  if (!commonTradeDate) throw new Error("上市與上櫃目前沒有相同交易日的官方行情，暫停族群排行");
+  const quotes=allQuotes.filter((item)=>item.date===commonTradeDate);
   if (!quotes.length) throw new Error("官方產業行情目前沒有可用資料");
   const today=taipeiDate();
-  let quoteStatus: IndustryHotspotResponse["quoteStatus"]="official_close";
-  let coverageRatio=0;
-  let sourceQuotes=quotes;
-  let updatedAt="";
-  try {
-    const dailyGroups=new Map<string,typeof quotes>();
-    for(const quote of quotes) dailyGroups.set(quote.industry,[...(dailyGroups.get(quote.industry)??[]),quote]);
-    const representatives=[...dailyGroups.values()].flatMap((members)=>[...members].sort((a,b)=>b.volume-a.volume).slice(0,12));
-    const metas=representatives.map((item)=>({symbol:item.symbol,name:item.name,market:companyMap.get(item.symbol)!.market}));
-    const snapshot=await getOfficialSnapshotQuotes(metas);
-    const todayQuotes=[...snapshot.values()].filter((quote)=>quote.date===today&&quote.source.startsWith("TWSE MIS"));
-    coverageRatio=metas.length?todayQuotes.length/metas.length*100:0;
-    if(coverageRatio>=60){
-      sourceQuotes=representatives.map((representative)=>{
-        const quote=snapshot.get(representative.symbol), tradedToday=quote?.date===today&&quote.source.startsWith("TWSE MIS")&&(quote.volume??0)>0;
-        return {...representative,changePercent:tradedToday?quote!.changePercent:0,date:today};
-      });
-      const latestTime=todayQuotes.map((quote)=>quote.time).filter((time)=>/^\d{2}:\d{2}:\d{2}$/.test(time)).sort().at(-1)??"09:00:00";
-      updatedAt=`${today}T${latestTime}+08:00`;
-      quoteStatus="intraday";
-    }
-  } catch {
-    // The verified official close below remains available when MIS is interrupted.
-  }
+  const duringCash=isTaipeiCashSession();
+  const metas=quotes.map((item)=>({symbol:item.symbol,name:item.name,market:item.market}));
+  let snapshot=new Map<string,Awaited<ReturnType<typeof getOfficialRelaySnapshotQuotes>> extends Map<string,infer Q>?Q:never>();
+  try { snapshot=await getOfficialRelaySnapshotQuotes(metas); } catch { /* collecting state below */ }
+  const liveQuotes=quotes.flatMap((base)=>{
+    const quote=snapshot.get(base.symbol);
+    return quote?.date===today&&quote.source.startsWith("TWSE MIS")
+      ? [{...base,close:quote.price,change:quote.change,previousClose:quote.previousClose,
+        changePercent:quote.changePercent,date:quote.date,volume:quote.volume,source:quote.source,time:quote.time}]
+      : [];
+  });
+  const targetCount=quotes.length;
+  const coverageCount=liveQuotes.length;
+  const coverageRatio=targetCount?coverageCount/targetCount*100:0;
+  const completeLive=coverageRatio>=80;
+  const officialToday=commonTradeDate===today;
+  const rankingStatus: IndustryHotspotResponse["rankingStatus"]=completeLive?(duringCash?"live":"closed"):officialToday&&!duringCash?"closed":"collecting";
+  const sourceQuotes=completeLive?liveQuotes:officialToday&&!duringCash?quotes:[];
+  const quoteStatus: IndustryHotspotResponse["quoteStatus"]=rankingStatus==="live"?"intraday":rankingStatus==="closed"?"official_close":"stale_intraday";
+  const validQuoteTime=liveQuotes.map((quote)=>quote.time).filter((time)=>/^\d{2}:\d{2}:\d{2}$/.test(time)).sort().at(-1)??"";
+  const updatedAt=validQuoteTime?`${today}T${validQuoteTime}+08:00`:`${today}T13:30:00+08:00`;
+  const totalByIndustry=new Map<string,number>();
+  for(const quote of quotes) totalByIndustry.set(quote.industry,(totalByIndustry.get(quote.industry)??0)+1);
   const groups=new Map<string,typeof sourceQuotes>();
   for (const quote of sourceQuotes) groups.set(quote.industry,[...(groups.get(quote.industry)??[]),quote]);
-  const items=[...groups].map(([industry,members])=>{
-    const changePercent=members.reduce((sum,item)=>sum+item.changePercent,0)/members.length;
-    const advanceRatio=members.filter((item)=>item.changePercent>0).length/members.length*100;
-    const momentum=Math.round(Math.min(100,Math.max(0,50+changePercent*10+(advanceRatio-50)*.2)));
-    return {industry,changePercent:Number(changePercent.toFixed(2)),momentum,stockCount:members.length,
-      leaders:[...members].sort((a,b)=>b.changePercent-a.changePercent).slice(0,3).map(({symbol,name,changePercent:change})=>({symbol,name,changePercent:Number(change.toFixed(2))})),
-      status:changePercent>=1?"強勢" as const:changePercent>0?"偏多" as const:changePercent>-1?"整理" as const:"偏弱" as const};
-  }).sort((a,b)=>b.changePercent-a.changePercent);
-  const tradeDate=quoteStatus==="intraday"?today:quotes.map((item)=>item.date).sort().at(-1)!;
-  if(!updatedAt) updatedAt=`${tradeDate}T13:30:00+08:00`;
+  const items=[...groups].flatMap(([industry,members])=>{
+    const industryCoverage=members.length/(totalByIndustry.get(industry)??members.length)*100;
+    if(rankingStatus==="live"&&(members.length<3||industryCoverage<70)) return [];
+    const strength=calculateIndustryStrength(members);
+    const momentum=Math.round(strength.strengthScore);
+    return [{industry,...strength,momentum,stockCount:members.length,
+      leaders:[...members].sort((a,b)=>b.changePercent-a.changePercent).slice(0,3).map(({symbol,name,changePercent,close,change,previousClose,date,source})=>({symbol,name,changePercent:Number(changePercent.toFixed(2)),close,change,previousClose,tradeDate:date,source})),
+      status:strength.strengthScore>=70?"強勢" as const:strength.strengthScore>=55?"偏多" as const:strength.strengthScore>=40?"整理" as const:"偏弱" as const}];
+  }).sort((a,b)=>b.strengthScore-a.strengthScore || b.changePercent-a.changePercent);
+  const tradeDate=rankingStatus==="collecting"?today:sourceQuotes[0]?.date??today;
   const value={items,tradeDate,updatedAt,dataMode:"official" as const,
-    dataSource:quoteStatus==="intraday"?"TWSE MIS 盤中行情＋各產業前一交易日高流動性代表股":"TWSE／TPEx 官方每日行情與公司產業分類",
-    quoteStatus,coverageRatio:Number(coverageRatio.toFixed(1))};
-  industryCache={value,expiresAt:Date.now()+(quoteStatus==="intraday"?60_000:5*60_000)};
+    dataSource:rankingStatus==="live"?"TWSE MIS 全市場當日行情":"TWSE／TPEx 官方當日收盤行情",
+    quoteStatus,rankingStatus,coverageRatio:Number(coverageRatio.toFixed(1)),coverageCount,targetCount,validQuoteTime,
+    rankingMethod:"截尾平均40%＋中位數20%＋上漲家數比30%＋漲幅逾2%家數比10%"};
+  industryCache={value,expiresAt:Date.now()+(rankingStatus==="closed"?5*60_000:30_000)};
   return value;
 }
 
 function taipeiDate() {
   return new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Taipei",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
+}
+
+export function isTaipeiCashSession(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Taipei", weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false,
+  }).formatToParts(now);
+  const weekday = parts.find((part) => part.type === "weekday")?.value;
+  const hour = Number(parts.find((part) => part.type === "hour")?.value ?? 0);
+  const minute = Number(parts.find((part) => part.type === "minute")?.value ?? 0);
+  const clock = hour * 60 + minute;
+  return !["Sat", "Sun"].includes(weekday ?? "") && clock >= 540 && clock <= 810;
 }
 
 function newsSentiment(title: string): NewsItem["sentiment"] {
@@ -226,15 +309,15 @@ export async function buildMockIndustryHotspots(): Promise<IndustryHotspot[]> {
     groups.set(row.industry, [...(groups.get(row.industry) ?? []), row]);
   });
   return [...groups.entries()].map(([industry, members]) => {
-    const changePercent = members.reduce((sum, member) => sum + member.changePercent, 0) / members.length;
+    const strength = calculateIndustryStrength(members);
     return {
       industry,
-      changePercent,
-      momentum: Math.round(Math.min(100, Math.max(0, 50 + changePercent * 12))),
+      ...strength,
+      momentum: Math.round(strength.strengthScore),
       stockCount: members.length,
       leaders: members.sort((a, b) => b.changePercent - a.changePercent).slice(0, 3)
-        .map(({ symbol, name, changePercent: change }) => ({ symbol, name, changePercent: change })),
-      status: changePercent >= 1 ? "強勢" as const : changePercent > 0 ? "偏多" as const : changePercent > -1 ? "整理" as const : "偏弱" as const,
+        .map(({ symbol, name, changePercent }) => ({ symbol, name, changePercent, close: 0, change: 0, previousClose: 0, tradeDate: "", source: "展示資料" })),
+      status: strength.strengthScore >= 70 ? "強勢" as const : strength.strengthScore >= 55 ? "偏多" as const : strength.strengthScore >= 40 ? "整理" as const : "偏弱" as const,
     };
-  }).sort((a, b) => b.changePercent - a.changePercent);
+  }).sort((a, b) => b.strengthScore - a.strengthScore || b.changePercent - a.changePercent);
 }
