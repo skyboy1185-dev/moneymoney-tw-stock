@@ -162,15 +162,18 @@ async def post_market_report(trade_date:date|None=None,format:str="pdf",db:Sessi
     negative_triggers=["加權或櫃買跌破追蹤支撐","費半、台積電ADR或NASDAQ期貨同步轉弱","美元、殖利率或油價急升"]
     next_plan=f"明日以{row.market_bias}劇本準備，建議持股{row.recommended_position}。開盤先確認大盤與櫃買是否延續今日結構；符合多方條件才分批增加部位，任一風險條件觸發即停止追價並降低持股。"
     if format=="pdf":
-        from reportlab.lib import colors
-        from reportlab.lib.enums import TA_CENTER
-        from reportlab.lib.pagesizes import A4
-        from reportlab.lib.styles import ParagraphStyle,getSampleStyleSheet
-        from reportlab.lib.units import mm
-        from reportlab.pdfbase import pdfmetrics
-        from reportlab.pdfbase.cidfonts import UnicodeCIDFont
-        from reportlab.graphics.shapes import Drawing,Line,Rect,String
-        from reportlab.platypus import PageBreak,Paragraph,SimpleDocTemplate,Spacer,Table,TableStyle
+        try:
+            from reportlab.lib import colors
+            from reportlab.lib.enums import TA_CENTER
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib.styles import ParagraphStyle,getSampleStyleSheet
+            from reportlab.lib.units import mm
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+            from reportlab.graphics.shapes import Drawing,Line,Rect,String
+            from reportlab.platypus import PageBreak,Paragraph,SimpleDocTemplate,Spacer,Table,TableStyle
+        except ImportError as error:
+            raise HTTPException(503,"PDF 產生元件尚未安裝，請重新啟動本機服務後再試") from error
         pdfmetrics.registerFont(UnicodeCIDFont("MSung-Light"))
         buffer=io.BytesIO();doc=SimpleDocTemplate(buffer,pagesize=A4,rightMargin=10*mm,leftMargin=10*mm,topMargin=10*mm,bottomMargin=10*mm,title=f"每日盤後市場報告 {day}")
         styles=getSampleStyleSheet();font="MSung-Light"
@@ -253,15 +256,18 @@ async def pre_market_report(trade_date:date|None=None,db:Session=Depends(get_db)
     day=selected_day(trade_date);row=ensure_day(db,day,datetime.now(UTC));db.commit();local_now=datetime.now(TAIPEI)
     if day==local_now.date() and local_now.time()<datetime.strptime("08:00","%H:%M").time():
         raise HTTPException(409,"今日盤前報告將於08:00完成後開放")
-    from reportlab.lib import colors
-    from reportlab.lib.enums import TA_CENTER
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import ParagraphStyle,getSampleStyleSheet
-    from reportlab.lib.units import mm
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
-    from reportlab.graphics.shapes import Drawing,Line,Rect,String
-    from reportlab.platypus import PageBreak,Paragraph,SimpleDocTemplate,Spacer,Table,TableStyle
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_CENTER
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle,getSampleStyleSheet
+        from reportlab.lib.units import mm
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+        from reportlab.graphics.shapes import Drawing,Line,Rect,String
+        from reportlab.platypus import PageBreak,Paragraph,SimpleDocTemplate,Spacer,Table,TableStyle
+    except ImportError as error:
+        raise HTTPException(503,"PDF 產生元件尚未安裝，請重新啟動本機服務後再試") from error
     pdfmetrics.registerFont(UnicodeCIDFont("MSung-Light"));font="MSung-Light";styles=getSampleStyleSheet()
     body=ParagraphStyle("PreBody",parent=styles["BodyText"],fontName=font,fontSize=10.5,leading=16,textColor=colors.HexColor("#24201C"))
     small=ParagraphStyle("PreSmall",parent=body,fontSize=8.5,leading=12);heading=ParagraphStyle("PreHeading",parent=styles["Heading2"],fontName=font,fontSize=13,textColor=colors.white,backColor=colors.HexColor("#234E52"),borderPadding=6,spaceBefore=10,spaceAfter=5)

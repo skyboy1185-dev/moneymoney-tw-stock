@@ -70,6 +70,11 @@ function Set-TemporaryEnvironment([hashtable]$Values) {
 $Python = (Get-Command python.exe -ErrorAction Stop).Source
 $Npm = (Get-Command npm.cmd -ErrorAction Stop).Source
 $Node = (Get-Command node.exe -ErrorAction Stop).Source
+& $Python -c "import reportlab" 2>$null
+if ($LASTEXITCODE -ne 0) {
+    & $Python -m pip install "reportlab>=4.2,<5"
+    if ($LASTEXITCODE -ne 0) { throw "Unable to install ReportLab required for PDF downloads" }
+}
 $BackendPid = Join-Path $RuntimeRoot "backend.pid"
 $FrontendPid = Join-Path $RuntimeRoot "frontend.pid"
 $BackendScannerToken = Get-DotEnvValue (Join-Path $BackendRoot ".env") "ADAPTIVE_ELECTRONIC_SCANNER_TOKEN"
