@@ -42,8 +42,8 @@ export interface IndustryHotspotResponse {
   tradeDate: string;
   dataMode: "official";
   dataSource: string;
-  quoteStatus: "intraday" | "official_close" | "stale_intraday";
-  rankingStatus: "live" | "collecting" | "closed";
+  quoteStatus: "intraday" | "official_intraday" | "official_close" | "stale_intraday";
+  rankingStatus: "live" | "official_live" | "collecting" | "closed";
   coverageRatio: number;
   coverageCount: number;
   targetCount: number;
@@ -208,11 +208,25 @@ export async function buildOfficialIndustryHotspots(): Promise<IndustryHotspotRe
   const coverageRatio=targetCount?coverageCount/targetCount*100:0;
   const completeLive=coverageRatio>=80;
   const officialToday=commonTradeDate===today;
-  const rankingStatus: IndustryHotspotResponse["rankingStatus"]=completeLive?(duringCash?"live":"closed"):officialToday&&!duringCash?"closed":"collecting";
-  const sourceQuotes=completeLive?liveQuotes:officialToday&&!duringCash?quotes:[];
-  const quoteStatus: IndustryHotspotResponse["quoteStatus"]=rankingStatus==="live"?"intraday":rankingStatus==="closed"?"official_close":"stale_intraday";
+  const rankingStatus: IndustryHotspotResponse["rankingStatus"]=completeLive
+    ? (duringCash?"live":"closed")
+    : officialToday
+      ? (duringCash?"official_live":"closed")
+      : "collecting";
+  const sourceQuotes=completeLive?liveQuotes:officialToday?quotes:[];
+  const quoteStatus: IndustryHotspotResponse["quoteStatus"]=rankingStatus==="live"
+    ? "intraday"
+    : rankingStatus==="official_live"
+      ? "official_intraday"
+      : rankingStatus==="closed"
+        ? "official_close"
+        : "stale_intraday";
   const validQuoteTime=liveQuotes.map((quote)=>quote.time).filter((time)=>/^\d{2}:\d{2}:\d{2}$/.test(time)).sort().at(-1)??"";
-  const updatedAt=validQuoteTime?`${today}T${validQuoteTime}+08:00`:`${today}T13:30:00+08:00`;
+  const updatedAt=validQuoteTime
+    ? `${today}T${validQuoteTime}+08:00`
+    : rankingStatus==="official_live"
+      ? new Date().toISOString()
+      : `${today}T13:30:00+08:00`;
   const totalByIndustry=new Map<string,number>();
   for(const quote of quotes) totalByIndustry.set(quote.industry,(totalByIndustry.get(quote.industry)??0)+1);
   const groups=new Map<string,typeof sourceQuotes>();
@@ -227,9 +241,11 @@ export async function buildOfficialIndustryHotspots(): Promise<IndustryHotspotRe
       status:strength.strengthScore>=70?"強勢" as const:strength.strengthScore>=55?"偏多" as const:strength.strengthScore>=40?"整理" as const:"偏弱" as const}];
   }).sort((a,b)=>b.strengthScore-a.strengthScore || b.changePercent-a.changePercent);
   const tradeDate=rankingStatus==="collecting"?today:sourceQuotes[0]?.date??today;
+  const effectiveCoverageCount=rankingStatus==="official_live"?quotes.length:coverageCount;
+  const effectiveCoverageRatio=targetCount?effectiveCoverageCount/targetCount*100:0;
   const value={items,tradeDate,updatedAt,dataMode:"official" as const,
-    dataSource:rankingStatus==="live"?"TWSE MIS 全市場當日行情":"TWSE／TPEx 官方當日收盤行情",
-    quoteStatus,rankingStatus,coverageRatio:Number(coverageRatio.toFixed(1)),coverageCount,targetCount,validQuoteTime,
+    dataSource:rankingStatus==="live"?"TWSE MIS 全市場當日行情":rankingStatus==="official_live"?"TWSE／TPEx 官方當日盤中行情":"TWSE／TPEx 官方當日收盤行情",
+    quoteStatus,rankingStatus,coverageRatio:Number(effectiveCoverageRatio.toFixed(1)),coverageCount:effectiveCoverageCount,targetCount,validQuoteTime,
     rankingMethod:"截尾平均40%＋中位數20%＋上漲家數比30%＋漲幅逾2%家數比10%"};
   industryCache={value,expiresAt:Date.now()+(rankingStatus==="closed"?5*60_000:30_000)};
   return value;

@@ -12,7 +12,7 @@ export function IndustryHotspots({ onSelectStock }: { onSelectStock: (symbol: st
   const [sort, setSort] = useState<"change" | "momentum" | "count">("change");
   const [updatedAt, setUpdatedAt] = useState("");
   const [dataSource, setDataSource] = useState("");
-  const [quoteStatus, setQuoteStatus] = useState<"intraday" | "official_close">("official_close");
+  const [quoteStatus, setQuoteStatus] = useState<"intraday" | "official_intraday" | "official_close" | "stale_intraday">("official_close");
   const [coverageRatio, setCoverageRatio] = useState<number | null>(null);
 
   const load = async () => {
@@ -57,7 +57,7 @@ export function IndustryHotspots({ onSelectStock }: { onSelectStock: (symbol: st
           <button className={sort === "momentum" ? "active" : ""} onClick={() => setSort("momentum")}>動能分數</button>
           <button className={sort === "count" ? "active" : ""} onClick={() => setSort("count")}>成分數量</button>
         </div>
-        <span>{updatedAt ? `${quoteStatus === "intraday" ? "盤中即時" : "最近收盤"} ${new Date(updatedAt).toLocaleString("zh-TW", { hour12: false })}${quoteStatus === "intraday" && coverageRatio != null ? `・覆蓋 ${safeNumber(coverageRatio, 1)}%` : ""}` : "等待官方行情"}</span>
+        <span>{updatedAt ? `${quoteStatus === "intraday" ? "盤中即時" : quoteStatus === "official_intraday" ? "官方盤中" : "最近收盤"} ${new Date(updatedAt).toLocaleString("zh-TW", { hour12: false })}${(quoteStatus === "intraday" || quoteStatus === "official_intraday") && coverageRatio != null ? `・覆蓋 ${safeNumber(coverageRatio, 1)}%` : ""}` : "等待官方行情"}</span>
       </div>
       {error && <div className="error-banner">{error}</div>}
       {loading && !items.length ? <div className="page-loading"><span className="spinner" /><p>正在計算產業動能…</p></div>

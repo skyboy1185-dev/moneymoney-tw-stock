@@ -21,7 +21,9 @@ from ..services.day_trading import day_trading_engine
 
 router = APIRouter(prefix="/market-data", tags=["market-data"])
 
-RELAY_DIGEST_PATH = Path("/app/data/quote-relay.sha256")
+# Resolve the relay credential alongside the active backend data directory.
+# This remains /app/data on Railway and becomes backend/data for local runs.
+RELAY_DIGEST_PATH = Path(__file__).resolve().parents[2] / "data" / "quote-relay.sha256"
 INDUSTRY_UNIVERSE_TTL_SECONDS = 6 * 60 * 60
 _industry_universe_cache: tuple[float, list[StockQuoteRequest]] = (0.0, [])
 _industry_universe_lock = threading.Lock()

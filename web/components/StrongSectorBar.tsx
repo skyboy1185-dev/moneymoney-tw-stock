@@ -52,11 +52,12 @@ export function StrongSectorBar({
   }, []);
 
   const live = meta.rankingStatus === "live";
+  const officialLive = meta.rankingStatus === "official_live";
   const collecting = meta.rankingStatus === "collecting";
   return <aside className={`strong-sector-bar${collecting ? " stale-intraday" : ""}`} aria-label="今日當前強勢族群">
     <button className="strong-sector-heading" onClick={onOpenIndustries} title="開啟完整產業熱點">
       <Flame size={16} />
-      <span><strong>今日當前強勢族群</strong><small>{collecting ? `目前涵蓋 ${meta.coverageCount}/${meta.targetCount}` : live ? `有效行情 ${meta.validQuoteTime}・涵蓋 ${meta.coverageCount}/${meta.targetCount}` : `${meta.tradeDate} 收盤`}</small></span>
+      <span><strong>今日當前強勢族群</strong><small>{collecting ? `目前涵蓋 ${meta.coverageCount}/${meta.targetCount}` : live ? `即時行情 ${meta.validQuoteTime}・涵蓋 ${meta.coverageCount}/${meta.targetCount}` : officialLive ? `官方盤中・涵蓋 ${meta.coverageCount}/${meta.targetCount}` : `${meta.tradeDate} 收盤`}</small></span>
     </button>
     <div className="strong-sector-list">
       {items.map((sector, index) => <section key={sector.industry}>
@@ -74,6 +75,6 @@ export function StrongSectorBar({
       {status === "error" && <p>強勢族群資料暫時無法取得</p>}
       {status === "ready" && !items.length && <p>{collecting ? "官方當日行情尚未達 80%，排名暫停" : "目前沒有足夠的族群行情"}</p>}
     </div>
-    {meta.updatedAt && <time title={`TWSE／TPEx 官方資料｜${meta.rankingMethod}`}>{collecting ? "蒐集中" : "官方"}<br />{live || collecting ? `${meta.coverageCount}/${meta.targetCount}` : new Date(meta.updatedAt).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false })}</time>}
+    {meta.updatedAt && <time title={`TWSE／TPEx 官方資料｜${meta.rankingMethod}`}>{collecting ? "蒐集中" : officialLive ? "官方盤中" : "官方"}<br />{live || officialLive || collecting ? `${meta.coverageCount}/${meta.targetCount}` : new Date(meta.updatedAt).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false })}</time>}
   </aside>;
 }
