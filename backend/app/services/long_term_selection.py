@@ -949,6 +949,15 @@ def run_long_term_selection(
             payload_json=json.dumps({
                 "targetSymbols": [item.stock_code for item in picks],
                 "candidateSymbols": [item.stock_code for item in all_picks[:50]],
+                "targetQuotes": {
+                    item.stock_code: {
+                        "price": item.price,
+                        "quoteTimestamp": item.quote_timestamp.isoformat() if item.quote_timestamp else None,
+                        "quoteSource": item.quote_source,
+                        "quoteRealtime": item.quote_realtime,
+                    }
+                    for item in picks
+                },
                 "rotationPending": any(
                     item.status == "open"
                     and item.stock_code not in {pick.stock_code for pick in picks}
@@ -1372,6 +1381,134 @@ def expire_deferred_long_term_rotations(db: Session, trade_date: date, at: datet
     if expired:
         db.commit()
     return expired
+
+
+def force_historical_long_term_rotations(
+    db: Session,
+    mode: PortfolioMode,
+    trade_date: date,
+    executed_at: datetime,
+    replacements: list[dict[str, object]],
+) -> dict[str, object]:
+    """Apply an audited, idempotent repair using pre-verified historical prices."""
+    run = db.scalar(select(LongTermPortfolioRun).where(
+        LongTermPortfolioRun.portfolio_mode == mode,
+        LongTermPortfolioRun.trade_date == trade_date,
+    ))
+    if run is None:
+        raise LookupError(f"找不到 {mode} 在 {trade_date.isoformat()} 的選股紀錄")
+    try:
+        run_payload = json.loads(run.payload_json)
+    except (TypeError, ValueError):
+        run_payload = {}
+    target_symbols = {str(item) for item in run_payload.get("targetSymbols", [])}
+    changed: list[dict[str, object]] = []
+    skipped: list[dict[str, object]] = []
+    for spec in replacements:
+        old_symbol = str(spec["fromSymbol"])
+        new_symbol = str(spec["toSymbol"])
+        if new_symbol not in target_symbols:
+            raise ValueError(f"{new_symbol} 不在 {trade_date.isoformat()} 的目標名單")
+        existing_target = db.scalar(select(LongTermPosition).where(
+            LongTermPosition.portfolio_mode == mode,
+            LongTermPosition.stock_code == new_symbol,
+            LongTermPosition.status == "open",
+        ))
+        old_position = db.scalar(select(LongTermPosition).where(
+            LongTermPosition.portfolio_mode == mode,
+            LongTermPosition.stock_code == old_symbol,
+            LongTermPosition.status == "open",
+        ))
+        if old_position is None and existing_target is not None:
+            skipped.append({"fromSymbol": old_symbol, "toSymbol": new_symbol, "reason": "already_applied"})
+            continue
+        if old_position is None:
+            raise LookupError(f"找不到 {mode} 的待換持股 {old_symbol}")
+        if existing_target is not None:
+            raise ValueError(f"{mode} 已持有目標股 {new_symbol}，不能重複建立部位")
+        if trading_days_held(old_position.entry_date, trade_date) < MINIMUM_HOLDING_TRADING_DAYS:
+            raise ValueError(f"{old_symbol} 尚未持有滿 {MINIMUM_HOLDING_TRADING_DAYS} 個交易日")
+        exit_price = float(spec["exitPrice"])
+        entry_price = float(spec["entryPrice"])
+        if exit_price <= 0 or entry_price <= 0:
+            raise ValueError("歷史成交價必須大於 0")
+        old_position.last_price = _decimal(exit_price)
+        old_position.status = "closed"
+        old_position.exit_date = trade_date
+        old_position.exit_time = executed_at
+        old_position.exit_price = _decimal(exit_price)
+        old_position.exit_reason = "依 09:26 歷史行情強制完成今日模型換股"
+        old_position.actual_return_pct = _decimal(actual_return_percent(
+            float(old_position.entry_price), exit_price, old_position.direction,
+        ))
+        old_position.updated_at = executed_at
+        _record_trade_event(db, old_position, "SELL", trade_date, executed_at, old_position.exit_reason)
+
+        pick = LongTermPick(
+            stock_code=new_symbol,
+            stock_name=str(spec["name"]),
+            market_type=str(spec["market"]),
+            industry=str(spec["industry"]),
+            direction="long",
+            model_key="relative_strength",
+            model_name="相對強勢",
+            score=float(spec.get("score", 100)),
+            price=entry_price,
+            open_price=entry_price,
+            low_price=entry_price,
+            gap_percent=0,
+            return_1d=0,
+            quote_timestamp=executed_at,
+            quote_source="Yahoo Finance 1 分鐘歷史行情",
+            quote_realtime=False,
+            predicted_month_return_pct=float(spec.get("predictedMonthReturnPercent", 20)),
+            reasons=["今日模型目標股", "依選股執行時間的歷史行情完成資料修復"],
+        )
+        new_position = _new_position(
+            mode,
+            pick,
+            trade_date,
+            executed_at,
+            float(old_position.allocation_weight_pct),
+            float(old_position.allocated_capital),
+            entry_price,
+            executed_at,
+            "依 09:26 歷史行情強制完成今日模型換股",
+        )
+        db.add(new_position)
+        db.flush()
+        _record_trade_event(
+            db, new_position, "BUY", trade_date, executed_at,
+            "依 09:26 歷史行情強制完成今日模型換股",
+        )
+        _snapshot(db, new_position, trade_date, executed_at)
+        changed.append({
+            "fromSymbol": old_symbol,
+            "toSymbol": new_symbol,
+            "closedPositionId": old_position.id,
+            "newPositionId": new_position.id,
+        })
+
+    status = deferred_long_term_rotation_status(db, mode, trade_date)
+    run_payload.update({
+        "lastRotationRetryAt": executed_at.isoformat(),
+        "lastRotationError": None,
+        "rotationPending": bool(status["pendingSymbols"]),
+        "rotationExpired": False,
+        "forcedRotationAt": executed_at.isoformat(),
+        "forcedRotationSource": "Yahoo Finance 1 分鐘歷史行情",
+    })
+    run.opened_count += len(changed)
+    run.closed_count += len(changed)
+    run.payload_json = json.dumps(run_payload, ensure_ascii=False)
+    db.commit()
+    return {
+        "mode": mode,
+        "tradeDate": trade_date.isoformat(),
+        "changed": changed,
+        "skipped": skipped,
+        "pendingSymbols": status["pendingSymbols"],
+    }
 
 
 def _position_dividend_per_share(

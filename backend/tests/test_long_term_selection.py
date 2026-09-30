@@ -36,6 +36,7 @@ from app.services.long_term_selection import (
     benchmark_definitions,
     deferred_long_term_rotation_status,
     expire_deferred_long_term_rotations,
+    force_historical_long_term_rotations,
     minimum_exit_date,
     portfolio_payload,
     rank_long_term_candidates,
@@ -338,6 +339,7 @@ def test_first_run_skips_unfilled_open_high_candidate_and_backfills_portfolios()
             LongTermPosition.status == SKIPPED_UNFILLED_STATUS,
         )).all())
         events = list(db.scalars(select(LongTermTradeEvent)).all())
+        runs = list(db.scalars(select(LongTermPortfolioRun)).all())
 
     assert result["opened"] == 13
     assert result["skippedUnfilled"] == 2
@@ -347,6 +349,7 @@ def test_first_run_skips_unfilled_open_high_candidate_and_backfills_portfolios()
     assert sum(item.stock_code == "1815" for item in skipped_positions) == 2
     assert all(item.quantity == 0 for item in skipped_positions)
     assert sum(item.event_type == "SKIP" for item in events) == 2
+    assert all(json.loads(item.payload_json)["targetQuotes"] for item in runs)
 
 
 def test_same_day_unfilled_open_entry_is_repaired_and_vacancy_is_refilled() -> None:
@@ -722,6 +725,71 @@ def test_deferred_rotation_is_marked_expired_after_cutoff() -> None:
     assert expired_count == 1
     assert status["status"] == "expired"
     assert status["pendingSymbols"] == ["2000", "2001", "2002"]
+
+
+def test_forced_historical_rotation_is_atomic_in_behavior_and_idempotent() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    trade_date = date(2026, 8, 17)
+    executed_at = datetime(2026, 8, 17, 1, 26, tzinfo=UTC)
+    with Session(engine) as db:
+        run_long_term_selection(db, payload(), datetime(2026, 8, 10, 1, 15, tzinfo=UTC))
+        db.add(LongTermPortfolioRun(
+            portfolio_mode="focused_long",
+            trade_date=trade_date,
+            selected_count=3,
+            opened_count=0,
+            closed_count=0,
+            payload_json=json.dumps({"targetSymbols": ["2003", "2004", "2005"]}),
+            ran_at=executed_at,
+        ))
+        db.commit()
+        replacements = [
+            {
+                "fromSymbol": f"200{index}",
+                "toSymbol": f"200{index + 3}",
+                "name": f"target-{index}",
+                "market": "上市",
+                "industry": "半導體",
+                "exitPrice": 110 + index,
+                "entryPrice": 120 + index,
+            }
+            for index in range(3)
+        ]
+        first = force_historical_long_term_rotations(
+            db, "focused_long", trade_date, executed_at, replacements,
+        )
+        event_count = len(list(db.scalars(select(LongTermTradeEvent).where(
+            LongTermTradeEvent.portfolio_mode == "focused_long",
+        )).all()))
+        second = force_historical_long_term_rotations(
+            db, "focused_long", trade_date, executed_at, replacements,
+        )
+        second_event_count = len(list(db.scalars(select(LongTermTradeEvent).where(
+            LongTermTradeEvent.portfolio_mode == "focused_long",
+        )).all()))
+        open_positions = list(db.scalars(select(LongTermPosition).where(
+            LongTermPosition.portfolio_mode == "focused_long",
+            LongTermPosition.status == "open",
+        )).all())
+        repaired_run = db.scalar(select(LongTermPortfolioRun).where(
+            LongTermPortfolioRun.portfolio_mode == "focused_long",
+            LongTermPortfolioRun.trade_date == trade_date,
+        ))
+
+    assert len(first["changed"]) == 3
+    assert len(second["changed"]) == 0
+    assert len(second["skipped"]) == 3
+    assert second_event_count == event_count
+    assert {item.stock_code for item in open_positions} == {"2003", "2004", "2005"}
+    assert sum(float(item.allocation_weight_pct) for item in open_positions) == pytest.approx(100)
+    assert repaired_run is not None
+    assert repaired_run.opened_count == 3 and repaired_run.closed_count == 3
+    assert json.loads(repaired_run.payload_json)["rotationPending"] is False
 
 
 def test_vacancy_is_immediately_filled_with_a_new_stock() -> None:
