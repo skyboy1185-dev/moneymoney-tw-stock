@@ -17,9 +17,12 @@ from .long_term_selection import (
     LONG_TERM_START_DATE,
     benchmark_definitions,
     benchmark_quote_requests,
+    deferred_long_term_rotation_status,
+    expire_deferred_long_term_rotations,
     long_term_portfolio_has_vacancies,
     replenish_long_term_vacancies,
     repair_long_term_unfilled_entries,
+    retry_deferred_long_term_rotations,
     run_long_term_selection,
     update_benchmarks,
 )
@@ -38,7 +41,7 @@ SELECTION_CLOCK = time.fromisoformat(LONG_TERM_SELECTION_TIME)
 # Same-day fill repairs only matter immediately after the 09:15 selection.
 # Continuing to scan all day turns an unavailable upstream into a misleading
 # health warning after a successful portfolio run.
-MAINTENANCE_WINDOW_END = time(10, 0)
+MAINTENANCE_WINDOW_END = time(13, 20)
 BENCHMARK_QUOTE_TIMEOUT_SECONDS = 3.0
 
 
@@ -119,27 +122,44 @@ class LongTermSelectionAutomation:
             if already_ran is not None and not force:
                 repaired = {"long_only": 0, "focused_long": 0}
                 replenished = {"long_only": 0, "focused_long": 0}
+                deferred_rotations: dict[str, object] = {"status": "not_needed"}
                 maintenance_error = None
                 maintenance_status = "outside_window"
                 if _within_maintenance_window(local):
-                    maintenance_status = "checked"
-                    try:
-                        payload = await fetch_adaptive_scan_payload()
-                        if payload.market.trade_date == local.date():
-                            execution_at = datetime.now(UTC)
-                            with SessionLocal() as db:
-                                repaired = repair_long_term_unfilled_entries(db, payload, execution_at)
-                                db.commit()
-                            with SessionLocal() as db:
-                                has_vacancies = long_term_portfolio_has_vacancies(db)
-                            if has_vacancies:
+                    with SessionLocal() as db:
+                        has_vacancies = long_term_portfolio_has_vacancies(db)
+                        has_pending_rotations = any(
+                            deferred_long_term_rotation_status(db, mode, local.date())["pendingSymbols"]
+                            for mode in ("long_only", "focused_long")
+                        )
+                    if has_vacancies or has_pending_rotations:
+                        maintenance_status = "checked"
+                        try:
+                            payload = await fetch_adaptive_scan_payload()
+                            if payload.market.trade_date == local.date():
+                                execution_at = datetime.now(UTC)
                                 with SessionLocal() as db:
-                                    replenished = replenish_long_term_vacancies(
-                                        db, payload, datetime.now(UTC),
-                                    )
-                    except Exception as error:
-                        logger.warning("Long-term already-ran maintenance unavailable", exc_info=True)
-                        maintenance_error = str(error)
+                                    repaired = repair_long_term_unfilled_entries(db, payload, execution_at)
+                                    db.commit()
+                                if has_vacancies:
+                                    with SessionLocal() as db:
+                                        replenished = replenish_long_term_vacancies(
+                                            db, payload, datetime.now(UTC),
+                                        )
+                                if has_pending_rotations:
+                                    with SessionLocal() as db:
+                                        deferred_rotations = retry_deferred_long_term_rotations(
+                                            db, payload, datetime.now(UTC),
+                                        )
+                        except Exception as error:
+                            logger.warning("Long-term already-ran maintenance unavailable", exc_info=True)
+                            maintenance_error = str(error)
+                    else:
+                        maintenance_status = "not_needed"
+                elif local.time() >= MAINTENANCE_WINDOW_END:
+                    with SessionLocal() as db:
+                        expired = expire_deferred_long_term_rotations(db, local.date(), current)
+                    deferred_rotations = {"status": "expired", "modes": expired}
                 with SessionLocal() as db:
                     update_benchmarks(
                         db, local.date(), current, benchmark_prices, active_benchmarks,
@@ -151,6 +171,7 @@ class LongTermSelectionAutomation:
                     "benchmarkCount": len(active_benchmarks),
                     "repairedUnfilled": repaired,
                     "replenished": replenished,
+                    "deferredRotations": deferred_rotations,
                     "maintenanceStatus": maintenance_status,
                     "maintenanceError": maintenance_error,
                 }

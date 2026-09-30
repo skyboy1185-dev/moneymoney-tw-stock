@@ -1,4 +1,5 @@
 import asyncio
+import json
 import pytest
 from datetime import UTC, date, datetime
 from time import monotonic
@@ -33,6 +34,8 @@ from app.services.long_term_selection import (
     actual_return_percent,
     allocation_weights,
     benchmark_definitions,
+    deferred_long_term_rotation_status,
+    expire_deferred_long_term_rotations,
     minimum_exit_date,
     portfolio_payload,
     rank_long_term_candidates,
@@ -41,6 +44,7 @@ from app.services.long_term_selection import (
     repair_long_term_position_overflow,
     replenish_long_term_vacancies,
     replace_long_term_position,
+    retry_deferred_long_term_rotations,
     run_long_term_selection,
     trading_days_held,
     total_return_breakdown,
@@ -634,6 +638,90 @@ def test_manual_replacement_is_locked_before_day_five_and_keeps_ten_positions() 
     assert float(replacement.allocation_weight_pct) == original_weight
     assert float(replacement.allocated_capital) == original_capital
     assert [item.event_type for item in position_events] == ["BUY", "SELL", "BUY"]
+
+
+def test_deferred_rotation_retries_fixed_daily_targets_once_quotes_recover() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    selection_day = date(2026, 8, 17)
+    retry_at = datetime(2026, 8, 17, 1, 15, tzinfo=UTC)
+    with Session(engine) as db:
+        run_long_term_selection(db, payload(), datetime(2026, 8, 10, 1, 15, tzinfo=UTC))
+        db.add(LongTermPortfolioRun(
+            portfolio_mode="focused_long",
+            trade_date=selection_day,
+            selected_count=3,
+            opened_count=0,
+            closed_count=0,
+            payload_json=json.dumps({
+                "targetSymbols": ["2003", "2004", "2005"],
+                "candidateSymbols": ["2003", "2004", "2005"],
+                "rotationPending": True,
+            }),
+            ran_at=datetime(2026, 8, 17, 1, 15, tzinfo=UTC),
+        ))
+        db.commit()
+
+        pending = deferred_long_term_rotation_status(db, "focused_long", selection_day)
+        assert pending["status"] == "pending"
+        assert pending["pendingSymbols"] == ["2000", "2001", "2002"]
+
+        first = retry_deferred_long_term_rotations(db, payload(selection_day), retry_at)
+        event_count = len(list(db.scalars(select(LongTermTradeEvent).where(
+            LongTermTradeEvent.portfolio_mode == "focused_long",
+        )).all()))
+        second = retry_deferred_long_term_rotations(db, payload(selection_day), retry_at)
+        second_event_count = len(list(db.scalars(select(LongTermTradeEvent).where(
+            LongTermTradeEvent.portfolio_mode == "focused_long",
+        )).all()))
+        completed = deferred_long_term_rotation_status(db, "focused_long", selection_day)
+        open_symbols = set(db.scalars(select(LongTermPosition.stock_code).where(
+            LongTermPosition.portfolio_mode == "focused_long",
+            LongTermPosition.status == "open",
+        )).all())
+
+    assert first["modes"]["focused_long"]["replaced"] == 3
+    assert second["modes"]["focused_long"]["replaced"] == 0
+    assert second_event_count == event_count
+    assert completed["status"] == "completed"
+    assert open_symbols == {"2003", "2004", "2005"}
+
+
+def test_deferred_rotation_is_marked_expired_after_cutoff() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    selection_day = date(2026, 8, 17)
+    with Session(engine) as db:
+        run_long_term_selection(db, payload(), datetime(2026, 8, 10, 1, 15, tzinfo=UTC))
+        db.add(LongTermPortfolioRun(
+            portfolio_mode="focused_long",
+            trade_date=selection_day,
+            selected_count=3,
+            opened_count=0,
+            closed_count=0,
+            payload_json=json.dumps({
+                "targetSymbols": ["2003", "2004", "2005"],
+                "rotationPending": True,
+            }),
+            ran_at=datetime(2026, 8, 17, 1, 15, tzinfo=UTC),
+        ))
+        db.commit()
+        expired_count = expire_deferred_long_term_rotations(
+            db, selection_day, datetime(2026, 8, 17, 5, 20, tzinfo=UTC),
+        )
+        status = deferred_long_term_rotation_status(db, "focused_long", selection_day)
+
+    assert expired_count == 1
+    assert status["status"] == "expired"
+    assert status["pendingSymbols"] == ["2000", "2001", "2002"]
 
 
 def test_vacancy_is_immediately_filled_with_a_new_stock() -> None:

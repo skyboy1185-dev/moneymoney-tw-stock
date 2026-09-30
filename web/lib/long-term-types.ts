@@ -245,6 +245,13 @@ export interface LongTermPortfolioResponse {
     dividendFallbackReason: "timeout" | "unavailable" | null;
   };
   tradeMessages: LongTermTradeMessage[];
+  dailyRotation: {
+    status: "waiting_selection" | "pending" | "completed" | "expired";
+    targetSymbols: string[];
+    pendingSymbols: string[];
+    lastRetryAt?: string | null;
+    lastError?: string | null;
+  };
   unreadTradeMessageCount: number;
   lastSelectionDate: string | null;
   lastSelectionAt: string | null;

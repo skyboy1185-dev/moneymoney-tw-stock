@@ -189,6 +189,12 @@ export function LongTermSelectionPage({ onSelectStock }: { onSelectStock: (symbo
     {data?.quoteData && data.quoteData.status !== "current" && <div className="long-term-quote-notice" role="status">
       即時行情尚未完整更新，目前可能包含延遲報價、收盤價或留存估值。請查看各檔價格下方的來源與報價時間。
     </div>}
+    {data?.dailyRotation.status === "pending" && <div className="long-term-quote-notice" role="status">
+      今日目標：{data.dailyRotation.targetSymbols.join("、")}。待換出：{data.dailyRotation.pendingSymbols.join("、")}；系統會在取得可驗證行情後每 5 分鐘自動重試，最晚到 13:20。
+    </div>}
+    {data?.dailyRotation.status === "expired" && <div className="long-term-quote-notice" role="status">
+      今日目標：{data.dailyRotation.targetSymbols.join("、")}。收盤前未取得可驗證行情，已保留原持股，避免用不可靠價格換股。
+    </div>}
     {loading && !data ? <div className="table-loading"><span className="spinner" /><span>正在載入長線模型組合…</span></div> : data && <>
       <section className="long-term-summary">
         <article><span>本組模擬本金</span><strong>{money(data.capitalAllocation.totalCapital)}</strong><small>兩個組合各自獨立計算</small></article>

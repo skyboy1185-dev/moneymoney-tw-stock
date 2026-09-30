@@ -946,7 +946,16 @@ def run_long_term_selection(
             closed_count=closed,
             portfolio_nav=Decimal(str(round(portfolio_nav, 6))),
             daily_return_pct=Decimal(str(round(daily_return, 6))),
-            payload_json=json.dumps({"targetSymbols": [item.stock_code for item in picks]}, ensure_ascii=False),
+            payload_json=json.dumps({
+                "targetSymbols": [item.stock_code for item in picks],
+                "candidateSymbols": [item.stock_code for item in all_picks[:50]],
+                "rotationPending": any(
+                    item.status == "open"
+                    and item.stock_code not in {pick.stock_code for pick in picks}
+                    and trading_days_held(item.entry_date, trade_date) >= MINIMUM_HOLDING_TRADING_DAYS
+                    for item in positions
+                ),
+            }, ensure_ascii=False),
             ran_at=at,
         )
         db.add(run)
@@ -1126,6 +1135,7 @@ def replace_long_term_position(
     position_id: int,
     payload: AdaptiveScanPayload,
     at: datetime,
+    preferred_symbols: list[str] | None = None,
 ) -> dict[str, object]:
     position = db.get(LongTermPosition, position_id)
     if position is None or position.status != "open":
@@ -1148,6 +1158,12 @@ def replace_long_term_position(
             continue
         replacement_candidates.append(_pick(stock, "long"))
     replacement_candidates.sort(key=lambda item: item.score, reverse=True)
+    if preferred_symbols:
+        preferred_order = {symbol: index for index, symbol in enumerate(preferred_symbols)}
+        replacement_candidates = [
+            item for item in replacement_candidates if item.stock_code in preferred_order
+        ]
+        replacement_candidates.sort(key=lambda item: preferred_order[item.stock_code])
     replacement: LongTermPick | None = None
     replacement_decision: LongTermEntryDecision | None = None
     for pick in replacement_candidates:
@@ -1222,6 +1238,140 @@ def replace_long_term_position(
         "newName": new_position.stock_name,
         "direction": new_position.direction,
     }
+
+
+def deferred_long_term_rotation_status(
+    db: Session,
+    mode: PortfolioMode,
+    trade_date: date,
+) -> dict[str, object]:
+    run = db.scalar(select(LongTermPortfolioRun).where(
+        LongTermPortfolioRun.portfolio_mode == mode,
+        LongTermPortfolioRun.trade_date == trade_date,
+    ))
+    if run is None:
+        return {"status": "waiting_selection", "targetSymbols": [], "pendingSymbols": []}
+    try:
+        run_payload = json.loads(run.payload_json)
+    except (TypeError, ValueError):
+        run_payload = {}
+    target_symbols = [str(item) for item in run_payload.get("targetSymbols", [])]
+    positions = list(db.scalars(select(LongTermPosition).where(
+        LongTermPosition.portfolio_mode == mode,
+        LongTermPosition.status == "open",
+    )).all())
+    pending = [
+        item.stock_code for item in positions
+        if item.stock_code not in target_symbols
+        and trading_days_held(item.entry_date, trade_date) >= MINIMUM_HOLDING_TRADING_DAYS
+    ]
+    status = "pending" if pending else "completed"
+    if pending and run_payload.get("rotationExpired"):
+        status = "expired"
+    return {
+        "status": status,
+        "targetSymbols": target_symbols,
+        "pendingSymbols": pending,
+        "lastRetryAt": run_payload.get("lastRotationRetryAt"),
+        "lastError": run_payload.get("lastRotationError"),
+    }
+
+
+def retry_deferred_long_term_rotations(
+    db: Session,
+    payload: AdaptiveScanPayload,
+    at: datetime,
+) -> dict[str, object]:
+    trade_date = payload.market.trade_date
+    result: dict[str, object] = {"tradeDate": trade_date.isoformat(), "modes": {}}
+    for mode in ("long_only", "focused_long"):
+        run = db.scalar(select(LongTermPortfolioRun).where(
+            LongTermPortfolioRun.portfolio_mode == mode,
+            LongTermPortfolioRun.trade_date == trade_date,
+        ))
+        if run is None:
+            continue
+        try:
+            run_payload = json.loads(run.payload_json)
+        except (TypeError, ValueError):
+            run_payload = {}
+        preferred = [str(item) for item in run_payload.get("candidateSymbols", [])]
+        if not preferred:
+            preferred = [str(item) for item in run_payload.get("targetSymbols", [])]
+            preferred.extend(
+                item.stock_code for item in _rank_all_long_term_candidates(payload)
+                if item.stock_code not in preferred
+            )
+        status = deferred_long_term_rotation_status(db, mode, trade_date)
+        replaced: list[dict[str, object]] = []
+        errors: list[str] = []
+        for symbol in list(status["pendingSymbols"]):
+            position = db.scalar(select(LongTermPosition).where(
+                LongTermPosition.portfolio_mode == mode,
+                LongTermPosition.status == "open",
+                LongTermPosition.stock_code == symbol,
+            ))
+            if position is None:
+                continue
+            try:
+                replaced.append(replace_long_term_position(
+                    db, position.id, payload, at, preferred_symbols=preferred,
+                ))
+            except (LookupError, ValueError) as error:
+                db.rollback()
+                errors.append(f"{symbol}: {error}")
+        refreshed = deferred_long_term_rotation_status(db, mode, trade_date)
+        run = db.get(LongTermPortfolioRun, run.id)
+        if run is not None:
+            try:
+                run_payload = json.loads(run.payload_json)
+            except (TypeError, ValueError):
+                run_payload = {}
+            run_payload.update({
+                "lastRotationRetryAt": at.isoformat(),
+                "lastRotationError": "; ".join(errors)[:2000] if errors else None,
+                "rotationPending": bool(refreshed["pendingSymbols"]),
+                "rotationExpired": False,
+            })
+            run.closed_count += len(replaced)
+            run.opened_count += len(replaced)
+            run.payload_json = json.dumps(run_payload, ensure_ascii=False)
+            db.commit()
+        result["modes"][mode] = {
+            "replaced": len(replaced),
+            "pendingSymbols": refreshed["pendingSymbols"],
+            "errors": errors,
+        }
+    return result
+
+
+def expire_deferred_long_term_rotations(db: Session, trade_date: date, at: datetime) -> int:
+    expired = 0
+    for mode in ("long_only", "focused_long"):
+        status = deferred_long_term_rotation_status(db, mode, trade_date)
+        if not status["pendingSymbols"]:
+            continue
+        run = db.scalar(select(LongTermPortfolioRun).where(
+            LongTermPortfolioRun.portfolio_mode == mode,
+            LongTermPortfolioRun.trade_date == trade_date,
+        ))
+        if run is None:
+            continue
+        try:
+            run_payload = json.loads(run.payload_json)
+        except (TypeError, ValueError):
+            run_payload = {}
+        run_payload.update({
+            "rotationPending": True,
+            "rotationExpired": True,
+            "lastRotationRetryAt": run_payload.get("lastRotationRetryAt") or at.isoformat(),
+            "lastRotationError": run_payload.get("lastRotationError") or "收盤前未取得可驗證的換股行情",
+        })
+        run.payload_json = json.dumps(run_payload, ensure_ascii=False)
+        expired += 1
+    if expired:
+        db.commit()
+    return expired
 
 
 def _position_dividend_per_share(
@@ -1899,6 +2049,7 @@ async def portfolio_payload(db: Session, mode: PortfolioMode) -> dict[str, objec
             "returnBasis": "cash_dividend_total_return",
         },
         "tradeMessages": trade_messages,
+        "dailyRotation": deferred_long_term_rotation_status(db, mode, current_date),
         "unreadTradeMessageCount": sum(not bool(item["isRead"]) for item in trade_messages),
         "lastSelectionDate": last_run.trade_date.isoformat() if last_run else None,
         "lastSelectionAt": last_run.ran_at.isoformat() if last_run else None,
